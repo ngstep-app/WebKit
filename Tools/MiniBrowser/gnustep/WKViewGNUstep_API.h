@@ -13,7 +13,6 @@ typedef struct OpaqueWKView* WKViewGNUstepRef;
 WK_EXPORT WKViewGNUstepRef WKViewGNUstepCreate(WKPageConfigurationRef configuration);
 WK_EXPORT WKPageRef WKViewGNUstepGetPage(WKViewGNUstepRef view);
 WK_EXPORT void WKViewGNUstepSetSize(WKViewGNUstepRef view, int width, int height);
-WK_EXPORT int WKViewGNUstepPaint(WKViewGNUstepRef view, unsigned char* buffer, int width, int height, int stride);
 WK_EXPORT void WKViewGNUstepDestroy(WKViewGNUstepRef view);
 
 #ifdef __cplusplus

@@ -576,3 +576,12 @@ void LayerTreeHost::fillGLInformation(RenderProcessInfo&& info, CompletionHandle
 } // namespace WebKit
 
 #endif // USE(COORDINATED_GRAPHICS)
+
+namespace WebKit {
+void LayerTreeHost::pauseRendering() { suspend(); }
+void LayerTreeHost::resumeRendering() { resume(); }
+void LayerTreeHost::setLayerTreeStateIsFrozen(bool frozen) { }
+void LayerTreeHost::setNonCompositedContentsNeedDisplay(const WebCore::IntRect&) { scheduleRenderingUpdate(); }
+void LayerTreeHost::updateRenderingWithForcedRepaintAsync(CompletionHandler<void()>&& cb) { updateRenderingWithForcedRepaint(); if (cb) cb(); }
+
+} // namespace WebKit

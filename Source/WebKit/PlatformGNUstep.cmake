@@ -40,6 +40,7 @@ list(APPEND WebKit_SOURCES
 
     UIProcess/gnustep/PageClientImplGNUstep.cpp
     UIProcess/gnustep/WebViewGNUstep.cpp
+    UIProcess/API/C/gnustep/WKViewGNUstep.cpp
     UIProcess/gnustep/WebContextMenuProxyGNUstep.mm
     UIProcess/gnustep/WebPageProxyGNUstep.mm
     UIProcess/gnustep/WebPopupMenuProxyGNUstep.mm
@@ -65,7 +66,7 @@ list(APPEND WebKit_SOURCES
 
     UIProcess/skia/BackingStoreSkia.cpp
     WebProcess/WebPage/CoordinatedGraphics/ScrollingCoordinatorCoordinated.cpp
-    UIProcess/gnustep/WebAutomationSessionGNUstep.cpp
+    UIProcess/Automation/gnustep/WebAutomationSessionGNUstep.cpp
 
     UIProcess/WebsiteData/glib/WebsiteDataStoreGLib.cpp
     UIProcess/gnustep/DisplayLinkGNUstep.cpp
@@ -98,7 +99,7 @@ list(APPEND WebKit_SOURCES
     WebProcess/WebPage/gnustep/WebPageGNUstep.cpp
     UIProcess/gnustep/WebPageProxyGNUstep.cpp
     gnustep/AllStubsGNUstep.cpp
-    WebProcess/gnustep/WebProcessMainGNUstep.mm
+    WebProcess/gnustep/WebProcessMainGNUstep.cpp
     WebProcess/gnustep/WebProcessGNUstep.mm
 )
 
@@ -155,4 +156,3 @@ list(APPEND NetworkProcess_SOURCES
 )
 
 # Allow unresolved symbols in process executables for initial port
-set(CMAKE_EXE_LINKER_FLAGS " -Wl,--unresolved-symbols=ignore-all")

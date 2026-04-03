@@ -154,5 +154,3 @@ set(WebCoreTestSupport_LIBRARY_TYPE OBJECT)
 SET_AND_EXPOSE_TO_BUILD(USE_GSTREAMER_WEBRTC OFF)
 include(GStreamerChecks)
 include(BubblewrapSandboxChecks)
-
-string(REPLACE "-Wl,--no-undefined" "" CMAKE_SHARED_LINKER_FLAGS "")

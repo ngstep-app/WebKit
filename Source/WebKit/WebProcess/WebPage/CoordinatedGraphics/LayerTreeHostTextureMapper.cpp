@@ -1,3 +1,6 @@
+#if __has_include(<epoxy/egl.h>)
+#include <epoxy/egl.h>
+#endif
 /*
  * Copyright (C) 2014 Apple, Inc.
  * Copyright (C) 2020 Sony Interactive Entertainment Inc.
@@ -31,7 +34,11 @@
 
 #include "DrawingArea.h"
 #include "WebPage.h"
+#if __has_include(<epoxy/gl.h>)
+#include <epoxy/gl.h>
+#else
 #include <GLES2/gl2.h>
+#endif
 #include <WebCore/DocumentView.h>
 #include <WebCore/GraphicsContext.h>
 #include <WebCore/GraphicsLayerTextureMapper.h>

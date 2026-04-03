@@ -111,6 +111,11 @@ private:
     bool canUpdateRendering() const override;
     void updateRendering() override;
     void suspend() override;
+    void pauseRendering();
+    void resumeRendering();
+    void setLayerTreeStateIsFrozen(bool);
+    void setNonCompositedContentsNeedDisplay(const WebCore::IntRect&);
+    void updateRenderingWithForcedRepaintAsync(CompletionHandler<void()>&&);
     void resume() override;
     void sizeDidChange() override;
     void backgroundColorDidChange() override;
