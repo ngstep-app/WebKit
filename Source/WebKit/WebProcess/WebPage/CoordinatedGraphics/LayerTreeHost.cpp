@@ -48,6 +48,7 @@
 #include <WebCore/ProcessCapabilities.h>
 #include <WebCore/RenderLayerBacking.h>
 #include <WebCore/RenderView.h>
+#include <WebCore/WindowEventLoop.h>
 #include <WebCore/ScrollingThread.h>
 #include <WebCore/Settings.h>
 #include <WebCore/SkiaPaintingEngine.h>

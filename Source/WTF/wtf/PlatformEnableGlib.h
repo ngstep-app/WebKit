@@ -32,7 +32,7 @@
 #error "Please #include <wtf/Platform.h> instead of this file directly."
 #endif
 
-#if !PLATFORM(GTK) && !PLATFORM(WPE)
+#if !PLATFORM(GTK) && !PLATFORM(WPE) && !PLATFORM(GNUSTEP)
 #error "This file should only be included when building for the GTK or WPE platforms."
 #endif
 

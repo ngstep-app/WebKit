@@ -153,7 +153,7 @@ public:
         return t;
     }
 
-#ifdef __OBJC__
+#if defined(__OBJC__) && PLATFORM(COCOA)
     template<typename T, typename = IsObjCObject<T>>
     std::optional<RetainPtr<T>> decodeWithAllowedClasses(const AllowedClassHashSet& allowedClasses = { getClass<T>() })
     {

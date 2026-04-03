@@ -23,6 +23,9 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#if __has_include(<epoxy/egl.h>)
+#include <epoxy/egl.h>
+#endif
 #include "config.h"
 #include "PlatformDisplay.h"
 

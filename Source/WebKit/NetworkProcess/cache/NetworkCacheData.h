@@ -41,9 +41,7 @@
 
 #if USE(GLIB)
 #include <wtf/glib/GRefPtr.h>
-#endif
-
-#if USE(CURL)
+#elif USE(CURL)
 #include <wtf/Box.h>
 #endif
 
@@ -105,8 +103,7 @@ private:
 #if USE(GLIB)
     mutable GRefPtr<GBytes> m_buffer;
     Box<FileSystem::FileHandle> m_fileHandle;
-#endif
-#if USE(CURL)
+#elif USE(CURL)
     Box<Variant<Vector<uint8_t>, FileSystem::MappedFileData>> m_buffer;
 #endif
     bool m_isMap { false };

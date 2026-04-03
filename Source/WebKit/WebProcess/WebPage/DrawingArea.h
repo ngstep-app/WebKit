@@ -178,7 +178,7 @@ public:
     virtual void preferredBufferFormatsDidChange() { }
 #endif
 
-#if PLATFORM(GTK) || PLATFORM(WPE)
+#if PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(GNUSTEP)
     virtual void dispatchPendingCallbacksAfterEnsuringDrawing() = 0;
 #endif
 
@@ -238,7 +238,7 @@ private:
     virtual void setColorSpace(std::optional<WebCore::DestinationColorSpace>) { }
 #endif
 
-#if PLATFORM(COCOA) || PLATFORM(GTK) || PLATFORM(WPE)
+#if PLATFORM(COCOA) || PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(GNUSTEP)
     virtual void dispatchAfterEnsuringDrawing(IPC::AsyncReplyID) = 0;
 #endif
 

@@ -63,7 +63,7 @@ struct LogArgument {
     template<typename U = T> requires (std::same_as<U, const char*>) static String toString(const char* argument) { return String::fromLatin1(argument); }
     template<typename U = T> requires (std::same_as<U, ASCIILiteral>) static String toString(ASCIILiteral argument) { return argument; }
     template<typename U = T> requires (std::same_as<U, std::span<const char8_t>>) static String toString(std::span<const char8_t> argument) { return argument; }
-#ifdef __OBJC__
+#if defined(__OBJC__) && PLATFORM(COCOA)
     template<typename U = T> requires (std::is_base_of_v<NSError, std::remove_pointer_t<U>>) static String toString(NSError *argument) { return String(argument.localizedDescription); }
     template<typename U = T> requires (std::is_base_of_v<NSObject, std::remove_pointer_t<U>>) static String toString(NSObject *argument) { return String(argument.description); }
     template<typename U = T> requires (std::is_base_of_v<NSProxy, std::remove_pointer_t<U>>) static String toString(NSProxy *argument) { return String(argument.description); }
@@ -463,7 +463,7 @@ struct LogArgument<std::optional<T>> {
     }
 };
 
-#ifdef __OBJC__
+#if defined(__OBJC__) && PLATFORM(COCOA)
 template<> struct LogArgument<id> {
     static String toString(id argument)
     {

@@ -1735,7 +1735,7 @@ public:
 #endif
 
     void themeColorChanged() { m_pendingThemeColorChange = true; }
-#if PLATFORM(MAC) || PLATFORM(WPE) || PLATFORM(GTK)
+#if PLATFORM(MAC) || PLATFORM(WPE) || PLATFORM(GTK) || PLATFORM(GNUSTEP)
     void flushPendingThemeColorChange();
 #endif
 

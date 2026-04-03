@@ -8065,7 +8065,7 @@ void WebPage::loadAndDecodeImage(WebCore::ResourceRequest&& request, std::option
     });
 }
 
-#if PLATFORM(MAC) || PLATFORM(WPE) || PLATFORM(GTK)
+#if PLATFORM(MAC) || PLATFORM(WPE) || PLATFORM(GTK) || PLATFORM(GNUSTEP)
 void WebPage::flushPendingThemeColorChange()
 {
     if (!m_pendingThemeColorChange)

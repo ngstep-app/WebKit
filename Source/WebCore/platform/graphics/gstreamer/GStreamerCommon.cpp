@@ -41,6 +41,9 @@
 #include <fnmatch.h>
 #include <gst/audio/audio-info.h>
 #include <gst/gst.h>
+#if USE(GSTREAMER_GL)
+#include <gst/gl/gl.h>
+#endif
 #include <mutex>
 #include <wtf/FileSystem.h>
 #include <wtf/HashMap.h>

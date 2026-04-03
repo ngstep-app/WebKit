@@ -30,6 +30,8 @@
 #if USE(COORDINATED_GRAPHICS_ASYNC_SCROLLBAR)
 
 #include "ScrollingStateScrollingNode.h"
+#include "ScrollTypes.h"
+#include "ScrollableArea.h"
 #include <wtf/Forward.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/ThreadSafeRefCounted.h>

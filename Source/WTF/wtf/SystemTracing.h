@@ -185,7 +185,7 @@ enum TracePointCode {
     WakeUpAndApplyDisplayListStart,
     WakeUpAndApplyDisplayListEnd,
 
-#if PLATFORM(GTK) || PLATFORM(WPE)
+#if PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(GNUSTEP)
     GTKWPEPortRange = 20000,
 
     LayerTreeHostRenderingUpdateStart,

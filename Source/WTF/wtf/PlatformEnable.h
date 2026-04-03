@@ -104,7 +104,7 @@
 #endif
 
 /* --------- GTK/WPE port --------- */
-#if PLATFORM(GTK) || PLATFORM(WPE)
+#if PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(GNUSTEP)
 #include <wtf/PlatformEnableGlib.h>
 #endif
 

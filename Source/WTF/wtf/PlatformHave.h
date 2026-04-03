@@ -370,7 +370,7 @@
 #define HAVE_IOSURFACE 1
 #endif
 
-#if PLATFORM(MAC) || PLATFORM(GTK) || PLATFORM(WPE)
+#if PLATFORM(MAC) || PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(GNUSTEP)
 #define HAVE_DISPLAY_LINK 1
 #endif
 
@@ -549,7 +549,7 @@
 #define HAVE_APP_SSO 1
 #endif
 
-#if PLATFORM(COCOA) || PLATFORM(GTK) || PLATFORM(WPE)
+#if PLATFORM(COCOA) || PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(GNUSTEP)
 #define HAVE_COOKIE_CHANGE_LISTENER_API 1
 #endif
 
@@ -1132,7 +1132,7 @@
 #define HAVE_AVCAPTUREDEVICE_MINFOCUSLENGTH 1
 #endif
 
-#if (PLATFORM(GTK) || PLATFORM(WPE)) && defined(__has_include)
+#if (PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(GNUSTEP)) && defined(__has_include)
 #if __has_include(<gio/gdesktopappinfo.h>)
 #define HAVE_GDESKTOPAPPINFO 1
 #endif

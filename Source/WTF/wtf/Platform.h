@@ -163,7 +163,7 @@
 #endif
 
 /* FIXME: This is used to "turn on a specific feature of WebKit", so should be converted to an ENABLE macro. */
-#if PLATFORM(COCOA) || PLATFORM(GTK) || PLATFORM(WPE)
+#if PLATFORM(COCOA) || PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(GNUSTEP)
 #define USE_ACCESSIBILITY_CONTEXT_MENUS 1
 #endif
 

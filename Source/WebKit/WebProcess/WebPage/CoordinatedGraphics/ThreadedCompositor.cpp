@@ -1,3 +1,6 @@
+#if __has_include(<epoxy/egl.h>)
+#include <epoxy/egl.h>
+#endif
 /*
  * Copyright (C) 2014, 2025 Igalia S.L.
  *

@@ -49,6 +49,12 @@ public:
 
     virtual ~DrawingAreaCoordinatedGraphics();
 
+#if PLATFORM(COCOA) || PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(GNUSTEP)
+    void dispatchAfterEnsuringDrawing(IPC::AsyncReplyID) override;
+    void dispatchPendingCallbacksAfterEnsuringDrawing() override;
+    Vector<IPC::AsyncReplyID> m_callbackIDs;
+#endif
+
 private:
     DrawingAreaCoordinatedGraphics(WebPage&, const WebPageCreationParameters&);
 
