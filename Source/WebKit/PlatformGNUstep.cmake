@@ -38,13 +38,13 @@ list(APPEND WebKit_SOURCES
     UIProcess/CoordinatedGraphics/DrawingAreaProxyCoordinatedGraphics.cpp
 
 
-    UIProcess/gnustep/PageClientImplGNUstep.mm
+    UIProcess/gnustep/PageClientImplGNUstep.cpp
+    UIProcess/gnustep/WebViewGNUstep.cpp
     UIProcess/gnustep/WebContextMenuProxyGNUstep.mm
     UIProcess/gnustep/WebPageProxyGNUstep.mm
     UIProcess/gnustep/WebPopupMenuProxyGNUstep.mm
     UIProcess/gnustep/WebProcessPoolGNUstep.mm
     UIProcess/gnustep/WebsiteDataStoreGNUstep.mm
-    UIProcess/gnustep/WebViewGNUstep.mm
 
     WebProcess/InjectedBundle/gnustep/InjectedBundleGNUstep.mm
 

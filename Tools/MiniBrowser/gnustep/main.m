@@ -1,69 +1,102 @@
-/*
- * MiniBrowser for GNUstep - main.m
- * Minimal browser shell using WebKit C API
- */
+/* MiniBrowser for GNUstep - WebKit Port */
 #import <AppKit/AppKit.h>
+#import "WKViewGNUstep.h"
 
-@interface AppDelegate : NSObject
+@interface BrowserDelegate : NSObject
+{
+    NSWindow *_window;
+    NSTextField *_urlField;
+    WebKitView *_webView;
+}
 @end
 
-@implementation AppDelegate
+@implementation BrowserDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
 {
-    // Create main menu
+    // Menu
     NSMenu *mainMenu = [[NSMenu alloc] init];
-    NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"MiniBrowser"];
-    [appMenu addItemWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"q"];
-    NSMenuItem *appItem = [[NSMenuItem alloc] init];
-    [appItem setSubmenu:appMenu];
-    [mainMenu addItem:appItem];
+    NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
+    [fileMenu addItemWithTitle:@"Open Location" action:@selector(openLocation:) keyEquivalent:@"l"];
+    [fileMenu addItemWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"q"];
+    NSMenuItem *fileItem = [[NSMenuItem alloc] init];
+    [fileItem setSubmenu:fileMenu];
+    [mainMenu addItem:fileItem];
     [NSApp setMainMenu:mainMenu];
 
-    // Create browser window
+    // Window
     NSRect frame = NSMakeRect(100, 100, 1024, 768);
-    NSWindow *window = [[NSWindow alloc]
+    _window = [[NSWindow alloc]
         initWithContentRect:frame
         styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                    NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
         backing:NSBackingStoreBuffered
         defer:NO];
-    [window setTitle:@"MiniBrowser - GNUstep WebKit Port"];
+    [_window setTitle:@"MiniBrowser"];
+    [_window setMinSize:NSMakeSize(400, 300)];
+    NSView *content = [_window contentView];
 
-    // URL bar
-    NSTextField *urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 738, 1004, 24)];
-    [urlField setStringValue:@"https://example.com"];
-    [urlField setAutoresizingMask:NSViewWidthSizable | NSViewMinYMargin];
-    [[window contentView] addSubview:urlField];
+    // Navigation bar
+    CGFloat barY = frame.size.height - 30;
+    NSButton *back = [[NSButton alloc] initWithFrame:NSMakeRect(5, barY, 30, 24)];
+    [back setTitle:@"\xe2\x97\x80"]; // left arrow
+    [back setTarget:self]; [back setAction:@selector(goBack:)];
+    [back setAutoresizingMask:NSViewMaxXMargin | NSViewMinYMargin];
+    [content addSubview:back];
 
-    // Status label
-    NSTextField *statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 350, 1004, 100)];
-    [statusLabel setStringValue:@"WebKit GNUstep Port\n\nJavaScriptCore + WebCore + WebKit2\nAll libraries built successfully!\n\nWeb rendering coming soon."];
-    [statusLabel setAlignment:NSTextAlignmentCenter];
-    [statusLabel setEditable:NO];
-    [statusLabel setBezeled:NO];
-    [statusLabel setDrawsBackground:NO];
-    [statusLabel setFont:[NSFont systemFontOfSize:18]];
-    [statusLabel setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-    [[window contentView] addSubview:statusLabel];
+    NSButton *fwd = [[NSButton alloc] initWithFrame:NSMakeRect(38, barY, 30, 24)];
+    [fwd setTitle:@"\xe2\x96\xb6"]; // right arrow
+    [fwd setTarget:self]; [fwd setAction:@selector(goForward:)];
+    [fwd setAutoresizingMask:NSViewMaxXMargin | NSViewMinYMargin];
+    [content addSubview:fwd];
 
-    [window makeKeyAndOrderFront:nil];
+    NSButton *rel = [[NSButton alloc] initWithFrame:NSMakeRect(71, barY, 30, 24)];
+    [rel setTitle:@"\xe2\x9f\xb3"]; // reload
+    [rel setTarget:self]; [rel setAction:@selector(reload:)];
+    [rel setAutoresizingMask:NSViewMaxXMargin | NSViewMinYMargin];
+    [content addSubview:rel];
+
+    _urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(105, barY, frame.size.width - 115, 24)];
+    [_urlField setStringValue:@"https://example.com"];
+    [_urlField setTarget:self]; [_urlField setAction:@selector(navigate:)];
+    [_urlField setAutoresizingMask:NSViewWidthSizable | NSViewMinYMargin];
+    [content addSubview:_urlField];
+
+    // Web view
+    _webView = [[WebKitView alloc] initWithFrame:NSMakeRect(0, 0, frame.size.width, barY - 2)];
+    [_webView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+    [content addSubview:_webView];
+
+    [_window makeKeyAndOrderFront:nil];
+    [self navigate:_urlField];
 }
 
-- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app
+- (void)navigate:(id)sender
 {
-    return YES;
+    NSString *url = [_urlField stringValue];
+    if (![url hasPrefix:@"http://"] && ![url hasPrefix:@"https://"])
+        url = [@"https://" stringByAppendingString:url];
+    [_urlField setStringValue:url];
+    [_window setTitle:[NSString stringWithFormat:@"%@ - MiniBrowser", url]];
+    [_webView loadURL:url];
 }
+
+- (void)goBack:(id)sender { [_webView goBack]; }
+- (void)goForward:(id)sender { [_webView goForward]; }
+- (void)reload:(id)sender { [_webView reload]; }
+- (void)openLocation:(id)sender { [_window makeFirstResponder:_urlField]; }
+
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app { return YES; }
 
 @end
 
 int main(int argc, char *argv[])
 {
     @autoreleasepool {
-        NSApplication *app = [NSApplication sharedApplication];
-        AppDelegate *delegate = [[AppDelegate alloc] init];
-        [app setDelegate:delegate];
-        [app run];
+        [NSApplication sharedApplication];
+        BrowserDelegate *d = [[BrowserDelegate alloc] init];
+        [NSApp setDelegate:(id)d];
+        [NSApp run];
     }
     return 0;
 }
