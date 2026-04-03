@@ -32,7 +32,7 @@
 
 namespace WebCore {
 
-#if !PLATFORM(MAC) && !PLATFORM(WPE) && !PLATFORM(GTK)
+#if !PLATFORM(MAC) && !PLATFORM(WPE) && !PLATFORM(GTK) && !PLATFORM(GNUSTEP)
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(ScrollbarsController);
 

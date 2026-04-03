@@ -92,13 +92,12 @@ list(APPEND WebKit_SOURCES
     WebProcess/WebPage/CoordinatedGraphics/ScrollbarsControllerCoordinated.cpp
     Shared/gnustep/ProcessExecutablePathGNUstep.cpp
     UIProcess/Launcher/glib/XDGDBusProxy.cpp
-    UIProcess/Launcher/gnustep/BubblewrapLauncherGNUstep.cpp
-    UIProcess/Launcher/gnustep/FlatpakLauncherGNUstep.cpp
     Platform/glib/ModuleGlib.cpp
     WebProcess/InjectedBundle/gnustep/InjectedBundleGNUstep.cpp
     WebProcess/WebCoreSupport/gnustep/WebEditorClientGNUstep.cpp
     WebProcess/WebPage/gnustep/WebPageGNUstep.cpp
     UIProcess/gnustep/WebPageProxyGNUstep.cpp
+    gnustep/AllStubsGNUstep.cpp
     WebProcess/gnustep/WebProcessMainGNUstep.mm
     WebProcess/gnustep/WebProcessGNUstep.mm
 )
@@ -145,3 +144,15 @@ list(REMOVE_ITEM WebKit_SOURCES
     NetworkProcess/cache/NetworkCacheIOChannelCurl.cpp
 )
 
+
+# Process entry points (main functions)
+list(APPEND WebProcess_SOURCES
+    WebProcess/EntryPoint/unix/WebProcessMain.cpp
+)
+
+list(APPEND NetworkProcess_SOURCES
+    NetworkProcess/EntryPoint/unix/NetworkProcessMain.cpp
+)
+
+# Allow unresolved symbols in process executables for initial port
+set(CMAKE_EXE_LINKER_FLAGS " -Wl,--unresolved-symbols=ignore-all")

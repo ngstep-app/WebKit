@@ -11,3 +11,4 @@ platform/graphics/egl/GLFenceEGL.cpp @no-unify
 platform/graphics/egl/GLFenceGL.cpp @no-unify
 platform/graphics/egl/PlatformDisplayDefault.cpp @no-unify
 platform/graphics/egl/PlatformDisplaySurfaceless.cpp @no-unify
+platform/generic/ScrollbarsControllerGeneric.cpp
