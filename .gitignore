@@ -95,3 +95,5 @@ CLAUDE.md
 *.atrc
 
 /build-gnustep/
+/Tools/MiniBrowser/gnustep/MiniBrowser.app/
+/Tools/MiniBrowser/gnustep/obj/
