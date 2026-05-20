@@ -30,8 +30,10 @@
 
 #if ENABLE(MATHML)
 
-#include "MathMLElement.h"
+#include "FontCascadeInlines.h"
 #include "FontInlines.h"
+#include "GlyphPage.h"
+#include "MathMLElement.h"
 #include "MathMLNames.h"
 #include "MathMLTokenElement.h"
 #include "PaintInfo.h"
@@ -41,6 +43,7 @@
 #include "RenderIterator.h"
 #include "RenderObjectInlines.h"
 #include "RenderStyle+GettersInlines.h"
+#include "Settings.h"
 #include <wtf/StdLibExtras.h>
 #include <wtf/TZoneMallocInlines.h>
 
@@ -77,13 +80,17 @@ void RenderMathMLToken::computePreferredLogicalWidths()
 {
     ASSERT(needsPreferredLogicalWidthsUpdate());
 
+    if (document().settings().coreMathMLDeprecateLegacyMathvariant())
+        return RenderMathMLBlock::computePreferredLogicalWidths();
+
     if (m_mathVariantGlyphDirty)
         updateMathVariantGlyph();
 
     if (m_mathVariantCodePoint) {
         auto mathVariantGlyph = style().fontCascade().glyphDataForCharacter(m_mathVariantCodePoint.value(), m_mathVariantIsMirrored);
         if (mathVariantGlyph.font) {
-            m_maxPreferredLogicalWidth = m_minPreferredLogicalWidth = mathVariantGlyph.font->widthForGlyph(mathVariantGlyph.glyph);
+            m_maxPreferredLogicalWidth = mathVariantGlyph.font->widthForGlyph(mathVariantGlyph.glyph);
+            m_minPreferredLogicalWidth = m_maxPreferredLogicalWidth;
             adjustPreferredLogicalWidthsForBorderAndPadding();
             clearNeedsPreferredWidthsUpdate();
             return;
@@ -179,6 +186,8 @@ void RenderMathMLToken::layoutBlock(RelayoutChildren relayoutChildren, LayoutUni
     setLogicalHeight(LayoutUnit(mathVariantGlyph.font->boundsForGlyph(mathVariantGlyph.glyph).height()));
 
     adjustLayoutForBorderAndPadding();
+
+    updateLogicalHeight();
 
     layoutOutOfFlowBoxes(relayoutChildren);
 }

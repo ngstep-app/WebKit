@@ -66,6 +66,7 @@
 #include "MouseEvent.h"
 #include "NodeName.h"
 #include "NodeRareData.h"
+#include "PlatformRenderTheme.h"
 #include "PseudoClassChangeInvalidation.h"
 #include "RenderListBox.h"
 #include "RenderMenuList.h"
@@ -80,6 +81,7 @@
 #include <JavaScriptCore/ConsoleTypes.h>
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/text/MakeString.h>
+#include <wtf/text/StringBuilder.h>
 
 #if !PLATFORM(IOS_FAMILY)
 #include <WebCore/PopupMenu.h>
@@ -504,6 +506,23 @@ String HTMLSelectElement::value() const
     return emptyString();
 }
 
+String HTMLSelectElement::collectOptionInnerText(EmitNewlineForEmptyItems emitNewlineForEmptyItems) const
+{
+    StringBuilder builder;
+    for (auto& item : listItems()) {
+        if (RefPtr option = dynamicDowncast<HTMLOptionElement>(item.get())) {
+            if (!builder.isEmpty())
+                builder.append('\n');
+            builder.append(option->text());
+        }
+    }
+    // Even when options/optgroups have no text, their presence as block-level
+    // elements should generate a required line break per the innerText spec.
+    if (builder.isEmpty() && emitNewlineForEmptyItems == EmitNewlineForEmptyItems::Yes && !listItems().isEmpty())
+        return "\n"_s;
+    return builder.toString();
+}
+
 void HTMLSelectElement::setValue(const String& value)
 {
     // Find the option with value() matching the given parameter and make it the current selection.
@@ -559,6 +578,28 @@ void HTMLSelectElement::attributeChanged(const QualifiedName& name, const AtomSt
         HTMLFormControlElement::attributeChanged(name, oldValue, newValue, attributeModificationReason);
         break;
     }
+}
+
+void HTMLSelectElement::setDisabledInternal(bool disabled, bool disabledByAncestorFieldset)
+{
+    bool newDisabledState = disabled || disabledByAncestorFieldset;
+    if (newDisabledState == isDisabled()) {
+        ValidatedFormListedElement::setDisabledInternal(disabled, disabledByAncestorFieldset);
+        return;
+    }
+
+    Vector<Style::PseudoClassChangeInvalidation> descendantInvalidations;
+    for (Ref descendant : descendantsOfType<HTMLElement>(*this)) {
+        if (!isAnyOf<HTMLOptionElement, HTMLOptGroupElement>(descendant.get()))
+            continue;
+        bool newDescendantDisabled = newDisabledState || descendant->isDisabledFormControl();
+        descendantInvalidations.append({ descendant.get(), {
+            { CSSSelector::PseudoClass::Disabled, newDescendantDisabled },
+            { CSSSelector::PseudoClass::Enabled, !newDescendantDisabled },
+        } });
+    }
+
+    ValidatedFormListedElement::setDisabledInternal(disabled, disabledByAncestorFieldset);
 }
 
 int HTMLSelectElement::defaultTabIndex() const
@@ -698,6 +739,37 @@ void HTMLSelectElement::childrenChanged(const ChildChange& change)
     m_lastOnChangeSelection.clear();
 
     HTMLFormControlElement::childrenChanged(change);
+}
+
+// Select the given option as the default if no option is explicitly selected.
+// This maintains m_isSelected incrementally during option insertion so that
+// HTMLOptionElement::finishParsingChildren() can use selectedWithoutUpdate()
+// (O(1)) instead of selected() which triggers O(n) recalcListItems().
+void HTMLSelectElement::selectDefaultOptionIfNeeded(HTMLOptionElement& candidate)
+{
+    // The HTML spec only requires a default selection for single-select elements
+    // with size <= 1 (dropdowns). Listboxes (size > 1) and multiple-select
+    // elements may have no selection.
+    // https://html.spec.whatwg.org/C/#selectedness-setting-algorithm
+    if (multiple() || m_size > 1)
+        return;
+
+    // Walk existing options to check if any is already selected, and whether
+    // the candidate is the first non-disabled option. Once any option is
+    // default-selected, subsequent calls find it and return immediately (O(1)).
+    // Use traverseNextSkippingChildren() since <option> elements cannot nest.
+    for (auto it = descendantsOfType<HTMLOptionElement>(*this).begin(); it; it.traverseNextSkippingChildren()) {
+        if (it->selectedWithoutUpdate())
+            return;
+        if (&*it == &candidate) {
+            candidate.setSelectedState(true);
+            return;
+        }
+        // A non-disabled option before the candidate exists — the candidate
+        // is not the first non-disabled option.
+        if (!protect(*it)->isDisabledFormControl())
+            return;
+    }
 }
 
 void HTMLSelectElement::optionElementChildrenChanged()
@@ -1238,6 +1310,12 @@ int HTMLSelectElement::selectedIndex() const
     return -1;
 }
 
+HTMLOptionElement* HTMLSelectElement::selectedOption()
+{
+    int index = selectedIndex();
+    return index >= 0 ? item(index) : nullptr;
+}
+
 void HTMLSelectElement::setSelectedIndex(int index)
 {
     selectOption(index, SelectOptionFlag::DeselectOtherOptions);
@@ -1476,6 +1554,8 @@ void HTMLSelectElement::reset()
         RefPtr option = dynamicDowncast<HTMLOptionElement>(*element);
         if (!option)
             continue;
+
+        option->setDirty(false);
 
         if (option->hasAttributeWithoutSynchronization(selectedAttr)) {
             if (selectedOption && !m_multiple)
@@ -1768,7 +1848,7 @@ void HTMLSelectElement::listBoxDefaultEventHandler(Event& event)
             return;
 
         // Convert to coords relative to the list box if needed.
-        IntPoint localOffset = roundedIntPoint(renderListBox->absoluteToLocal(mouseEvent->absoluteLocation(), UseTransforms));
+        IntPoint localOffset = roundedIntPoint(renderListBox->absoluteToLocal(mouseEvent->absoluteLocation(), MapCoordinatesMode::UseTransforms));
         int listIndex = renderListBox->listIndexAtOffset(toIntSize(localOffset));
         if (listIndex >= 0) {
             if (!isDisabledFormControl()) {
@@ -1791,7 +1871,7 @@ void HTMLSelectElement::listBoxDefaultEventHandler(Event& event)
         if (mouseEvent->button() != MouseButton::Left || !mouseEvent->buttonDown())
             return;
 
-        IntPoint localOffset = roundedIntPoint(renderListBox->absoluteToLocal(mouseEvent->absoluteLocation(), UseTransforms));
+        IntPoint localOffset = roundedIntPoint(renderListBox->absoluteToLocal(mouseEvent->absoluteLocation(), MapCoordinatesMode::UseTransforms));
         int listIndex = renderListBox->listIndexAtOffset(toIntSize(localOffset));
         if (listIndex >= 0) {
             if (!isDisabledFormControl()) {
@@ -1808,15 +1888,25 @@ void HTMLSelectElement::listBoxDefaultEventHandler(Event& event)
                     updateListBoxSelection(true);
                 }
             }
+            if (frame) {
+                frame->eventHandler().setCapturingMouseEventsElement(this);
+                m_isCapturingMouseEvents = true;
+            }
+
             mouseEvent->setDefaultHandled();
         }
-    } else if (event.type() == eventNames.mouseupEvent && mouseEvent && mouseEvent->button() == MouseButton::Left && frame && frame->eventHandler().autoscrollRenderer() != renderer()) {
-        // This click or drag event was not over any of the options.
+    } else if (event.type() == eventNames.mouseupEvent && mouseEvent && mouseEvent->button() == MouseButton::Left && frame) {
+        if (m_isCapturingMouseEvents) {
+            frame->eventHandler().setCapturingMouseEventsElement(nullptr);
+            m_isCapturingMouseEvents = false;
+        }
+        // If this select is autoscrolling, stopAutoscroll() will call
+        // listBoxOnChange() when the autoscroll timer stops,
+        // so avoid calling it here.
+        if (frame->eventHandler().autoscrollRenderer() == renderer())
+            return;
         if (m_lastOnChangeSelection.isEmpty())
             return;
-        // This makes sure we fire dispatchFormControlChangeEvent for a single
-        // click. For drag selection, onChange will fire when the autoscroll
-        // timer stops.
         listBoxOnChange();
     } else if (event.type() == eventNames.keydownEvent) {
         RefPtr keyboardEvent = dynamicDowncast<KeyboardEvent>(event);
@@ -2079,11 +2169,17 @@ void HTMLSelectElement::showPopup()
         m_popup = document().page()->chrome().createPopupMenu(*this);
     setPopupIsVisible(true);
 
+    // Ensure layout is up-to-date before computing the element location.
+    protect(document())->updateLayout();
+
     // Compute the top left taking transforms into account, but use
     // the actual width of the element to size the popup.
-    FloatPoint absTopLeft = renderer->localToAbsolute(FloatPoint(), UseTransforms);
+    FloatPoint absTopLeft = renderer->localToAbsolute(FloatPoint(), MapCoordinatesMode::UseTransforms);
+    m_lastPopupLocationForTesting = absTopLeft;
+
     IntRect absBounds = renderer->absoluteBoundingBoxRectIgnoringTransforms();
     absBounds.setLocation(roundedIntPoint(absTopLeft));
+
     protect(m_popup)->show(absBounds, *frameView, optionToListIndex(selectedIndex())); // May run JS.
 }
 

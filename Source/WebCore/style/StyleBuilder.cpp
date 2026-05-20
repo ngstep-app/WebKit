@@ -35,6 +35,7 @@
 #include "CSSFontSelector.h"
 #include "CSSPaintImageValue.h"
 #include "CSSPropertyParser.h"
+#include "CSSPropertyParserConsumer+Ident.h"
 #include "CSSRegisteredCustomProperty.h"
 #include "CSSShorthandSubstitutionValue.h"
 #include "CSSValuePair.h"
@@ -98,8 +99,8 @@ static const StyleProperties* NODELETE positionTryFallbackProperties(const Build
     return context.positionTryFallback ? context.positionTryFallback->properties.get() : nullptr;
 }
 
-Builder::Builder(RenderStyle& style, BuilderContext&& context, const MatchResult& matchResult, PropertyCascade::IncludedProperties&& includedProperties, const HashSet<AnimatableCSSProperty>* animatedPropertes)
-    : m_cascade(matchResult, WTF::move(includedProperties), animatedPropertes, positionTryFallbackProperties(context))
+Builder::Builder(RenderStyle& style, BuilderContext&& context, const MatchResult& matchResult, PropertyCascade::IncludedProperties&& includedProperties, const HashMap<AnimatableCSSProperty, EnumSet<PropertyCascade::AnimationSource>>* animatedProperties)
+    : m_cascade(matchResult, WTF::move(includedProperties), animatedProperties, positionTryFallbackProperties(context))
     , m_state(BuilderState::create(style, WTF::move(context)))
 {
 }
@@ -232,22 +233,15 @@ void Builder::applyCustomPropertyImpl(const AtomString& name, const PropertyCasc
 
     Ref customPropertyValue = downcast<CSSCustomPropertyValue>(*property.cssValue[SelectorChecker::MatchDefault]);
 
-    bool inCycle = !m_state->m_inProgressCustomProperties.add(name).isNewEntry;
-    if (inCycle) {
-        auto isNewCycle = m_state->m_inCycleCustomProperties.add(name).isNewEntry;
-        if (isNewCycle) {
-            // Continue resolving dependencies so we detect cycles for them as well.
-            resolveCustomPropertyValue(customPropertyValue.get());
-        }
-        return;
-    }
+    // https://drafts.csswg.org/css-values-5/#guarded
+    auto guard = m_state->guardSubstitutionContext({ SubstitutionContext::Type::Property, name });
 
-    // There may be multiple cycles through the same property. Avoid interference from any previously detected cycles.
-    auto savedInCycleProperties = std::exchange(m_state->m_inCycleCustomProperties, { });
+    if (guard.isCyclicContext())
+        return;
 
     auto createInvalidOrUnset = [&] -> Variant<Ref<const Style::CustomProperty>, CSSWideKeyword> {
         // https://drafts.csswg.org/css-variables-2/#invalid-variables
-        auto* registered = m_state->document().customPropertyRegistry().get(name);
+        auto* registered = m_state->registeredProperty(name);
         // The property is a non-registered custom property:
         // The property is a registered custom property with universal syntax:
         // The computed value is the guaranteed-invalid value.
@@ -263,14 +257,13 @@ void Builder::applyCustomPropertyImpl(const AtomString& name, const PropertyCasc
 
     auto resolvedValue = resolveCustomPropertyValue(customPropertyValue.get());
 
-    if (!resolvedValue || m_state->m_inCycleCustomProperties.contains(name))
+    // If the context became cyclic during resolution, the value is invalid.
+    if (!resolvedValue || guard.isCyclicContext())
         resolvedValue = createInvalidOrUnset();
 
     applyCustomProperty(name, WTF::move(*resolvedValue));
 
-    AtomString takenName = m_state->m_inProgressCustomProperties.take(name);
-    m_state->m_appliedCustomProperties.add(WTF::move(takenName));
-    m_state->m_inCycleCustomProperties.addAll(WTF::move(savedInCycleProperties));
+    m_state->m_appliedCustomProperties.add(name);
 }
 
 inline void Builder::applyCascadeProperty(const PropertyCascade::Property& property)
@@ -414,7 +407,7 @@ void Builder::applyProperty(CSSPropertyID id, CSSValue& value, SelectorChecker::
         style.setHasExplicitlyInheritedProperties();
 
     if (auto* paintImageValue = dynamicDowncast<CSSPaintImageValue>(valueToApply.get())) {
-        auto& name = paintImageValue->name();
+        auto& name = paintImageValue->name().value;
         if (auto* paintWorklet = const_cast<Document&>(m_state->document()).paintWorkletGlobalScopeForName(name)) {
             Locker locker { paintWorklet->paintDefinitionLock() };
             if (auto* registration = paintWorklet->paintDefinitionMap().get(name)) {
@@ -448,7 +441,7 @@ void Builder::applyCustomProperty(const AtomString& name, Variant<Ref<const Styl
 {
     auto& style = m_state->style();
 
-    auto registeredCustomProperty = m_state->document().customPropertyRegistry().get(name);
+    auto registeredCustomProperty = m_state->registeredProperty(name);
 
     auto applyValue = [&](Ref<const CustomProperty>&& valueToApply) {
         bool isInherited = !registeredCustomProperty || registeredCustomProperty->inherits;
@@ -589,7 +582,7 @@ Ref<CSSValue> Builder::resolveSubstitutionFunctions(CSSPropertyID propertyID, CS
     // https://drafts.csswg.org/css-variables-2/#invalid-variables
     // ...as if the property’s value had been specified as the unset keyword.
     if (!variableValue || m_state->m_invalidAtComputedValueTimeProperties.get(propertyID))
-        return CSSPrimitiveValue::create(CSSValueUnset);
+        return CSSKeywordValue::create(CSSValueUnset);
 
     return *variableValue;
 }
@@ -603,7 +596,7 @@ RefPtr<const CustomProperty> Builder::resolveCustomPropertyForContainerQueries(c
     return WTF::switchOn(*resolvedValue,
         [&](const CSSWideKeyword& keyword) -> RefPtr<const CustomProperty> {
             auto name = value.name();
-            auto* registered = m_state->document().customPropertyRegistry().get(name);
+            auto* registered = m_state->registeredProperty(name);
             bool isInherited = !registered || registered->inherits;
 
             auto initial = [&]() -> RefPtr<const CustomProperty> {
@@ -646,6 +639,24 @@ RefPtr<const CustomProperty> Builder::resolveCustomPropertyForContainerQueries(c
     );
 }
 
+RefPtr<const CustomProperty> Builder::resolveFunctionResult(const CSSCustomPropertyValue& value)
+{
+    SetForScope resultScope(m_state->m_currentProperty, &m_cascade.functionResultProperty());
+
+    auto resolvedValue = resolveCustomPropertyValue(const_cast<CSSCustomPropertyValue&>(value));
+    if (!resolvedValue)
+        return nullptr;
+
+    return WTF::switchOn(*resolvedValue,
+        [&](const CSSWideKeyword&) -> RefPtr<const CustomProperty> {
+            return nullptr;
+        },
+        [](const Ref<const CustomProperty>& resolved) -> RefPtr<const CustomProperty> {
+            return resolved.copyRef();
+        }
+    );
+}
+
 std::optional<Variant<Ref<const Style::CustomProperty>, CSSWideKeyword>> Builder::resolveCustomPropertyValue(CSSCustomPropertyValue& value)
 {
     auto name = value.name();
@@ -653,8 +664,7 @@ std::optional<Variant<Ref<const Style::CustomProperty>, CSSWideKeyword>> Builder
     if (auto keyword = value.tryCSSWideKeyword())
         return { { *keyword } };
 
-    auto* registered = m_state->document().customPropertyRegistry().get(name);
-
+    auto* registered = m_state->registeredProperty(name);
     auto preResolved = switchOn(value.value(),
         [&](const Ref<CSSSubstitutionValue>&) -> std::optional<Variant<Ref<const Style::CustomProperty>, CSSWideKeyword>> {
             return { };
@@ -691,7 +701,9 @@ std::optional<Variant<Ref<const Style::CustomProperty>, CSSWideKeyword>> Builder
 
     if (!registered) {
         // CSS-wide keywords are allowed in var() fallbacks of unregistered properties.
-        if (auto keyword = CSSPropertyParser::parseCSSWideKeyword(resolvedData->tokens()))
+        auto tokens = resolvedData->tokenRange();
+        tokens.consumeWhitespace();
+        if (auto keyword = CSSPropertyParserHelpers::consumeCSSWideKeyword(tokens))
             return { { *keyword } };
 
         return { { CustomProperty::createForVariableData(name, *resolvedData) } };

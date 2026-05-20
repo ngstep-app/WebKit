@@ -41,6 +41,10 @@
 #include "B3SlotBaseValue.h"
 #include "B3ValueInlines.h"
 #include "B3ValueKeyInlines.h"
+#include "B3WasmArrayGetValue.h"
+#include "B3WasmArrayLengthValue.h"
+#include "B3WasmArrayNewValue.h"
+#include "B3WasmArraySetValue.h"
 #include "B3WasmBoundsCheckValue.h"
 #include "B3WasmRefTypeCheckValue.h"
 #include "B3WasmStructGetValue.h"
@@ -791,6 +795,11 @@ Effects Value::effects() const
     case VectorRelaxedMAdd:
     case VectorRelaxedNMAdd:
     case VectorRelaxedLaneSelect:
+    case VectorRelaxedMin:
+    case VectorRelaxedMax:
+    case VectorRelaxedQ15Mulr:
+    case VectorRelaxedDotI8x16I7x16:
+    case VectorRelaxedDotI8x16I7x16Add:
         break;
     case Div:
     case UDiv:
@@ -905,6 +914,29 @@ Effects Value::effects() const
         result.writes = HeapRange::top();
         result.exitsSideways = true;
         break;
+    case WasmArrayGet: {
+        const auto* derived = as<WasmArrayGetValue>();
+        result.reads = derived->range();
+        result.controlDependent = true;
+        result.readsMutability = derived->mutability();
+        break;
+    }
+    case WasmArraySet: {
+        const auto* derived = as<WasmArraySetValue>();
+        result.writes = derived->range();
+        result.controlDependent = true;
+        break;
+    }
+    case WasmArrayNew:
+        result.reads = HeapRange::top();
+        result.writes = HeapRange::top();
+        result.exitsSideways = true;
+        break;
+    case WasmArrayLength:
+        result.reads = as<WasmArrayLengthValue>()->range();
+        result.controlDependent = true;
+        result.readsMutability = Mutability::Immutable;
+        break;
     case WasmRefCast:
         result.reads = HeapRange::top();
         result.controlDependent = true;
@@ -972,6 +1004,7 @@ ValueKey Value::key() const
     case Neg:
     case PurifyNaN:
     case Depend:
+    case WasmArrayLength:
         return ValueKey(kind(), type(), child(0));
     case Add:
     case Sub:
@@ -1100,6 +1133,10 @@ ValueKey Value::key() const
     case VectorZipHigher:
     case VectorTransposeEven:
     case VectorTransposeOdd:
+    case VectorRelaxedMin:
+    case VectorRelaxedMax:
+    case VectorRelaxedQ15Mulr:
+    case VectorRelaxedDotI8x16I7x16:
         numChildrenForKind(kind(), 2);
         return ValueKey(kind(), type(), as<SIMDValue>()->simdInfo(), child(0), child(1));
     case VectorReplaceLane:
@@ -1111,6 +1148,7 @@ ValueKey Value::key() const
     case VectorRelaxedNMAdd:
     case VectorBitwiseSelect:
     case VectorRelaxedLaneSelect:
+    case VectorRelaxedDotI8x16I7x16Add:
         numChildrenForKind(kind(), 3);
         return ValueKey(kind(), type(), as<SIMDValue>()->simdInfo(), child(0), child(1), child(2));
     case VectorSwizzle:
@@ -1124,9 +1162,9 @@ ValueKey Value::key() const
         Value* child2 = wasmValue->hasTargetStructureID() ? child(1) : nullptr;
 
         // Check if RTT is present and set HasRTT flag accordingly
-        if (wasmValue->targetRTT()) {
+        if (RefPtr targetRTT = wasmValue->targetRTT()) {
             flags.add(WasmRefTypeCheckFlag::HasRTT);
-            return ValueKey(kind(), type(), child(0), child2, flags.toRaw(), wasmValue->targetRTT());
+            return ValueKey(kind(), type(), child(0), child2, flags.toRaw(), targetRTT.get());
         }
 
         // Use targetHeapType when RTT is null (builtin types)
@@ -1156,6 +1194,9 @@ ValueKey Value::key() const
     case WasmStructGet:
     case WasmStructSet:
     case WasmStructNew:
+    case WasmArrayGet:
+    case WasmArraySet:
+    case WasmArrayNew:
     case MemoryCopy:
     case MemoryFill:
     case Fence:

@@ -26,18 +26,20 @@
 #pragma once
 
 #include <WebCore/FloatSize.h>
-#include <WebCore/VideoPlaybackQualityMetrics.h>
+#include <WebCore/MediaTimeUpdateData.h>
 #include <wtf/MediaTime.h>
+#include <wtf/Seconds.h>
 
 namespace WebKit {
 
+// Cadence of GPU-side time observer that pushes RemoteAudioVideoRendererState
+// updates to the WebContent process. The client-side TimeProgressEstimator
+// caps its between-update extrapolation to this same interval.
+constexpr Seconds remoteAudioVideoRendererUpdateInterval = 250_ms;
+
 struct RemoteAudioVideoRendererState {
-    MediaTime currentTime { MediaTime::zeroTime() };
+    WebCore::MediaTimeUpdateData timeUpdateData { };
     bool paused { false };
-    bool seeking { false };
-    bool timeIsProgressing { false };
-    double effectiveRate { 0 };
-    std::optional<WebCore::VideoPlaybackQualityMetrics> videoPlaybackQualityMetrics { };
 };
 
 }

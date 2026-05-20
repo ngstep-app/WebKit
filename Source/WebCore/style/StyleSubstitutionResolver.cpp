@@ -34,6 +34,7 @@
 #include "CSSPropertyParserConsumer+Primitives.h"
 #include "CSSRegisteredCustomProperty.h"
 #include "CSSSelectorParser.h"
+#include "CSSSerializationContext.h"
 #include "CSSShorthandSubstitutionValue.h"
 #include "CSSSubstitutionValue.h"
 #include "CSSTokenizer.h"
@@ -45,12 +46,15 @@
 #include "Document.h"
 #include "Element.h"
 #include "HTMLSelectElement.h"
+#include "MatchResult.h"
+#include "MutableStyleProperties.h"
 #include "RenderStyle+GettersInlines.h"
 #include "RenderStyle+SettersInlines.h"
 #include "SelectPopoverElement.h"
 #include "StyleBuilder.h"
 #include "StyleCustomProperty.h"
 #include "StyleCustomPropertyRegistry.h"
+#include "StyleLocalPropertyRegistry.h"
 #include "StyleResolver.h"
 #include "StyleScope.h"
 
@@ -94,7 +98,7 @@ auto SubstitutionResolver::substituteVariableFallback(const AtomString& variable
     auto tokens = substituteTokenRange(range, context);
 
     if (functionId == CSSValueVar) {
-        auto* registered = m_styleBuilder.state().document().customPropertyRegistry().get(variableName);
+        auto* registered = m_styleBuilder.state().registeredProperty(variableName);
         if (registered && !registered->syntax.isUniversal()) {
             // https://drafts.css-houdini.org/css-properties-values-api/#fallbacks-in-var-references
             // The fallback value must match the syntax definition of the custom property being referenced,
@@ -165,7 +169,82 @@ bool SubstitutionResolver::substituteVariableFunction(CSSParserTokenRange range,
     return true;
 }
 
-bool SubstitutionResolver::substituteDashedFunction(StringView functionName, CSSParserTokenRange, Vector<CSSParserToken>& tokens)
+// https://drafts.csswg.org/css-mixins/#evaluate-a-custom-function
+// Registers each parameter with its type, resolves argument styles, then updates registrations
+// to universal syntax with resolved values as initial values.
+// Returns resolved argument properties to prepend to the body rule, or nullptr on failure.
+RefPtr<MutableStyleProperties> SubstitutionResolver::resolveAndRegisterDashedFunctionArguments(const Vector<StyleRuleFunction::Parameter>& parameters, const Vector<Vector<CSSParserToken>>& arguments, LocalPropertyRegistry& registrations)
+{
+    // "For each function parameter, create a custom property registration with the parameter's type."
+    auto argumentRegistrations = LocalPropertyRegistry { };
+    for (auto& parameter : parameters) {
+        argumentRegistrations.add({
+            .name = AtomString { parameter.name },
+            .syntax = parameter.type,
+            .inherits = true,
+        });
+    }
+
+    // "Let argument rule be an initially empty style rule" with first-valid(arg value, default value) for each parameter.
+    auto argumentRule = MutableStyleProperties::create();
+    for (unsigned i = 0; i < parameters.size(); ++i) {
+        auto& parameter = parameters[i];
+        auto argumentData = [&] -> RefPtr<CSSVariableData> {
+            if (i < arguments.size() && !arguments[i].isEmpty())
+                return CSSVariableData::create(CSSParserTokenRange { arguments[i] }, m_substitutionValue->context());
+            return parameter.defaultValue;
+        }();
+        if (!argumentData)
+            return nullptr;
+
+        auto value = CSSCustomPropertyValue::createSyntaxAll(parameter.name, argumentData.releaseNonNull());
+        argumentRule->addParsedProperty({ CSSPropertyCustom, WTF::move(value) });
+    }
+
+    // "Resolve function styles using custom function, argument rule, registrations, and calling context."
+    Ref parentMatchResult = m_styleBuilder.matchResult();
+
+    auto argumentMatchResult = MatchResult::create();
+    argumentMatchResult->copyDeclarationsFrom(parentMatchResult);
+    argumentMatchResult->authorDeclarations.append({ WTF::move(argumentRule) });
+
+    auto builderContext = BuilderContext {
+        .document = m_styleBuilder.state().document(),
+        .parentStyle = &m_styleBuilder.state().renderStyle(),
+        .element = m_styleBuilder.state().element(),
+        .localPropertyRegistry = &argumentRegistrations
+    };
+
+    auto argumentStyles = RenderStyle::createPtr();
+    Builder argumentBuilder(*argumentStyles, WTF::move(builderContext), argumentMatchResult.get());
+    argumentBuilder.state().addGuardedFunctionContexts(m_styleBuilder.state());
+    for (auto& parameter : parameters)
+        argumentBuilder.applyCustomProperty(parameter.name);
+
+    // "Set its initial value to the corresponding value in argument styles, set its syntax to the universal syntax definition,
+    // and prepend a custom property to body rule with the property name and value in argument styles."
+    auto resolvedArgumentProperties = MutableStyleProperties::create();
+    for (auto& parameter : parameters) {
+        RefPtr resolvedValue = argumentStyles->customPropertyValue(parameter.name);
+
+        registrations.add({
+            .name = AtomString { parameter.name },
+            .syntax = CSSCustomPropertySyntax::universal(),
+            .inherits = true,
+            .initialValue = resolvedValue,
+        });
+
+        if (resolvedValue && !resolvedValue->isGuaranteedInvalid()) {
+            auto tokenData = CSSVariableData::create(CSSParserTokenRange { resolvedValue->tokens() });
+            auto value = CSSCustomPropertyValue::createSyntaxAll(parameter.name, WTF::move(tokenData));
+            resolvedArgumentProperties->addParsedProperty({ CSSPropertyCustom, WTF::move(value) });
+        }
+    }
+
+    return resolvedArgumentProperties;
+}
+
+bool SubstitutionResolver::substituteDashedFunction(StringView functionName, CSSParserTokenRange range, Vector<CSSParserToken>& tokens)
 {
     // https://drafts.csswg.org/css-mixins/#evaluating-custom-functions
 
@@ -184,15 +263,85 @@ bool SubstitutionResolver::substituteDashedFunction(StringView functionName, CSS
     if (!customFunction)
         return false;
 
-    // FIXME: Evaluate the function instead of just substituting.
+    auto guard = m_styleBuilder.state().guardSubstitutionContext({ SubstitutionContext::Type::Function, scopedFunctionName.name });
 
-    auto properties = customFunction->properties;
-    auto resultValue = dynamicDowncast<CSSCustomPropertyValue>(properties->getPropertyCSSValue(CSSPropertyResult));
+    if (guard.isCyclicContext())
+        return false;
+
+    auto& parameters = customFunction->parameters;
+
+    // Parse and substitute arguments.
+    auto substitutedArguments = [&] -> std::optional<Vector<Vector<CSSParserToken>>> {
+        Vector<Vector<CSSParserToken>> result;
+        for (unsigned i = 0; !range.atEnd(); ++i) {
+            auto argumentRange = CSSPropertyParserHelpers::consumeArgument(range, i);
+            if (!argumentRange)
+                break;
+            auto substituted = substituteTokenRange(*argumentRange, m_substitutionValue->context());
+            if (!substituted)
+                return { };
+            result.append(WTF::move(*substituted));
+        }
+        if (result.size() > parameters.size())
+            return { };
+        return result;
+    }();
+
+    if (!substitutedArguments)
+        return false;
+
+    auto resultValue = dynamicDowncast<CSSCustomPropertyValue>(protect(customFunction->properties)->getPropertyCSSValue(CSSPropertyResult));
     if (!resultValue)
         return false;
 
-    auto data = resultValue->asVariableData();
-    tokens.appendVector(data->tokens());
+    // "Let registrations be an initially empty set of custom property registrations."
+    auto registrations = LocalPropertyRegistry { };
+
+    auto resolvedArgumentProperties = resolveAndRegisterDashedFunctionArguments(parameters, *substitutedArguments, registrations);
+    if (!resolvedArgumentProperties)
+        return false;
+
+    // "If custom function has a return type, create a custom property registration with the name 'result'."
+    if (!customFunction->returnType.isUniversal()) {
+        registrations.add({
+            .name = "result"_s,
+            .syntax = customFunction->returnType,
+            .inherits = false,
+        });
+    }
+
+    // "Let body rule be the function body."
+    Ref parentMatchResult = m_styleBuilder.matchResult();
+
+    auto bodyMatchResult = MatchResult::create();
+    bodyMatchResult->copyDeclarationsFrom(parentMatchResult);
+    bodyMatchResult->authorDeclarations.append({ *resolvedArgumentProperties });
+    bodyMatchResult->authorDeclarations.append({ customFunction->properties });
+
+    // "Resolve function styles using custom function, body rule, registrations, and calling context."
+    auto builderContext = BuilderContext {
+        .document = m_styleBuilder.state().document(),
+        .parentStyle = &m_styleBuilder.state().renderStyle(),
+        .element = m_styleBuilder.state().element(),
+        .localPropertyRegistry = &registrations
+    };
+
+    auto bodyStyles = RenderStyle::createPtr();
+    Builder bodyBuilder(*bodyStyles, WTF::move(builderContext), bodyMatchResult.get());
+    bodyBuilder.state().addGuardedFunctionContexts(m_styleBuilder.state());
+
+    // "Return the value of the result property in body styles."
+    auto resolvedResult = bodyBuilder.resolveFunctionResult(*resultValue);
+    if (!resolvedResult)
+        return false;
+
+    // "If substitution context is marked as cyclic, return the guaranteed-invalid value."
+    if (guard.isCyclicContext())
+        return false;
+
+    // Tokens reference resolvedResult's string backing; keep it alive until CSSVariableData re-captures.
+    tokens.appendVector(resolvedResult->tokens());
+    m_intermediateCustomProperties.append(WTF::move(resolvedResult));
     return true;
 }
 
@@ -250,7 +399,7 @@ bool SubstitutionResolver::substituteAttrFunction(CSSParserTokenRange argumentsR
         CSSCustomPropertySyntax syntax { };
     };
 
-    auto consumeAttrType = [&]() -> std::optional<AttrTypeResult> {
+    auto consumeAttrType = [&] -> std::optional<AttrTypeResult> {
         if (range.peek().type() == FunctionToken) {
             auto syntax = CSSCustomPropertySyntax::consumeType(range);
             if (!syntax)
@@ -300,24 +449,26 @@ bool SubstitutionResolver::substituteAttrFunction(CSSParserTokenRange argumentsR
     if (!element)
         return false;
 
-    auto& attributeValue = element->getAttribute(QualifiedName { nullAtom(), attributeName, nullAtom() });
+    // Resolve namespace prefix to URI.
+    auto namespaceURI = [&] -> AtomString {
+        auto& prefix = parsedName->namespacePrefix;
+        if (prefix.isEmpty())
+            return nullAtom();
+        return m_substitutionValue->m_namespacePrefixMap.get(prefix);
+    }();
 
-    // Check if this attribute is already being substituted (cycle detection).
-    auto isInCycle = !m_styleBuilder.state().m_inProgressAttrAttributes.add(attributeName).isNewEntry;
-    auto removeOnExit = makeScopeExit([&] {
-        if (!isInCycle)
-            m_styleBuilder.state().m_inProgressAttrAttributes.remove(attributeName);
-    });
+    // https://drafts.csswg.org/css-values-5/#guarded
+    auto guard = m_styleBuilder.state().guardSubstitutionContext({ SubstitutionContext::Type::Attribute, attributeName });
 
     // Resolve fallback lazily to avoid var() cycle detection side effects during primary resolution.
-    auto resolveFallback = [&]() -> std::optional<Vector<CSSParserToken>> {
+    auto resolveFallback = [&] -> std::optional<Vector<CSSParserToken>> {
         if (!attrArgs->fallbackRange)
             return { };
         return substituteTokenRange(*attrArgs->fallbackRange, context);
     };
 
     // https://drafts.csswg.org/css-values-5/#replace-an-attr-function
-    auto substituteFailure = [&]() -> bool {
+    auto substituteFailure = [&] -> bool {
         // "If second arg is null, and syntax was omitted, return an empty CSS <string>."
         if (!attrArgs->fallbackRange && !parsedAttrType) {
             tokens.append(CSSParserToken(StringToken, emptyAtom()));
@@ -332,18 +483,17 @@ bool SubstitutionResolver::substituteAttrFunction(CSSParserTokenRange argumentsR
         return true;
     };
 
-    if (isInCycle) {
-        // Mark as in-cycle within attr() type() context for transitive detection.
-        if (m_isInAttrTypeSyntax)
-            m_styleBuilder.state().m_inCycleAttrAttributes.add(attributeName);
+    // If a non-empty prefix was given but couldn't be resolved, trigger fallback.
+    if (!parsedName->namespacePrefix.isEmpty() && namespaceURI.isNull())
+        return substituteFailure();
+
+    if (guard.isCyclicContext()) {
         if (parsedAttrType)
             return false;
         return substituteFailure();
     }
 
-    // FIXME: Resolve namespace prefixes using the stylesheet's @namespace rules instead of always triggering fallback.
-    if (!parsedName->namespacePrefix.isNull())
-        return substituteFailure();
+    auto& attributeValue = element->getAttribute(QualifiedName { nullAtom(), attributeName, namespaceURI });
 
     if (attributeValue.isNull())
         return substituteFailure();
@@ -391,7 +541,7 @@ bool SubstitutionResolver::substituteAttrFunction(CSSParserTokenRange argumentsR
         if (attrType == AttrType::Percentage)
             token.convertToPercentage();
         else
-            token.convertToDimensionWithUnit(CSSPrimitiveValue::unitTypeString(parsedAttrType->unitType));
+            token.convertToDimensionWithUnit(parsedAttrType->unitType);
         tokens.append(token);
         return true;
     }
@@ -403,24 +553,32 @@ bool SubstitutionResolver::substituteAttrFunction(CSSParserTokenRange argumentsR
         CSSTokenizer tokenizer(attributeValue.string());
         m_intermediateTokenStrings.appendVector(tokenizer.escapedStringsForAdoption());
 
-        SetForScope isInAttrTypeSyntax(m_isInAttrTypeSyntax, true);
-
         auto substitutedTokens = substituteTokenRange(tokenizer.tokenRange(), context);
         if (!substitutedTokens)
             return substituteFailure();
 
-        // If this attribute was found to be in a cycle during substitution,
-        // the attr value transitively references itself.
-        if (m_styleBuilder.state().m_inCycleAttrAttributes.contains(attributeName))
+        // If the context became cyclic during substitution, the value is invalid.
+        if (guard.isCyclicContext())
             return substituteFailure();
 
-        if (!parsedAttrType->syntax.isUniversal()) {
-            CSSParserTokenRange substitutedRange(*substitutedTokens);
-            if (!CSSPropertyParser::isValidCustomPropertyValueForSyntax(parsedAttrType->syntax, substitutedRange, context))
-                return substituteFailure();
+        if (parsedAttrType->syntax.isUniversal()) {
+            tokens.appendVector(*substitutedTokens);
+            return true;
         }
 
-        tokens.appendVector(*substitutedTokens);
+        // Parse against the syntax and re-tokenize from the normalized serialization.
+        CSSParserTokenRange substitutedRange(*substitutedTokens);
+        auto parsedValue = CSSPropertyParser::parseWithSyntax(parsedAttrType->syntax, substitutedRange, context);
+        if (!parsedValue)
+            return substituteFailure();
+
+        auto serialized = parsedValue->cssText(CSS::defaultSerializationContext());
+        CSSTokenizer resultTokenizer(serialized);
+        m_intermediateTokenStrings.appendVector(resultTokenizer.escapedStringsForAdoption());
+        m_intermediateTokenStrings.append(WTF::move(serialized));
+
+        tokens.append(resultTokenizer.tokenRange().span());
+
         return true;
     }
     }
@@ -547,6 +705,7 @@ RefPtr<CSSVariableData> SubstitutionResolver::substitute(const CSSSubstitutionVa
 {
     m_isAttrTainted = false;
     m_hasTaintedURL = false;
+    m_substitutionValue = &value;
 
     if (auto data = trySimpleSubstitution(value)) {
         propagateAttrTaint(data->isAttrTainted(), data->tokens());
@@ -557,11 +716,13 @@ RefPtr<CSSVariableData> SubstitutionResolver::substitute(const CSSSubstitutionVa
     auto substitutedTokens = substituteTokenRange(value.m_data->tokenRange(), context);
     if (!substitutedTokens) {
         m_intermediateTokenStrings.clear();
+        m_intermediateCustomProperties.clear();
         return nullptr;
     }
 
     auto data = CSSVariableData::create(*substitutedTokens, m_isAttrTainted ? IsAttrTainted::Yes : IsAttrTainted::No, context);
     m_intermediateTokenStrings.clear();
+    m_intermediateCustomProperties.clear();
     return data;
 }
 

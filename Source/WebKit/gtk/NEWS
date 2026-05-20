@@ -1,4 +1,32 @@
 ================
+WebKitGTK 2.53.2
+================
+
+What's new in WebKitGTK 2.53.2?
+
+  - Only use DMA-BUF mapping for writing to the GPU atlas when possible.
+  - Do not resolve '-apple-system' font to default system font.
+  - Set real time limits when not using the portal.
+  - Report support for supported non-AAC mp4a codecs.
+  - Fix several crashes and rendering issues.
+
+================
+WebKitGTK 2.53.1
+================
+
+What's new in WebKitGTK 2.53.1?
+
+  - Remove the option to use cairo for 2D rendering.
+  - Implement GPU atlas creation and replay substitution for batched raster image uploads.
+  - Improved non accelerated composited mode by using the same buffer sharing
+    implementation as accelerated mode.
+  - The on-demand hardware acceleration policy is now deprecated in GTK3 API.
+  - Add new improved API for page favicons.
+  - Add webkit_feature_list_find() to public API.
+  - Support PGO features in regular CMake builds.
+  - Fix several crashes and rendering issues.
+
+================
 WebKitGTK 2.51.4
 ================
 

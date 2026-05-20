@@ -291,7 +291,7 @@ const LayoutScrollSnapOffsetsInfo* ScrollAnimator::snapOffsetsInfo() const
 
 FloatPoint ScrollAnimator::scrollOffset() const
 {
-    return protect(scrollableArea())->scrollOffsetFromPosition(roundedIntPoint(currentPosition()));
+    return scrollableArea().scrollOffsetFromPosition(roundedIntPoint(currentPosition()));
 }
 
 bool ScrollAnimator::allowsHorizontalScrolling() const
@@ -441,10 +441,13 @@ FloatPoint ScrollAnimator::scrollOffsetAdjustedForSnapping(const FloatPoint& off
     if (!m_scrollController.usesScrollSnap())
         return offset;
 
-    return {
+    auto result = FloatPoint {
         scrollOffsetAdjustedForSnapping(ScrollEventAxis::Horizontal, offset, method),
         scrollOffsetAdjustedForSnapping(ScrollEventAxis::Vertical, offset, method)
     };
+
+    LOG_WITH_STREAM(ScrollSnap, stream << "ScrollAnimator::scrollOffsetAdjustedForSnapping() - offset " << offset << " adjusted to  " << result);
+    return result;
 }
 
 float ScrollAnimator::scrollOffsetAdjustedForSnapping(ScrollEventAxis axis, const FloatPoint& newOffset, ScrollSnapPointSelectionMethod method) const

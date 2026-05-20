@@ -44,12 +44,12 @@
 #pragma once
 
 #include <JavaScriptCore/DateInstanceCache.h>
+#include <JavaScriptCore/JSCTimeZone.h>
 #include <JavaScriptCore/JSExportMacros.h>
 #include <wtf/Compiler.h>
 #include <wtf/DateMath.h>
 #include <wtf/GregorianDateTime.h>
 #include <wtf/Platform.h>
-#include <wtf/SaturatedArithmetic.h>
 #include <wtf/TZoneMalloc.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
@@ -112,7 +112,7 @@ public:
 
     JS_EXPORT_PRIVATE void resetIfNecessarySlow();
 
-    String defaultTimeZone();
+    TimeZone defaultTimeZone();
     String timeZoneDisplayName(bool isDST);
     Ref<DateInstanceData> NODELETE cachedDateInstanceData(double millisecondsFromEpoch);
 

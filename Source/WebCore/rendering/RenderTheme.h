@@ -128,6 +128,7 @@ public:
     virtual RefPtr<FragmentedSharedBuffer> mediaControlsImageDataForIconNameAndType(const String&, const String&) { return nullptr; }
     virtual String mediaControlsBase64StringForIconNameAndType(const String&, const String&) { return String(); }
     virtual String mediaControlsFormattedStringForDuration(double) { return String(); }
+    virtual String youTubeQuirkScript() { return { }; }
 #endif // ENABLE(VIDEO)
 #if ENABLE(ATTACHMENT_ELEMENT)
     virtual String attachmentStyleSheet() const;
@@ -219,7 +220,7 @@ public:
 
     virtual void adjustSliderThumbSize(RenderStyle&, const Element*) const { }
 
-    virtual Style::PaddingBox popupInternalPaddingBox(const RenderStyle&) const;
+    Style::PaddingBox popupInternalPaddingBox(const RenderStyle&) const;
     virtual PopupMenuStyle::Size popupMenuSize(const RenderStyle&, IntRect&) const { return PopupMenuStyle::Size::Normal; }
 
     virtual ScrollbarWidth scrollbarWidthStyleForPart(StyleAppearance) { return ScrollbarWidth::Auto; }
@@ -271,6 +272,7 @@ public:
 
 #if USE(SYSTEM_PREVIEW)
     virtual void paintSystemPreviewBadge(Image&, const PaintInfo&, const FloatRect&);
+    virtual void paintSystemPreviewBadge(const PaintInfo&, const FloatRect&);
 #endif
     virtual Seconds switchAnimationVisuallyOnDuration() const { return 0_s; }
     virtual Seconds switchAnimationHeldDuration() const { return 0_s; }
@@ -292,6 +294,9 @@ public:
     virtual bool mayNeedBleedAvoidance(const RenderStyle&) const { return true; }
 
     virtual float adjustedMaximumLogicalWidthForControl(const RenderStyle&, const Element&, float maximumLogicalWidth) const { return maximumLogicalWidth; }
+
+    // The size here is in zoomed coordinates already. If a new size is returned, it also needs to be in zoomed coordinates.
+    virtual Style::PreferredSizePair controlSize(StyleAppearance, const FontCascade&, const Style::PreferredSizePair&, float zoomFactor) const;
 
 protected:
     ControlStyle extractControlStyleForRenderer(const RenderElement&) const;
@@ -412,10 +417,9 @@ protected:
     // The font description result should have a zoomed font size.
     virtual std::optional<FontCascadeDescription> controlFont(StyleAppearance, const FontCascade&, float) const;
 
-    virtual Style::PaddingBox controlPadding(StyleAppearance, const Style::PaddingBox&, float zoomFactor) const;
+    virtual Style::PaddingBox platformPopupInternalPaddingBox(const RenderStyle&) const;
 
-    // The size here is in zoomed coordinates already. If a new size is returned, it also needs to be in zoomed coordinates.
-    virtual Style::PreferredSizePair controlSize(StyleAppearance, const FontCascade&, const Style::PreferredSizePair&, float zoomFactor) const;
+    virtual Style::PaddingBox controlPadding(StyleAppearance, const Style::PaddingBox&, float zoomFactor) const;
 
     // Returns the minimum size for a control in zoomed coordinates.
     Style::MinimumSizePair minimumControlSize(StyleAppearance, const FontCascade&, const Style::MinimumSizePair&, const Style::PreferredSizePair&, float zoomFactor) const;
@@ -506,13 +510,3 @@ private:
 };
 
 } // namespace WebCore
-
-#if PLATFORM(MAC)
-#include <WebCore/RenderThemeMac.h>
-#elif PLATFORM(IOS_FAMILY)
-#include <WebCore/RenderThemeIOS.h>
-#elif USE(THEME_ADWAITA)
-#include <WebCore/RenderThemeAdwaita.h>
-#elif PLATFORM(PLAYSTATION)
-#include <WebCore/RenderThemePlayStation.h>
-#endif

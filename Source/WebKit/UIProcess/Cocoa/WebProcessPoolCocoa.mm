@@ -47,7 +47,7 @@
 #import "SandboxUtilities.h"
 #import "TextChecker.h"
 #import "WKContentRuleListInternal.h"
-#import "WKContentRuleListStore.h"
+#import "WKContentRuleListStoreInternal.h"
 #import "WebBackForwardCache.h"
 #import "WebCompiledContentRuleList.h"
 #import "WebMemoryPressureHandler.h"
@@ -83,6 +83,7 @@
 #import <pal/system/ios/UserInterfaceIdiom.h>
 #import <sys/param.h>
 #import <wtf/BlockPtr.h>
+#import <wtf/Borrow.h>
 #import <wtf/CallbackAggregator.h>
 #import <wtf/FileSystem.h>
 #import <wtf/ProcessPrivilege.h>
@@ -124,6 +125,7 @@
 #endif
 
 #if PLATFORM(IOS_FAMILY)
+#import <WebCore/RenderThemeIOS.h>
 #import <pal/spi/ios/GraphicsServicesSPI.h>
 #import <pal/spi/ios/MobileGestaltSPI.h>
 #endif
@@ -304,7 +306,7 @@ void WebProcessPool::setMediaAccessibilityPreferences(WebProcessProxy& process)
 
 static void logProcessPoolState(const WebProcessPool& pool)
 {
-    for (Ref process : pool.processes()) {
+    for (Ref process : borrow(pool.processes()).get()) {
         WTF::TextStream processDescription;
         processDescription << process;
 
@@ -401,10 +403,6 @@ ALLOW_DEPRECATED_DECLARATIONS_END
     parameters.shouldEnableMemoryPressureReliefLogging = [defaults boolForKey:@"LogMemoryJetsamDetails"];
     parameters.shouldSuppressMemoryPressureHandler = [defaults boolForKey:WebKitSuppressMemoryPressureHandlerDefaultsKey];
 
-#if ENABLE(WEBASSEMBLY_DEBUGGER) && ENABLE(REMOTE_INSPECTOR)
-    parameters.shouldEnableWebAssemblyDebugger = process.createWasmDebuggerDebuggable();
-#endif
-
     // FIXME: This should really be configurable; we shouldn't just blindly allow read access to the UI process bundle.
     parameters.uiProcessBundleResourcePath = m_resolvedPaths.uiProcessBundleResourcePath;
     if (auto handle = SandboxExtension::createHandleWithoutResolvingPath(parameters.uiProcessBundleResourcePath, SandboxExtension::Type::ReadOnly))
@@ -479,6 +477,7 @@ ALLOW_DEPRECATED_DECLARATIONS_END
     parameters.focusRingColor = RenderThemeIOS::systemFocusRingColor();
     parameters.localizedDeviceModel = localizedDeviceModel();
     parameters.contentSizeCategory = contentSizeCategory();
+    parameters.containerTemporaryDirectory = WebsiteDataStore::defaultResolvedContainerTemporaryDirectory();
 #endif
 
     parameters.mobileGestaltExtensionHandle = process.createMobileGestaltSandboxExtensionIfNeeded();
@@ -719,7 +718,7 @@ void WebProcessPool::hardwareKeyboardAvailabilityChangedCallback(CFNotificationC
 
 void WebProcessPool::hardwareKeyboardAvailabilityChanged()
 {
-    for (Ref process : processes()) {
+    for (Ref process : borrow(this->processes()).get()) {
         auto pages = process->pages();
         for (auto& page : pages)
             page->hardwareKeyboardAvailabilityChanged(cachedHardwareKeyboardState());
@@ -1066,6 +1065,13 @@ ALLOW_DEPRECATED_DECLARATIONS_END
     removeCFNotificationObserver(kAXSEnhanceTextLegibilityChangedNotification);
     removeCFNotificationObserver(kAXSDarkenSystemColorsEnabledNotification);
     removeCFNotificationObserver(kAXSInvertColorsEnabledNotification);
+#endif
+#if ENABLE(ACCESSIBILITY_ANIMATION_CONTROL)
+    if (canLoadkAXSReduceMotionAutoplayAnimatedImagesChangedNotification())
+        removeCFNotificationObserver(getkAXSReduceMotionAutoplayAnimatedImagesChangedNotificationSingleton());
+#endif
+#if ENABLE(ACCESSIBILITY_NON_BLINKING_CURSOR)
+    removeCFNotificationObserver(kAXSPrefersNonBlinkingCursorIndicatorDidChangeNotification);
 #endif
 #if HAVE(MEDIA_ACCESSIBILITY_FRAMEWORK)
     removeCFNotificationObserver(kMAXCaptionAppearanceSettingsChangedNotification);
@@ -1472,7 +1478,13 @@ void WebProcessPool::platformCompileResourceMonitorRuleList(const String& rulesT
 {
     StringView view { rulesText };
     RetainPtr source = view.createNSStringWithoutCopying();
+
+#if ENABLE(ADVANCED_PRIVACY_PROTECTIONS)
+    auto& controller = ResourceMonitorURLsController::singleton();
+    RetainPtr store = controller.contentRuleListStore() ? WebKit::wrapper(*controller.contentRuleListStore()) : [WKContentRuleListStore defaultStore];
+#else
     RetainPtr store = [WKContentRuleListStore defaultStore];
+#endif
 
     [store compileContentRuleListForIdentifier:WebKitResourceMonitorURLsForTestingIdentifier encodedContentRuleList:source.get() completionHandler:makeBlockPtr([completionHandler = WTF::move(completionHandler)](WKContentRuleList *list, NSError *error) mutable {
         if (error || !list)

@@ -61,6 +61,8 @@
 #import "WKWebViewConfigurationInternal.h"
 #import "WKWebViewInternal.h"
 #import "WKWebpagePreferencesPrivate.h"
+#import "WKWebsiteDataRecordInternal.h"
+#import "WKWebsiteDataStoreInternal.h"
 #import "WKWebsiteDataStorePrivate.h"
 #import "WKWindowFeaturesPrivate.h"
 #import "WebExtensionAction.h"
@@ -68,6 +70,7 @@
 #import "WebExtensionContextProxyMessages.h"
 #import "WebExtensionDataType.h"
 #import "WebExtensionDynamicScripts.h"
+#import "WebExtensionMatchPattern.h"
 #import "WebExtensionMenuItemContextParameters.h"
 #import "WebExtensionPermission.h"
 #import "WebExtensionTab.h"
@@ -78,6 +81,9 @@
 #import "WebPreferences.h"
 #import "WebScriptMessageHandler.h"
 #import "WebUserContentControllerProxy.h"
+#import "WebsiteDataFetchOption.h"
+#import "WebsiteDataRecord.h"
+#import "WebsiteDataStore.h"
 #import "_WKWebExtensionDeclarativeNetRequestRule.h"
 #import "_WKWebExtensionDeclarativeNetRequestTranslator.h"
 #import <UniformTypeIdentifiers/UTType.h>
@@ -246,6 +252,20 @@ void WebExtensionContext::clearError(Error error)
     }).get());
 }
 
+void WebExtensionContext::didEncounterScriptError(const String& message, const String& sourceURL, uint32_t lineNumber, uint32_t columnNumber, WebExtensionContentWorldType)
+{
+    auto path = sourceURL.isEmpty() ? String() : URL(sourceURL).path().toString();
+    if (path.startsWith('/'))
+        path = path.substring(1);
+    auto location = !path.isEmpty() ? (columnNumber ? makeString(path, ':', lineNumber, ':', columnNumber) : makeString(path, ':', lineNumber)) : String();
+    String description;
+    if (message.isEmpty())
+        description = !location.isEmpty() ? makeString('(', location, ')') : String();
+    else
+        description = !location.isEmpty() ? makeString(message, " ("_s, location, ')') : message;
+    recordError(createError(Error::ScriptExecutionError, description));
+}
+
 Expected<bool, RefPtr<API::Error>> WebExtensionContext::load(WebExtensionController& controller, String storageDirectory)
 {
     if (isLoaded()) {
@@ -285,6 +305,8 @@ Expected<bool, RefPtr<API::Error>> WebExtensionContext::load(WebExtensionControl
         // The extension could have been unloaded before this was called.
         if (!isLoaded())
             return;
+
+        removeStaleExtensionWebsiteData();
 
         m_safeToInjectContent = true;
 
@@ -478,13 +500,90 @@ void WebExtensionContext::writeStateToStorage() const
 
 void WebExtensionContext::moveLocalStorageIfNeeded(const URL& previousBaseURL, CompletionHandler<void()>&& completionHandler)
 {
-    if (previousBaseURL == baseURL()) {
+    if (!previousBaseURL.isValid() || previousBaseURL == baseURL()) {
         completionHandler();
         return;
     }
 
     static NSSet<NSString *> *dataTypes = [NSSet setWithObjects:WKWebsiteDataTypeIndexedDBDatabases, WKWebsiteDataTypeLocalStorage, nil];
-    [webViewConfiguration().websiteDataStore _renameOrigin:previousBaseURL.createNSURL().get() to:baseURL().createNSURL().get() forDataOfTypes:dataTypes completionHandler:makeBlockPtr(WTF::move(completionHandler)).get()];
+    [webViewConfiguration().websiteDataStore _renameOrigin:previousBaseURL.createNSURL().get() to:baseURL().createNSURL().get() forDataOfTypes:dataTypes completionHandler:makeBlockPtr([this, protectedThis = Ref { *this }, previousBaseURL, completionHandler = WTF::move(completionHandler)]() mutable {
+        removeWebsiteDataForOrigin(previousBaseURL, WTF::move(completionHandler));
+    }).get()];
+}
+
+static OptionSet<WebsiteDataType> allWebsiteDataTypes()
+{
+    return toWebsiteDataTypes([WKWebsiteDataStore _allWebsiteDataTypesIncludingPrivate]);
+}
+
+void WebExtensionContext::removeWebsiteDataForOrigin(const URL& originURL, CompletionHandler<void()>&& completionHandler)
+{
+    if (!originURL.isValid())
+        return completionHandler();
+
+    RetainPtr<WKWebsiteDataStore> dataStore = webViewConfiguration().websiteDataStore;
+    RefPtr websiteDataStore = dataStore ? dataStore->_websiteDataStore.get() : nullptr;
+    if (!websiteDataStore)
+        return completionHandler();
+
+    auto origin = WebCore::SecurityOriginData::fromURLWithoutStrictOpaqueness(originURL);
+    auto dataTypes = allWebsiteDataTypes();
+
+    WebsiteDataRecord record;
+    for (auto type : dataTypes)
+        record.add(type, origin);
+
+    websiteDataStore->removeData(dataTypes, { record }, WTF::move(completionHandler));
+}
+
+void WebExtensionContext::removeStaleExtensionWebsiteData()
+{
+    if (!storageIsPersistent())
+        return;
+
+    RefPtr controller = extensionController();
+    if (!controller || !controller->markDidRemoveStaleExtensionWebsiteData())
+        return;
+
+    auto sentinelPath = FileSystem::pathByAppendingComponent(controller->configuration().storageDirectory(), "StaleExtensionOriginsCleared"_s);
+    if (FileSystem::fileExists(sentinelPath))
+        return;
+
+    RetainPtr<WKWebsiteDataStore> dataStore = webViewConfiguration().websiteDataStore;
+    RefPtr websiteDataStore = dataStore ? dataStore->_websiteDataStore.get() : nullptr;
+    if (!websiteDataStore)
+        return;
+
+    auto dataTypes = allWebsiteDataTypes();
+    websiteDataStore->fetchData(dataTypes, { WebsiteDataFetchOption::IncludeAllOrigins }, [protectedThis = Ref { *this }, dataTypes, websiteDataStore, sentinelPath](Vector<WebsiteDataRecord> records) {
+        RefPtr controller = protectedThis->extensionController();
+        if (!controller)
+            return;
+
+        auto activeExtensionURLs = controller->activeExtensionURLs();
+
+        Vector<WebsiteDataRecord> staleRecords;
+        for (auto& record : records) {
+            WebsiteDataRecord staleRecord;
+            for (auto& origin : record.origins) {
+                if (WebExtensionMatchPattern::isWebExtensionURL(origin.toURL()) && !activeExtensionURLs.contains(origin.toURL().protocolHostAndPort().convertToASCIILowercase()))
+                    staleRecord.origins.add(origin);
+            }
+            if (!staleRecord.origins.isEmpty()) {
+                staleRecord.types = record.types;
+                staleRecords.append(WTF::move(staleRecord));
+            }
+        }
+
+        if (staleRecords.isEmpty()) {
+            FileSystem::overwriteEntireFile(sentinelPath, { });
+            return;
+        }
+
+        websiteDataStore->removeData(dataTypes, staleRecords, [sentinelPath] {
+            FileSystem::overwriteEntireFile(sentinelPath, { });
+        });
+    });
 }
 
 void WebExtensionContext::invalidateStorage()
@@ -814,7 +913,7 @@ Ref<WebExtensionWindow> WebExtensionContext::getOrCreateWindow(WKWebExtensionWin
 {
     ASSERT(delegate);
 
-    for (Ref window : m_windowMap.values()) {
+    for (auto& window : m_windowMap.values()) {
         if (window->delegate() == delegate)
             return window;
     }
@@ -1003,8 +1102,7 @@ RefPtr<WebExtensionTab> WebExtensionContext::getCurrentTab(WebPageProxyIdentifie
 
     // Search open inspectors.
     for (auto [inspector, tab] : openInspectors()) {
-        Ref protectedInspector = inspector;
-        if (protectedInspector->inspectorPage()->identifier() == webPageProxyIdentifier) {
+        if (inspector->inspectorPage()->identifier() == webPageProxyIdentifier) {
             if (includeExtensionViews == IncludeExtensionViews::No)
                 return nullptr;
 
@@ -1656,10 +1754,16 @@ void WebExtensionContext::resourceLoadDidCompleteWithError(WebPageProxyIdentifie
 {
     RefPtr tab = getTab(pageID);
 
-    // If a Fetch or XHR fails due to CORS, prompt the user for permission to the URL. This won’t help the failed request, but future requests might succeed if the user grants access.
+    // If a Fetch or XHR fails due to CORS, prompt the user for permission to the URL
+    // if the URL of the frame where the request originated corresponds to this extension.
+    // This won't help the failed request, but future requests might succeed if the user
+    // grants permission.
     if (error.isAccessControl() && (loadInfo.type == ResourceLoadInfo::Type::Fetch || loadInfo.type == ResourceLoadInfo::Type::XMLHTTPRequest)) {
-        RELEASE_LOG_ERROR(Extensions, "Requesting permission to access URL due to CORS failure: %{sensitive}s", loadInfo.originalURL.string().utf8().data());
-        requestPermissionToAccessURLs({ loadInfo.originalURL }, tab, nullptr, GrantOnCompletion::Yes, { PermissionStateOptions::RequestedWithTabsPermission, PermissionStateOptions::IncludeOptionalPermissions });
+        RefPtr<WebFrameProxy> originatingFrame = loadInfo.frameID ? WebFrameProxy::webFrame(*loadInfo.frameID) : nullptr;
+        if (originatingFrame && isURLForThisExtension(originatingFrame->url())) {
+            RELEASE_LOG_ERROR(Extensions, "Requesting permission to access URL due to CORS failure: %{sensitive}s", loadInfo.originalURL.string().utf8().data());
+            requestPermissionToAccessURLs({ loadInfo.originalURL }, tab, nullptr, GrantOnCompletion::Yes, { PermissionStateOptions::RequestedWithTabsPermission, PermissionStateOptions::IncludeOptionalPermissions });
+        }
     }
 
     if (!hasPermissionToSendWebRequestEvent(tab.get(), response.url(), loadInfo))
@@ -2367,6 +2471,12 @@ WKWebViewConfiguration *WebExtensionContext::webViewConfiguration(WebViewPurpose
         preferences._hiddenPageDOMTimerThrottlingEnabled = NO;
         preferences._pageVisibilityBasedProcessSuppressionEnabled = NO;
         preferences.inactiveSchedulingPolicy = WKInactiveSchedulingPolicyNone;
+    }
+
+    if (purpose == WebViewPurpose::Inspector) {
+        // Match the Web Inspector's own AllowAll policy (see WKInspectorViewController.mm) so that
+        // the extension inspector background page shares the same process as the inspector web view.
+        preferences._storageBlockingPolicy = _WKStorageBlockingPolicyAllowAll;
     }
 
     return configuration;

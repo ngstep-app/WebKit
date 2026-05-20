@@ -88,8 +88,6 @@
 
 namespace WebCore {
 
-static const Seconds resetLatchedStateTimeout { 100_ms };
-
 static RetainPtr<NSEvent>& NODELETE currentNSEventSlot()
 {
     static NeverDestroyed<RetainPtr<NSEvent>> event;
@@ -688,7 +686,7 @@ void EventHandler::passMouseMovedEventToScrollbars(NSEvent *event, NSEvent* corr
 
 static bool frameHasPlatformWidget(const LocalFrame& frame)
 {
-    if (RefPtr frameView = frame.view()) {
+    if (auto* frameView = frame.view()) {
         if (frameView->platformWidget())
             return true;
     }
@@ -817,7 +815,7 @@ static WeakPtr<ScrollableArea> NODELETE scrollableAreaForEventTarget(Element* ev
     
 static bool eventTargetIsPlatformWidget(Element* eventTarget)
 {
-    RefPtr widget = EventHandler::widgetForEventTarget(eventTarget);
+    auto* widget = EventHandler::widgetForEventTarget(eventTarget);
     return widget && widget->platformWidget();
 }
 

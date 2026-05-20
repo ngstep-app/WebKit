@@ -52,6 +52,11 @@ public:
     MediaTime NODELETE maximumBufferedTime() const;
     void addBufferedRange(const MediaTime& start, const MediaTime& end, AddTimeRangeOption = AddTimeRangeOption::None);
     void addSample(MediaSample&);
+    // Replace an already-buffered sample with a copy whose presentation and
+    // decode timestamps are shifted forward by `offset` (duration shrinks
+    // accordingly; presentationEndTime is preserved). Updates both the
+    // SampleMap and m_decodeQueue, and adjusts m_buffered to match.
+    void adjustSampleStartTime(MediaSample& original, const MediaTime& offset);
 
     bool reenqueueMediaForTime(const MediaTime&, const MediaTime& timeFudgeFactor, bool isEnded = false);
     MediaTime findSeekTimeForTargetTime(const MediaTime& targetTime, const MediaTime& negativeThreshold, const MediaTime& positiveThreshold);
@@ -80,6 +85,11 @@ public:
     const MediaTime& highestEnqueuedPresentationTime() const LIFETIME_BOUND { return m_highestEnqueuedPresentationTime; }
     void setHighestEnqueuedPresentationTime(MediaTime timestamp) { m_highestEnqueuedPresentationTime = WTF::move(timestamp); }
     const MediaTime& minimumEnqueuedPresentationTime() const LIFETIME_BOUND { return m_minimumEnqueuedPresentationTime; }
+
+    // Raises the tracked reorder depth. Call once per init segment with the
+    // codec-declared max_num_reorder_frames / sps_max_num_reorder_pics when
+    // available. The running observation in addSample() can only grow it further.
+    void setInitialReorderDepth(size_t depth) { m_maxObservedReorderDepth = std::max(m_maxObservedReorderDepth, depth); }
 
     const DecodeOrderSampleMap::KeyType& lastEnqueuedDecodeKey() const LIFETIME_BOUND { return m_lastEnqueuedDecodeKey; }
     void setLastEnqueuedDecodeKey(DecodeOrderSampleMap::KeyType key) { m_lastEnqueuedDecodeKey = WTF::move(key); }
@@ -123,6 +133,20 @@ private:
     void updateMinimumUpcomingPresentationTime();
     void clearDecodeQueue();
 
+    // Result of attempting to split the sample whose presentation range contains a given time.
+    struct DivideResult {
+        // Presentation timestamp of the "after" piece (the piece whose range starts at the split
+        // point). Invalid if no split happened (no containing sample, not divisible, or
+        // MediaSample::divide returned null halves).
+        MediaTime afterSplitPresentationTime { MediaTime::invalidTime() };
+        // Byte sizes of the pieces produced by the split, valid only when
+        // afterSplitPresentationTime is valid.
+        int64_t beforeSplitSize { 0 };
+        int64_t afterSplitSize { 0 };
+    };
+    enum class ApplyDivide : bool { No, Yes };
+    DivideResult tryDivideSampleAtTime(const MediaTime&, ApplyDivide);
+
     SampleMap m_samples;
     DecodeOrderSampleMap::MapType m_decodeQueue;
     RefPtr<MediaDescription> m_description;
@@ -137,6 +161,14 @@ private:
 
     MediaTime m_highestEnqueuedPresentationTime { MediaTime::invalidTime() };
     MediaTime m_minimumEnqueuedPresentationTime { MediaTime::invalidTime() };
+
+    // Running observation of decode-order reorder depth. Seeded by
+    // setInitialReorderDepth; grown when a deeper reorder is seen. Gates
+    // publication of m_minimumEnqueuedPresentationTime so a yet-to-arrive
+    // B-frame can't invalidate the value handed to the renderer.
+    MediaTime m_maxPresentationTimeSeenInDecodeOrder { MediaTime::invalidTime() };
+    size_t m_samplesSinceMaxPresentationTime { 0 };
+    size_t m_maxObservedReorderDepth { 3 };
 
     DecodeOrderSampleMap::KeyType m_lastEnqueuedDecodeKey { MediaTime::invalidTime(), MediaTime::invalidTime() };
 

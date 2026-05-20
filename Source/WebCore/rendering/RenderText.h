@@ -131,7 +131,7 @@ public:
     WEBCORE_EXPORT IntPoint firstRunLocation() const;
 
     void setText(const String&, bool force = false);
-    void setTextWithOffset(const String&, unsigned offset);
+    virtual void setTextWithOffset(const String&, unsigned offset);
 
     bool canBeSelectionLeaf() const override { return true; }
 
@@ -196,11 +196,14 @@ protected:
     void willBeDestroyed() override;
 
     virtual void setRenderedText(const String&);
-    virtual Vector<char16_t> previousCharacter() const;
+    virtual char32_t previousCharacter() const;
 
     virtual void setTextInternal(const String&, bool force);
 
 private:
+    void updateRenderedText();
+    void updateRenderedText(const String&);
+
     RenderText(Type, Node&, const String&);
 
     ASCIILiteral renderName() const override;
@@ -263,10 +266,11 @@ private:
     FontCascade::CodePath m_fontCodePath : 2;
 };
 
-String applyTextTransform(const RenderStyle&, const String&, Vector<char16_t> previousCharacter);
+String applyTextTransform(const RenderStyle&, const String&, char32_t previousCharacter);
 String applyTextTransform(const RenderStyle&, const String&);
-String capitalize(const String&, Vector<char16_t> previousCharacter);
-String capitalize(const String&);
+String capitalize(const String&, char32_t previousCharacter, const AtomString& locale);
+String capitalize(const String&, const AtomString& locale);
+bool isDutchLocale(const AtomString&);
 TextBreakIterator::LineMode::Behavior NODELETE mapLineBreakToIteratorMode(LineBreak);
 TextBreakIterator::ContentAnalysis NODELETE mapWordBreakToContentAnalysis(WordBreak);
 

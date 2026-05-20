@@ -25,15 +25,15 @@
 #include <JavaScriptCore/ArrayConventions.h>
 #include <JavaScriptCore/ArrayStorage.h>
 #include <JavaScriptCore/Butterfly.h>
-#include <JavaScriptCore/CPU.h>
 #include <JavaScriptCore/CagedBarrierPtr.h>
-#include <JavaScriptCore/CallFrame.h>
 #include <JavaScriptCore/ClassInfo.h>
 #include <JavaScriptCore/CustomGetterSetter.h>
 #include <JavaScriptCore/DOMAttributeGetterSetter.h>
 #include <JavaScriptCore/DeletePropertySlot.h>
 #include <JavaScriptCore/Heap.h>
 #include <JavaScriptCore/IndexingHeaderInlines.h>
+#include <JavaScriptCore/Intrinsic.h>
+#include <JavaScriptCore/JSCJSValueCell.h>
 #include <JavaScriptCore/JSCast.h>
 #include <JavaScriptCore/MathCommon.h>
 #include <JavaScriptCore/PropertySlot.h>
@@ -936,7 +936,7 @@ protected:
     void finishCreation(VM& vm)
     {
         Base::finishCreation(vm);
-        ASSERT(jsDynamicCast<JSObject*>(this));
+        ASSERT(is<JSObject>(this));
         ASSERT(structure()->hasPolyProto() || getPrototypeDirect().isNull() || Heap::heap(this) == Heap::heap(getPrototypeDirect()));
         ASSERT(structure()->isObject());
         ASSERT(classInfo());
@@ -1335,8 +1335,8 @@ inline void JSObject::setStructure(VM& vm, Structure* structure)
 inline JSObject* asObject(JSCell* cell)
 {
     ASSERT(cell);
-    ASSERT(cell->isObject());
-    return jsCast<JSObject*>(cell);
+    ASSERT(cell->isObjectSlow());
+    return uncheckedDowncast<JSObject>(cell);
 }
 
 inline JSObject* asObject(JSValue value)
@@ -1416,7 +1416,7 @@ ALWAYS_INLINE bool JSObject::getOwnNonIndexPropertySlot(VM& vm, Structure* struc
             return true;
         case CustomGetterSetterType:
             ASSERT(attributes & PropertyAttribute::CustomAccessorOrValue);
-            fillCustomGetterPropertySlot(slot, jsCast<CustomGetterSetter*>(cell), attributes, structure);
+            fillCustomGetterPropertySlot(slot, uncheckedDowncast<CustomGetterSetter>(cell), attributes, structure);
             return true;
         default:
             break;
@@ -1431,7 +1431,7 @@ ALWAYS_INLINE void JSObject::fillCustomGetterPropertySlot(PropertySlot& slot, Cu
 {
     ASSERT(attributes & PropertyAttribute::CustomAccessorOrValue);
     if (customGetterSetter->inherits<DOMAttributeGetterSetter>()) {
-        auto* domAttribute = jsCast<DOMAttributeGetterSetter*>(customGetterSetter);
+        auto* domAttribute = uncheckedDowncast<DOMAttributeGetterSetter>(customGetterSetter);
         if (structure->isUncacheableDictionary())
             slot.setCustom(this, attributes, domAttribute->getter(), domAttribute->setter(), domAttribute->domAttribute());
         else
@@ -1666,6 +1666,37 @@ bool setterThatIgnoresPrototypeProperties(JSGlobalObject*, JSValue thisValue, JS
 #define STATIC_ASSERT_ISO_SUBSPACE_SHARABLE(DerivedClass, BaseClass) \
     static_assert(sizeof(DerivedClass) == sizeof(BaseClass)); \
     static_assert(DerivedClass::destroy == BaseClass::destroy);
+
+// Defined here rather than in JSCJSValue.h because they need JSObject to be complete.
+inline bool JSValue::put(JSGlobalObject* globalObject, PropertyName propertyName, JSValue value, PutPropertySlot& slot)
+{
+    if (!isCell()) [[unlikely]]
+        return putToPrimitive(globalObject, propertyName, value, slot);
+
+    return asCell()->methodTable()->put(asCell(), globalObject, propertyName, value, slot);
+}
+
+ALWAYS_INLINE bool JSValue::putInline(JSGlobalObject* globalObject, PropertyName propertyName, JSValue value, PutPropertySlot& slot)
+{
+    if (!isCell()) [[unlikely]]
+        return putToPrimitive(globalObject, propertyName, value, slot);
+    return asCell()->putInline(globalObject, propertyName, value, slot);
+}
+
+inline bool JSValue::putByIndex(JSGlobalObject* globalObject, unsigned propertyName, JSValue value, bool shouldThrow)
+{
+    if (!isCell()) [[unlikely]]
+        return putToPrimitiveByIndex(globalObject, propertyName, value, shouldThrow);
+
+    return asCell()->methodTable()->putByIndex(asCell(), globalObject, propertyName, value, shouldThrow);
+}
+
+ALWAYS_INLINE JSValue JSValue::getPrototype(JSGlobalObject* globalObject) const
+{
+    if (isObject())
+        return asObject(asCell())->getPrototype(globalObject);
+    return synthesizePrototype(globalObject);
+}
 
 } // namespace JSC
 

@@ -35,8 +35,8 @@
 #include <bit>
 #include <limits>
 #include <wtf/Assertions.h>
+#include <wtf/FastMalloc.h>
 #include <wtf/ForbidHeapAllocation.h>
-#include <wtf/Gigacage.h>
 #include <wtf/Lock.h>
 #include <wtf/TZoneMalloc.h>
 
@@ -383,6 +383,14 @@ private:
     ~ExecutableAllocator() = default;
 };
 
+inline void* performJITMemcpy(void *dst, const void *src, size_t n)
+{
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
+    return memcpy(dst, src, n);
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
+}
+
+template<RepatchingInfo>
 inline void* performJITMemcpy(void *dst, const void *src, size_t n)
 {
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN

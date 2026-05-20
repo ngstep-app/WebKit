@@ -55,7 +55,8 @@ void RenderMathMLSpace::computePreferredLogicalWidths()
 {
     ASSERT(needsPreferredLogicalWidthsUpdate());
 
-    m_minPreferredLogicalWidth = m_maxPreferredLogicalWidth = spaceWidth();
+    m_maxPreferredLogicalWidth = spaceWidth();
+    m_minPreferredLogicalWidth = m_maxPreferredLogicalWidth;
 
     auto sizes = sizeAppliedToMathContent(LayoutPhase::CalculatePreferredLogicalWidth);
     applySizeToMathContent(LayoutPhase::CalculatePreferredLogicalWidth, sizes);
@@ -107,6 +108,8 @@ void RenderMathMLSpace::layoutBlock(RelayoutChildren relayoutChildren, LayoutUni
     applySizeToMathContent(LayoutPhase::Layout, sizes);
 
     adjustLayoutForBorderAndPadding();
+
+    updateLogicalHeight();
 }
 
 std::optional<LayoutUnit> RenderMathMLSpace::firstLineBaseline() const

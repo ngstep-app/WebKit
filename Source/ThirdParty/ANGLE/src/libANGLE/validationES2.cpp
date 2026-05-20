@@ -241,7 +241,10 @@ bool IsValidCopyTextureSourceTarget(const Context *context, TextureType type)
     }
 }
 
-bool IsValidCopyTextureSourceLevel(const Context *context, TextureType type, GLint level)
+bool IsValidCopyTextureSourceLevel(const Context *context,
+                                   const Texture *texture,
+                                   TextureType type,
+                                   GLint level)
 {
     if (!ValidMipLevel(context, type, level))
     {
@@ -249,6 +252,12 @@ bool IsValidCopyTextureSourceLevel(const Context *context, TextureType type, GLi
     }
 
     if (level > 0 && context->getClientVersion() < ES_3_0)
+    {
+        return false;
+    }
+
+    if (level < 0 || static_cast<GLuint>(level) < texture->getBaseLevel() ||
+        static_cast<GLuint>(level) > texture->getMaxLevel())
     {
         return false;
     }
@@ -962,7 +971,6 @@ bool ValidateES2TexImageParametersBase(const Context *context,
                                        GLsizei imageSize,
                                        const void *pixels)
 {
-
     TextureType texType = TextureTargetToType(target);
     if (!ValidImageSizeParameters(context, entryPoint, texType, level, width, height, 1,
                                   isSubImage))
@@ -1491,7 +1499,7 @@ bool ValidateES2TexImageParametersBase(const Context *context,
                     }
                     if (context->getExtensions().requiredInternalformatOES &&
                         context->getExtensions().textureType2101010REVEXT &&
-                        GL_UNSIGNED_INT_2_10_10_10_REV_EXT && format == GL_RGB)
+                        type == GL_UNSIGNED_INT_2_10_10_10_REV_EXT && format == GL_RGB)
                     {
                         nonEqualFormatsAllowed = true;
                     }
@@ -1505,7 +1513,7 @@ bool ValidateES2TexImageParametersBase(const Context *context,
                     }
                     if (context->getExtensions().requiredInternalformatOES &&
                         context->getExtensions().textureType2101010REVEXT &&
-                        GL_UNSIGNED_INT_2_10_10_10_REV_EXT && format == GL_RGB)
+                        type == GL_UNSIGNED_INT_2_10_10_10_REV_EXT && format == GL_RGB)
                     {
                         nonEqualFormatsAllowed = true;
                     }
@@ -1672,7 +1680,15 @@ bool ValidateES2TexImageParametersBase(const Context *context,
             return false;
         }
 
-        if (format != textureInternalFormat.format)
+        bool formatsMatch = format == textureInternalFormat.format;
+        if (!formatsMatch && textureInternalFormat.sizedInternalFormat == GL_RGBX8_ANGLE)
+        {
+            // ANGLE_rgbx_internal_format allows GL_RGBA to be uploaded to GL_RGBX8_ANGLE textures
+            // even if the base format is GL_RGB.
+            formatsMatch = format == GL_RGBA;
+        }
+
+        if (!formatsMatch)
         {
             ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kTextureFormatMismatch);
             return false;
@@ -1680,8 +1696,37 @@ bool ValidateES2TexImageParametersBase(const Context *context,
 
         if (context->isWebGL())
         {
-            if (GetInternalFormatInfo(format, type).sizedInternalFormat !=
-                textureInternalFormat.sizedInternalFormat)
+            const GLenum textureSizedInternalFormat = textureInternalFormat.sizedInternalFormat;
+            auto isValid                            = false;
+
+            if (textureSizedInternalFormat == GL_RGBX8_ANGLE)
+            {
+                // Special case: As per extension ANGLE_rgbx_internal_format,
+                // ANGLE_rgbx_internal_format allows GL_RGB/GL_UNSIGNED_BYTE and
+                // GL_RGBA/GL_UNSIGNED_BYTE to be uploaded to GL_RGBX8_ANGLE textures even if sized
+                // internal formats mismatch.
+                isValid = (type == GL_UNSIGNED_BYTE && (format == GL_RGB || format == GL_RGBA));
+            }
+            else
+            {
+                if (format == GL_BGRA_EXT)
+                {
+                    // GL_BGRA_EXT is registered as a sized format in ANGLE, which can cause
+                    // GetInternalFormatInfo to return it as an alias for GL_BGRA8_EXT. We
+                    // check both GetSizedFormatInternal (which resolves to the canonical
+                    // sized format) and GetInternalFormatInfo (which might return GL_BGRA_EXT
+                    // itself) to handle all cases.
+                    isValid = (GetSizedFormatInternal(format, type) == textureSizedInternalFormat ||
+                               GetInternalFormatInfo(format, type).sizedInternalFormat ==
+                                   textureSizedInternalFormat);
+                }
+                else
+                {
+                    isValid = (GetInternalFormatInfo(format, type).sizedInternalFormat ==
+                               textureSizedInternalFormat);
+                }
+            }
+            if (!isValid)
             {
                 ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kTextureTypeMismatch);
                 return false;
@@ -1707,6 +1752,15 @@ bool ValidateES2TexImageParametersBase(const Context *context,
         if (texture->getImmutableFormat())
         {
             ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kTextureIsImmutable);
+            return false;
+        }
+
+        const gl::InternalFormat &internalFormatInfo =
+            gl::GetInternalFormatInfo(internalformat, type);
+        if (!ValidImageAllocationSize(context, entryPoint, width, height, 1, 0,
+                                      internalFormatInfo.sizedInternalFormat))
+        {
+            // Error already generated
             return false;
         }
     }
@@ -1761,7 +1815,8 @@ bool ValidateES2TexStorageParametersBase(const Context *context,
     }
 
     const InternalFormat &formatInfo = GetSizedInternalFormatInfo(internalformat);
-    if (formatInfo.format == GL_NONE || formatInfo.type == GL_NONE)
+    if (formatInfo.format == GL_NONE || formatInfo.type == GL_NONE ||
+        IsAngleInternalFormat(internalformat))
     {
         ANGLE_VALIDATION_ERROR(GL_INVALID_ENUM, kInvalidFormat);
         return false;
@@ -1834,6 +1889,12 @@ bool ValidateES2TexStorageParametersBase(const Context *context,
             ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kInvalidCompressedImageSize);
             return false;
         }
+    }
+
+    if (!ValidImageAllocationSize(context, entryPoint, width, height, 1, 0, internalformat))
+    {
+        // Error already generated.
+        return false;
     }
 
     switch (internalformat)
@@ -2965,27 +3026,6 @@ bool ValidateCompressedTexImage2D(const Context *context,
     return true;
 }
 
-bool ValidateCompressedTexImage2DRobustANGLE(const Context *context,
-                                             angle::EntryPoint entryPoint,
-                                             TextureTarget target,
-                                             GLint level,
-                                             GLenum internalformat,
-                                             GLsizei width,
-                                             GLsizei height,
-                                             GLint border,
-                                             GLsizei imageSize,
-                                             GLsizei dataSize,
-                                             const void *data)
-{
-    if (!ValidateRobustCompressedTexImageBase(context, entryPoint, imageSize, dataSize))
-    {
-        return false;
-    }
-
-    return ValidateCompressedTexImage2D(context, entryPoint, target, level, internalformat, width,
-                                        height, border, imageSize, data);
-}
-
 bool ValidateCompressedTexImage3DOES(const Context *context,
                                      angle::EntryPoint entryPoint,
                                      TextureTarget target,
@@ -3000,28 +3040,6 @@ bool ValidateCompressedTexImage3DOES(const Context *context,
 {
     return ValidateCompressedTexImage3D(context, entryPoint, target, level, internalformat, width,
                                         height, depth, border, imageSize, data);
-}
-
-bool ValidateCompressedTexSubImage2DRobustANGLE(const Context *context,
-                                                angle::EntryPoint entryPoint,
-                                                TextureTarget target,
-                                                GLint level,
-                                                GLint xoffset,
-                                                GLint yoffset,
-                                                GLsizei width,
-                                                GLsizei height,
-                                                GLenum format,
-                                                GLsizei imageSize,
-                                                GLsizei dataSize,
-                                                const void *data)
-{
-    if (!ValidateRobustCompressedTexImageBase(context, entryPoint, imageSize, dataSize))
-    {
-        return false;
-    }
-
-    return ValidateCompressedTexSubImage2D(context, entryPoint, target, level, xoffset, yoffset,
-                                           width, height, format, imageSize, data);
 }
 
 bool ValidateCompressedTexSubImage2D(const Context *context,
@@ -3297,7 +3315,7 @@ bool ValidateCopyTextureCHROMIUM(const Context *context,
     ASSERT(sourceType != TextureType::CubeMap);
     TextureTarget sourceTarget = NonCubeTextureTypeToTarget(sourceType);
 
-    if (!IsValidCopyTextureSourceLevel(context, sourceType, sourceLevel))
+    if (!IsValidCopyTextureSourceLevel(context, source, sourceType, sourceLevel))
     {
         ANGLE_VALIDATION_ERROR(GL_INVALID_VALUE, kInvalidSourceTextureLevel);
         return false;
@@ -3376,6 +3394,12 @@ bool ValidateCopyTextureCHROMIUM(const Context *context,
         return false;
     }
 
+    if (source == dest && sourceLevel == destLevel)
+    {
+        ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kInvalidSourceTextureSameAsDestTexture);
+        return false;
+    }
+
     return true;
 }
 
@@ -3413,7 +3437,7 @@ bool ValidateCopySubTextureCHROMIUM(const Context *context,
     ASSERT(sourceType != TextureType::CubeMap);
     TextureTarget sourceTarget = NonCubeTextureTypeToTarget(sourceType);
 
-    if (!IsValidCopyTextureSourceLevel(context, sourceType, sourceLevel))
+    if (!IsValidCopyTextureSourceLevel(context, source, sourceType, sourceLevel))
     {
         ANGLE_VALIDATION_ERROR(GL_INVALID_VALUE, kInvalidMipLevel);
         return false;
@@ -3518,6 +3542,12 @@ bool ValidateCopySubTextureCHROMIUM(const Context *context,
         return false;
     }
 
+    if (source == dest && sourceLevel == destLevel)
+    {
+        ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kInvalidSourceTextureSameAsDestTexture);
+        return false;
+    }
+
     return true;
 }
 
@@ -3569,6 +3599,12 @@ bool ValidateCompressedCopyTextureCHROMIUM(const Context *context,
     if (dest->getImmutableFormat())
     {
         ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kDestinationImmutable);
+        return false;
+    }
+
+    if (source == dest)
+    {
+        ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kInvalidSourceTextureSameAsDestTexture);
         return false;
     }
 
@@ -3640,7 +3676,7 @@ bool ValidateBufferData(const Context *context,
     }
 
     const Limitations &limitations = context->getLimitations();
-    if (size > limitations.bufferSizeLimit)
+    if (static_cast<size_t>(size) > limitations.maxBufferBytes)
     {
         ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kBufferSizeLimitation);
         return false;
@@ -3809,19 +3845,6 @@ bool ValidateRequestExtensionANGLE(const Context *context,
     if (!context->isExtensionRequestable(name))
     {
         ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kExtensionNotRequestable);
-        return false;
-    }
-
-    return true;
-}
-
-bool ValidateDisableExtensionANGLE(const Context *context,
-                                   angle::EntryPoint entryPoint,
-                                   const GLchar *name)
-{
-    if (!context->isExtensionDisablable(name))
-    {
-        ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kExtensionNotDisablable);
         return false;
     }
 
@@ -5214,11 +5237,11 @@ bool ValidateGetFramebufferAttachmentParameteriv(const Context *context,
 
 bool ValidateGetProgramiv(const Context *context,
                           angle::EntryPoint entryPoint,
-                          ShaderProgramID program,
+                          ShaderProgramID programPacked,
                           GLenum pname,
                           const GLint *params)
 {
-    return ValidateGetProgramivBase(context, entryPoint, program, pname, nullptr);
+    return ValidateGetProgramivBase(context, entryPoint, programPacked, pname, nullptr);
 }
 
 bool ValidateCopyTexImage2D(const Context *context,
@@ -5946,11 +5969,18 @@ bool ValidateMultiDrawArraysANGLE(const Context *context,
     }
     for (GLsizei drawID = 0; drawID < drawcount; ++drawID)
     {
-        if (!ValidateDrawArrays(context, entryPoint, mode, firsts[drawID], counts[drawID]))
+        if (!ValidateDrawArraysCommon(context, entryPoint, mode, firsts[drawID], counts[drawID], 1))
         {
             return false;
         }
     }
+
+    if (!ValidateDrawArraysTransformFeedbackBufferSize(context, entryPoint, counts, nullptr,
+                                                       drawcount))
+    {
+        return false;
+    }
+
     return true;
 }
 

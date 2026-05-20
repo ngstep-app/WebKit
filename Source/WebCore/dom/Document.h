@@ -61,13 +61,9 @@
 #include <WebCore/ViewportArguments.h>
 #include <wtf/CompletionHandler.h>
 #include <wtf/Deque.h>
-#include <wtf/FixedVector.h>
-#include <wtf/Forward.h>
 #include <wtf/HashSet.h>
 #include <wtf/Logger.h>
-#include <wtf/ObjectIdentifier.h>
 #include <wtf/Observer.h>
-#include <wtf/Platform.h>
 #include <wtf/RobinHoodHashMap.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/UniqueRef.h>
@@ -75,7 +71,6 @@
 #include <wtf/WeakHashMap.h>
 #include <wtf/WeakHashSet.h>
 #include <wtf/WeakListHashSet.h>
-#include <wtf/WeakPtr.h>
 #include <wtf/text/AtomStringHash.h>
 
 #if ENABLE(IOS_TOUCH_EVENTS)
@@ -90,6 +85,7 @@ class InputCursor;
 
 namespace WTF {
 class TextStream;
+class TextPosition;
 }
 
 namespace PAL {
@@ -129,7 +125,6 @@ class Database;
 class DatabaseThread;
 class DeviceMotionClient;
 class DeviceMotionController;
-class DeviceOrientationAndMotionAccessController;
 class DeviceOrientationClient;
 class DeviceOrientationController;
 class DocumentFontLoader;
@@ -316,6 +311,10 @@ struct EventTrackingRegions;
 
 #if USE(SYSTEM_PREVIEW)
 struct SystemPreviewInfo;
+#endif
+
+#if ENABLE(VIDEO)
+class LazyLoadVideoObserver;
 #endif
 
 #if ENABLE(WEB_RTC)
@@ -564,7 +563,7 @@ public:
     AsyncNodeDeletionQueue& asyncNodeDeletionQueue() LIFETIME_BOUND { return m_asyncNodeDeletionQueue; };
     static constexpr ptrdiff_t documentElementMemoryOffset() { return OBJECT_OFFSETOF(Document, m_documentElement); }
 
-    WEBCORE_EXPORT Element* activeElement();
+    WEBCORE_EXPORT Element* NODELETE activeElement();
     WEBCORE_EXPORT bool hasFocus() const;
     void whenVisible(Function<void()>&&);
 
@@ -714,7 +713,7 @@ public:
     const CSSFontSelector* fontSelectorIfExists() const { return m_fontSelector.get(); }
     inline CSSFontSelector& fontSelector() const; // Defined in DocumentInlines.h.
 
-    WEBCORE_EXPORT bool haveStylesheetsLoaded() const;
+    WEBCORE_EXPORT bool NODELETE haveStylesheetsLoaded() const;
     bool isIgnoringPendingStylesheets() const { return m_ignorePendingStylesheets; }
 
     WEBCORE_EXPORT StyleSheetList& styleSheets();
@@ -753,7 +752,7 @@ public:
 
     WEBCORE_EXPORT float deviceScaleFactor() const;
 
-    WEBCORE_EXPORT bool useElevatedUserInterfaceLevel() const;
+    WEBCORE_EXPORT bool NODELETE useElevatedUserInterfaceLevel() const;
     WEBCORE_EXPORT bool useDarkAppearance(const RenderStyle*) const;
     WEBCORE_EXPORT bool useDarkAppearance(const Style::ComputedStyle*) const;
 #if ENABLE(DARK_MODE_CSS)
@@ -783,6 +782,9 @@ public:
     bool updateStyleIfNeededIgnoringPendingStylesheets();
     bool NODELETE needsStyleRecalc() const;
     unsigned lastStyleUpdateSizeForTesting() const { return m_lastStyleUpdateSizeForTesting; }
+    size_t styleInvalidationTraversalCountForTesting() const { return m_styleInvalidationTraversalCountForTesting; }
+    void incrementStyleInvalidationTraversalCountForTesting(size_t count) { m_styleInvalidationTraversalCountForTesting += count; }
+    void resetStyleInvalidationTraversalCountForTesting() { m_styleInvalidationTraversalCountForTesting = 0; }
 
     enum class UpdateLayoutResult {
         NoChange,
@@ -900,8 +902,9 @@ public:
     SpeculationRules& NODELETE speculationRules() const;
 
     URL baseURLForComplete(const URL& baseURLOverride) const;
-    WEBCORE_EXPORT URL completeURL(const String&, ForceUTF8 = ForceUTF8::No) const final;
-    URL completeURL(const String&, const URL& baseURLOverride, ForceUTF8 = ForceUTF8::No) const;
+    WEBCORE_EXPORT URL parseURL(const String&) const final;
+    WEBCORE_EXPORT URL encodingParseURL(const String&) const final;
+    URL encodingParseURL(const String&, const URL& baseURLOverride) const;
 
     inline bool shouldMaskURLForBindings(const URL&) const;
     inline const URL& maskedURLForBindingsIfNeeded(const URL&) const;
@@ -917,7 +920,6 @@ public:
     bool requiresTrustedTypes() const { return m_requiresTrustedTypes && !shouldBypassMainWorldContentSecurityPolicy(); }
 
     IDBClient::IDBConnectionProxy* idbConnectionProxy() final;
-    void clearIDBConnectionProxy();
     StorageConnection* storageConnection();
     SocketProvider* NODELETE socketProvider() final;
     RefPtr<RTCDataChannelRemoteHandlerConnection> createRTCDataChannelRemoteHandlerConnection() final;
@@ -1420,6 +1422,7 @@ public:
     void initContentSecurityPolicy();
 
     void inheritPolicyContainerFrom(const PolicyContainer&) final;
+    void enforceSandboxFlags(SandboxFlags, SandboxFlagsSource = SandboxFlagsSource::Other) final;
 
     void updateURLForPushOrReplaceState(const URL&);
     void statePopped(Ref<SerializedScriptValue>&&);
@@ -1429,6 +1432,8 @@ public:
 
     bool isContextThread() const final;
     bool isSecureContext() const final;
+    bool NODELETE crossOriginIsolated() const final;
+    String agentClusterID() const final;
     bool isJSExecutionForbidden() const final { return false; }
 
     void queueTaskToDispatchEventOnWindow(LocalDOMWindow&, TaskSource, Ref<Event>&&);
@@ -1506,10 +1511,6 @@ public:
     WEBCORE_EXPORT void simulateDeviceOrientationChange(double alpha, double beta, double gamma);
 #endif
 
-#if ENABLE(DEVICE_ORIENTATION)
-    DeviceOrientationAndMotionAccessController& deviceOrientationAndMotionAccessController();
-#endif
-
     WEBCORE_EXPORT double monotonicTimestamp() const;
     const DocumentEventTiming& eventTiming() const LIFETIME_BOUND { return m_eventTiming; }
 
@@ -1546,9 +1547,9 @@ public:
     WEBCORE_EXPORT unsigned NODELETE touchEventHandlerCount() const;
 
     WEBCORE_EXPORT void NODELETE startTrackingStyleRecalcs();
-    WEBCORE_EXPORT unsigned styleRecalcCount() const { return m_styleRecalcCount; }
+    unsigned styleRecalcCount() const { return m_styleRecalcCount; }
 
-#if ENABLE(TOUCH_EVENTS)
+#if ENABLE(TOUCH_EVENTS) || ENABLE(TOUCH_EVENT_REGIONS)
     bool hasTouchEventHandlers() const;
     bool touchEventTargetsContain(Node& node) const { return m_touchEventTargets.contains(node); }
 #else
@@ -1584,7 +1585,7 @@ public:
 
     bool visualUpdatesAllowed() const { return m_visualUpdatesPreventedReasons.isEmpty(); }
 
-    bool isInDocumentWrite() { return m_writeRecursionDepth > 0; }
+    bool isInDocumentWrite() const { return m_writeRecursionDepth > 0; }
 
     void suspendScheduledTasks(ReasonForSuspension);
     void resumeScheduledTasks(ReasonForSuspension);
@@ -1665,10 +1666,10 @@ public:
 
     void willLoadScriptElement(const URL&);
     void willLoadFrameElement(const URL&);
+    bool hasLoadedThirdPartyScript() const { return m_hasLoadedThirdPartyScript; }
+    bool hasLoadedThirdPartyFrame() const { return m_hasLoadedThirdPartyFrame; }
 
     Ref<FontFaceSet> fonts();
-
-    void setVisualUpdatesAllowedByClient(bool);
 
     std::optional<Vector<uint8_t>> serializeAndWrapCryptoKey(CryptoKeyData&&) final;
     std::optional<Vector<uint8_t>> unwrapCryptoKey(const Vector<uint8_t>&) final;
@@ -1764,7 +1765,7 @@ public:
     size_t gatherResizeObservations(size_t deeperThan);
     void deliverResizeObservations();
     bool NODELETE hasSkippedResizeObservations() const;
-    void setHasSkippedResizeObservations(bool);
+    void NODELETE setHasSkippedResizeObservations(bool);
     void updateResizeObservations(Page&);
 
     size_t gatherResizeObservationsForContainIntrinsicSize();
@@ -1827,15 +1828,15 @@ public:
     void orientationChanged(IntDegrees orientation);
     OrientationNotifier& orientationNotifier();
 
-    WEBCORE_EXPORT const AtomString& bgColor() const;
+    WEBCORE_EXPORT const AtomString& NODELETE bgColor() const;
     WEBCORE_EXPORT void setBgColor(const AtomString&);
-    WEBCORE_EXPORT const AtomString& fgColor() const;
+    WEBCORE_EXPORT const AtomString& NODELETE fgColor() const;
     WEBCORE_EXPORT void setFgColor(const AtomString&);
-    WEBCORE_EXPORT const AtomString& alinkColor() const;
+    WEBCORE_EXPORT const AtomString& NODELETE alinkColor() const;
     WEBCORE_EXPORT void setAlinkColor(const AtomString&);
-    WEBCORE_EXPORT const AtomString& linkColorForBindings() const;
+    WEBCORE_EXPORT const AtomString& NODELETE linkColorForBindings() const;
     WEBCORE_EXPORT void setLinkColorForBindings(const AtomString&);
-    WEBCORE_EXPORT const AtomString& vlinkColor() const;
+    WEBCORE_EXPORT const AtomString& NODELETE vlinkColor() const;
     WEBCORE_EXPORT void setVlinkColor(const AtomString&);
 
     // Per https://html.spec.whatwg.org/multipage/obsolete.html#dom-document-clear, this method does nothing.
@@ -1885,7 +1886,7 @@ public:
     void hideAllPopoversUntil(HTMLElement*, FocusPreviousElement, FireEvents);
     void handlePopoverLightDismiss(const PointerEvent&, Node&);
     void handleDialogLightDismiss(const PointerEvent&, Node&);
-    bool needsPointerEventHandlingForPopover() const { return !m_autoPopoverList.isEmpty(); }
+    bool needsPointerEventHandlingForPopoverOrDialog() const { return !m_autoPopoverList.isEmpty() || !m_openDialogsList.isEmpty(); }
 
 #if ENABLE(ATTACHMENT_ELEMENT)
     void registerAttachmentIdentifier(const String&, const AttachmentAssociatedElement&);
@@ -1915,7 +1916,7 @@ public:
     bool handlingTouchEvent() const { return m_handlingTouchEvent; }
 #endif
 
-    WEBCORE_EXPORT bool hasRequestedPageSpecificStorageAccessWithUserInteraction(const RegistrableDomain&);
+    WEBCORE_EXPORT bool NODELETE hasRequestedPageSpecificStorageAccessWithUserInteraction(const RegistrableDomain&);
     WEBCORE_EXPORT void setHasRequestedPageSpecificStorageAccessWithUserInteraction(const RegistrableDomain&);
     WEBCORE_EXPORT void wasLoadedWithDataTransferFromPrevalentResource();
     void downgradeReferrerToRegistrableDomain();
@@ -1978,11 +1979,8 @@ public:
 #if ENABLE(MODEL_ELEMENT)
     LazyLoadModelObserver& lazyLoadModelObserver();
 #endif
-
-#if ENABLE(MODEL_PROCESS)
-    void incrementModelElementCount();
-    void decrementModelElementCount();
-    bool hasModelElement() const { return m_modelElementCount > 0; }
+#if ENABLE(VIDEO)
+    LazyLoadVideoObserver& lazyLoadVideoObserver();
 #endif
 
     ContentVisibilityDocumentState& contentVisibilityDocumentState();
@@ -2036,7 +2034,7 @@ public:
     String httpUserAgent() const final;
 
     virtual void didChangeViewSize() { }
-    bool isNavigationBlockedByThirdPartyIFrameRedirectBlocking(Frame& targetFrame, const URL& destinationURL);
+    static bool isNavigationBlockedByThirdPartyIFrameRedirectBlocking(const NavigationRequester&, Frame& targetFrame, const URL& destinationURL);
 
     enum UpdateLayoutIfContentVisibilityChanged : bool { No, Yes };
     DidUpdateAnyContentRelevancy updateRelevancyOfContentVisibilityElements(UpdateLayoutIfContentVisibilityChanged = UpdateLayoutIfContentVisibilityChanged::Yes);
@@ -2054,12 +2052,12 @@ public:
 
     unsigned unloadCounter() const { return m_unloadCounter; }
 
-    WEBCORE_EXPORT FrameMemoryMonitor& frameMemoryMonitor();
+    WEBCORE_EXPORT FrameMemoryMonitor& NODELETE frameMemoryMonitor();
 
 #if ENABLE(CONTENT_EXTENSIONS)
     ResourceMonitor* NODELETE resourceMonitorIfExists();
     ResourceMonitor& resourceMonitor();
-    ResourceMonitor* parentResourceMonitorIfExists();
+    ResourceMonitor* NODELETE parentResourceMonitorIfExists();
 
     bool shouldSkipResourceMonitorThrottling() const { return m_shouldSkipResourceMonitorThrottling; }
     void setShouldSkipResourceMonitorThrottling(bool flag) { m_shouldSkipResourceMonitorThrottling = flag; }
@@ -2082,6 +2080,10 @@ public:
 
     WEBCORE_EXPORT void ariaNotify(const String&);
     WEBCORE_EXPORT void ariaNotify(const String&, const AriaNotifyOptions&);
+
+    std::optional<TextPosition> currentParserSourcePosition() const;
+
+    bool shouldUseTouchEventRegions() const;
 
 protected:
     enum class ConstructionFlag : uint8_t {
@@ -2133,7 +2135,7 @@ private:
     void createRenderTree();
     void detachParser();
 
-    std::optional<DocumentEventTiming> documentEventTimingFromNavigationTiming();
+    DocumentEventTiming* documentEventTimingFromNavigationTiming();
 
     // ScriptExecutionContext
     CSSFontSelector* cssFontSelector() final;
@@ -2185,14 +2187,13 @@ private:
     void setVisualUpdatesAllowed(ReadyState);
 
     enum class VisualUpdatesPreventedReason {
-        Client         = 1 << 0,
-        ReadyState     = 1 << 1,
-        Suspension     = 1 << 2,
-        RenderBlocking = 1 << 3,
+        ReadyState     = 1 << 0,
+        Suspension     = 1 << 1,
+        RenderBlocking = 1 << 2,
     };
     friend WTF::TextStream& operator<<(WTF::TextStream&, const VisualUpdatesPreventedReason&);
     static constexpr OptionSet<VisualUpdatesPreventedReason> visualUpdatePreventReasonsClearedByTimer() { return { VisualUpdatesPreventedReason::ReadyState, VisualUpdatesPreventedReason::RenderBlocking }; }
-    static constexpr OptionSet<VisualUpdatesPreventedReason> visualUpdatePreventRequiresLayoutMilestones() { return { VisualUpdatesPreventedReason::Client, VisualUpdatesPreventedReason::ReadyState }; }
+    static constexpr OptionSet<VisualUpdatesPreventedReason> visualUpdatePreventRequiresLayoutMilestones() { return { VisualUpdatesPreventedReason::ReadyState }; }
 
     enum class CompletePageTransition : bool { No, Yes };
     void addVisualUpdatePreventedReason(VisualUpdatesPreventedReason, CompletePageTransition = CompletePageTransition::Yes);
@@ -2360,9 +2361,8 @@ private:
 #if ENABLE(MODEL_ELEMENT)
     std::unique_ptr<LazyLoadModelObserver> m_lazyLoadModelObserver;
 #endif
-
-#if ENABLE(MODEL_PROCESS)
-    unsigned m_modelElementCount { 0 };
+#if ENABLE(VIDEO)
+    std::unique_ptr<LazyLoadVideoObserver> m_lazyLoadVideoObserver;
 #endif
 
     std::unique_ptr<ContentVisibilityDocumentState> m_contentVisibilityDocumentState;
@@ -2481,8 +2481,8 @@ private:
     mutable std::unique_ptr<LargestContentfulPaintData> m_largestContentfulPaintData;
 
     RefPtr<MediaQueryMatcher> m_mediaQueryMatcher;
-    
-#if ENABLE(TOUCH_EVENTS)
+
+#if ENABLE(TOUCH_EVENTS) || ENABLE(TOUCH_EVENT_REGIONS)
     EventTargetSet m_touchEventTargets;
 #endif
 
@@ -2501,10 +2501,6 @@ private:
     std::unique_ptr<DeviceMotionController> m_deviceMotionController;
     std::unique_ptr<DeviceOrientationClient> m_deviceOrientationClient;
     std::unique_ptr<DeviceOrientationController> m_deviceOrientationController;
-#endif
-
-#if ENABLE(DEVICE_ORIENTATION)
-    std::unique_ptr<DeviceOrientationAndMotionAccessController> m_deviceOrientationAndMotionAccessController;
 #endif
 
     Timer m_pendingTasksTimer;
@@ -2665,6 +2661,7 @@ private:
     unsigned m_referencingNodeCount { 0 };
     int m_loadEventDelayCount { 0 };
     unsigned m_lastStyleUpdateSizeForTesting { 0 };
+    size_t m_styleInvalidationTraversalCountForTesting { 0 };
 
     // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#throw-on-dynamic-markup-insertion-counter
     unsigned m_throwOnDynamicMarkupInsertionCount { 0 };

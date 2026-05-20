@@ -58,6 +58,7 @@
 #include "RenderImage.h"
 #include "RenderSVGImage.h"
 #include "Settings.h"
+#include <JavaScriptCore/HeapCellInlines.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/Scope.h>
 #include <wtf/text/MakeString.h>
@@ -272,7 +273,7 @@ void ImageLoader::updateFromElement(RelevantMutation relevantMutation)
                 return;
             }
         } else
-            imageURL = document->completeURL(attr);
+            imageURL = document->encodingParseURL(attr);
         m_pendingURL = attr;
     }
     ResourceRequest resourceRequest(WTF::move(imageURL));

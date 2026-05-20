@@ -124,7 +124,7 @@ static InputTypeFactoryMap createInputTypeFactoryMap()
         InputTypeNameFunction nameFunction;
         InputTypeFactoryFunction factoryFunction;
     };
-    static const auto inputTypes = std::to_array<InputType>({
+    static const auto inputTypes = WTF::toArray<InputType>({
         { nullptr, &InputTypeNames::button, &createInputType<ButtonInputType> },
         { nullptr, &InputTypeNames::checkbox, &createInputType<CheckboxInputType> },
         { &Settings::inputTypeColorEnabled, &InputTypeNames::color, &createInputType<ColorInputType> },
@@ -654,6 +654,17 @@ Decimal InputType::parseToNumber(StringView, const Decimal& defaultValue) const
 Decimal InputType::parseToNumberOrNaN(StringView string) const
 {
     return parseToNumber(string, Decimal::nan());
+}
+
+Decimal InputType::extractStepRangeBound(const QualifiedName& attributeName, const Decimal& defaultValue, RangeLimitations& rangeLimitations) const
+{
+    ASSERT(element());
+    Decimal valueFromAttribute = parseToNumberOrNaN(element()->attributeWithoutSynchronization(attributeName));
+    if (valueFromAttribute.isFinite()) {
+        rangeLimitations = RangeLimitations::Valid;
+        return valueFromAttribute;
+    }
+    return defaultValue;
 }
 
 String InputType::serialize(const Decimal&) const

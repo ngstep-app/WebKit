@@ -27,12 +27,14 @@
 
 #include "config.h"
 #include "RenderMathMLFraction.h"
+#include "RenderBlockInlines.h"
 
 #if ENABLE(MATHML)
 
 #include "FontCascadeInlines.h"
 #include "GraphicsContext.h"
 #include "MathMLFractionElement.h"
+#include "OpenTypeMathData.h"
 #include "PaintInfo.h"
 #include "RenderMathMLBlockInlines.h"
 #include "RenderObjectInlines.h"
@@ -195,7 +197,8 @@ void RenderMathMLFraction::computePreferredLogicalWidths()
 
     LayoutUnit numeratorWidth = numerator().maxPreferredLogicalWidth() + marginIntrinsicLogicalWidthForChild(numerator());
     LayoutUnit denominatorWidth = denominator().maxPreferredLogicalWidth() + marginIntrinsicLogicalWidthForChild(denominator());
-    m_minPreferredLogicalWidth = m_maxPreferredLogicalWidth = std::max(numeratorWidth, denominatorWidth);
+    m_maxPreferredLogicalWidth = std::max(numeratorWidth, denominatorWidth);
+    m_minPreferredLogicalWidth = m_maxPreferredLogicalWidth;
 
     auto sizes = sizeAppliedToMathContent(LayoutPhase::CalculatePreferredLogicalWidth);
     applySizeToMathContent(LayoutPhase::CalculatePreferredLogicalWidth, sizes);
@@ -282,6 +285,8 @@ void RenderMathMLFraction::layoutBlock(RelayoutChildren relayoutChildren, Layout
     shiftInFlowChildren(shift, 0);
 
     adjustLayoutForBorderAndPadding();
+
+    updateLogicalHeight();
 
     layoutOutOfFlowBoxes(relayoutChildren);
 }

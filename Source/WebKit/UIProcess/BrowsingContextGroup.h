@@ -28,6 +28,7 @@
 #include "EnhancedSecurity.h"
 #include "LoadedWebArchive.h"
 #include "WebProcessProxy.h"
+#include <WebCore/BrowsingContextGroupIdentifier.h>
 #include <WebCore/Site.h>
 #include <wtf/CompletionHandler.h>
 #include <wtf/RefCountedAndCanMakeWeakPtr.h>
@@ -62,6 +63,8 @@ public:
     static Ref<BrowsingContextGroup> create() { return adoptRef(*new BrowsingContextGroup()); }
     ~BrowsingContextGroup();
 
+    WebCore::BrowsingContextGroupIdentifier identifier() const { return m_identifier; }
+
     void sharedProcessForSite(WebsiteDataStore&, API::WebsitePolicies*, const WebPreferences&, const WebCore::Site&, const WebCore::Site& mainFrameSite, WebProcessProxy::LockdownMode, EnhancedSecurity, API::PageConfiguration&, IsMainFrame, CompletionHandler<void(FrameProcess*)>&&);
     Ref<FrameProcess> ensureProcessForSite(const WebCore::Site&, const WebCore::Site& mainFrameSite, WebProcessProxy&, const WebPreferences&, LoadedWebArchive = LoadedWebArchive::No, BrowsingContextGroupUpdate = BrowsingContextGroupUpdate::AddProcessAndInjectBrowsingContext);
     RefPtr<FrameProcess> processForSite(const WebCore::Site&);
@@ -74,6 +77,8 @@ public:
     void addPage(WebPageProxy&);
     void addRemotePage(WebPageProxy&, Ref<RemotePageProxy>&&);
     void removePage(WebPageProxy&);
+    void closeRemotePagesForPage(WebPageProxy&);
+    bool hasMultiplePages() const;
     void forEachRemotePage(const WebPageProxy&, Function<void(RemotePageProxy&)>&&);
 
     RefPtr<RemotePageProxy> remotePageInProcess(const WebPageProxy&, const WebProcessProxy&);
@@ -86,6 +91,8 @@ public:
 
 private:
     BrowsingContextGroup();
+
+    WebCore::BrowsingContextGroupIdentifier m_identifier { WebCore::BrowsingContextGroupIdentifier::generate() };
 
     WeakPtr<FrameProcess> m_sharedProcess;
     HashSet<WebCore::Site> m_sharedProcessSites;

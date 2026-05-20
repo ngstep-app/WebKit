@@ -33,10 +33,10 @@
 #include "HTMLFrameOwnerElement.h"
 #include "FrameInlines.h"
 #include "NodeDocument.h"
-#include "NodeInlines.h"
 #include "RemoteDOMWindow.h"
 #include "RemoteFrameClient.h"
 #include "RemoteFrameView.h"
+#include "ResourceTiming.h"
 #include "SecurityOrigin.h"
 #include <wtf/CompletionHandler.h>
 #include <wtf/HexNumber.h>
@@ -177,6 +177,11 @@ OptionSet<AdvancedPrivacyProtections> RemoteFrame::advancedPrivacyProtections() 
     return m_advancedPrivacyProtections;
 }
 
+bool RemoteFrame::allowPrivacyProxy() const
+{
+    return m_allowPrivacyProxy;
+}
+
 void RemoteFrame::updateScrollingMode()
 {
     if (RefPtr ownerElement = this->ownerElement())
@@ -188,6 +193,11 @@ void RemoteFrame::reportMixedContentViolation(bool blocked, const URL& target) c
     m_client->reportMixedContentViolation(blocked, target);
 }
 
+void RemoteFrame::addResourceTimingFromChild(ResourceTiming&& resourceTiming)
+{
+    m_client->addResourceTimingFromChild(WTF::move(resourceTiming));
+}
+
 SecurityOrigin* RemoteFrame::frameDocumentSecurityOrigin() const
 {
     return frameTreeSyncData().frameDocumentSecurityOrigin.get();
@@ -196,6 +206,11 @@ SecurityOrigin* RemoteFrame::frameDocumentSecurityOrigin() const
 std::optional<DocumentSecurityPolicy> RemoteFrame::frameDocumentSecurityPolicy() const
 {
     return frameTreeSyncData().frameDocumentSecurityPolicy;
+}
+
+bool RemoteFrame::frameDocumentIsSandboxedOrigin() const
+{
+    return frameTreeSyncData().frameDocumentIsSandboxedOrigin;
 }
 
 String RemoteFrame::frameURLProtocol() const

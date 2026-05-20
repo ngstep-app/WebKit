@@ -36,6 +36,8 @@
 #include "CreateLinkCommand.h"
 #include "DocumentFragment.h"
 #include "DocumentPage.h"
+#include "DocumentView.h"
+#include "RenderStyle+GettersInlines.h"
 #include "Editing.h"
 #include "EditorClient.h"
 #include "ElementInlines.h"
@@ -1660,7 +1662,7 @@ struct CommandEntry {
 
 static const CommandMap& createCommandMap()
 {
-    static constexpr auto commands = std::to_array<CommandEntry>({
+    static constexpr auto commands = WTF::toArray<CommandEntry>({
         { "AlignCenter"_s, { executeJustifyCenter, supportedFromMenuOrKeyBinding, enabledInRichlyEditableText, stateNone, valueNull, notTextInsertion, doNotAllowExecutionWhenDisabled } },
         { "AlignJustified"_s, { executeJustifyFull, supportedFromMenuOrKeyBinding, enabledInRichlyEditableText, stateNone, valueNull, notTextInsertion, doNotAllowExecutionWhenDisabled } },
         { "AlignLeft"_s, { executeJustifyLeft, supportedFromMenuOrKeyBinding, enabledInRichlyEditableText, stateNone, valueNull, notTextInsertion, doNotAllowExecutionWhenDisabled } },

@@ -443,7 +443,10 @@ $(PROJECT_DIR)/Modules/credentialmanagement/CredentialCreationOptions.idl
 $(PROJECT_DIR)/Modules/credentialmanagement/CredentialMediationRequirement.idl
 $(PROJECT_DIR)/Modules/credentialmanagement/CredentialRequestOptions.idl
 $(PROJECT_DIR)/Modules/credentialmanagement/CredentialsContainer.idl
+$(PROJECT_DIR)/Modules/credentialmanagement/FederatedCredentialRequestOptions.idl
+$(PROJECT_DIR)/Modules/credentialmanagement/IdentityCredentialRequestOptions.idl
 $(PROJECT_DIR)/Modules/credentialmanagement/Navigator+Credentials.idl
+$(PROJECT_DIR)/Modules/credentialmanagement/OTPCredentialRequestOptions.idl
 $(PROJECT_DIR)/Modules/encryptedmedia/MediaKeyEncryptionScheme.idl
 $(PROJECT_DIR)/Modules/encryptedmedia/MediaKeyMessageEvent.idl
 $(PROJECT_DIR)/Modules/encryptedmedia/MediaKeyMessageEventInit.idl
@@ -527,6 +530,7 @@ $(PROJECT_DIR)/Modules/indexeddb/IDBIndex.idl
 $(PROJECT_DIR)/Modules/indexeddb/IDBKeyRange.idl
 $(PROJECT_DIR)/Modules/indexeddb/IDBObjectStore.idl
 $(PROJECT_DIR)/Modules/indexeddb/IDBOpenDBRequest.idl
+$(PROJECT_DIR)/Modules/indexeddb/IDBRecord.idl
 $(PROJECT_DIR)/Modules/indexeddb/IDBRequest.idl
 $(PROJECT_DIR)/Modules/indexeddb/IDBTransaction.idl
 $(PROJECT_DIR)/Modules/indexeddb/IDBTransactionDurability.idl
@@ -565,6 +569,7 @@ $(PROJECT_DIR)/Modules/mediasession/MediaSession.idl
 $(PROJECT_DIR)/Modules/mediasession/MediaSessionAction.idl
 $(PROJECT_DIR)/Modules/mediasession/MediaSessionActionDetails.idl
 $(PROJECT_DIR)/Modules/mediasession/MediaSessionActionHandler.idl
+$(PROJECT_DIR)/Modules/mediasession/MediaSessionCaptionTrack.idl
 $(PROJECT_DIR)/Modules/mediasession/MediaSessionCoordinator.idl
 $(PROJECT_DIR)/Modules/mediasession/MediaSessionCoordinatorMixin.idl
 $(PROJECT_DIR)/Modules/mediasession/MediaSessionCoordinatorState.idl
@@ -763,6 +768,7 @@ $(PROJECT_DIR)/Modules/modern-media-controls/gesture-recognizers/gesture-recogni
 $(PROJECT_DIR)/Modules/modern-media-controls/gesture-recognizers/pinch.js
 $(PROJECT_DIR)/Modules/modern-media-controls/gesture-recognizers/tap.js
 $(PROJECT_DIR)/Modules/modern-media-controls/main.js
+$(PROJECT_DIR)/Modules/modern-media-controls/media/YouTubeCaptionQuirk.js
 $(PROJECT_DIR)/Modules/modern-media-controls/media/airplay-support.js
 $(PROJECT_DIR)/Modules/modern-media-controls/media/audio-support.js
 $(PROJECT_DIR)/Modules/modern-media-controls/media/close-support.js
@@ -1140,6 +1146,7 @@ $(PROJECT_DIR)/Modules/webxr/WebXRRenderState.idl
 $(PROJECT_DIR)/Modules/webxr/WebXRRigidTransform.idl
 $(PROJECT_DIR)/Modules/webxr/WebXRSession+AR.idl
 $(PROJECT_DIR)/Modules/webxr/WebXRSession+HitTest.idl
+$(PROJECT_DIR)/Modules/webxr/WebXRSession+Layers.idl
 $(PROJECT_DIR)/Modules/webxr/WebXRSession.idl
 $(PROJECT_DIR)/Modules/webxr/WebXRSpace.idl
 $(PROJECT_DIR)/Modules/webxr/WebXRSystem.idl
@@ -1363,6 +1370,7 @@ $(PROJECT_DIR)/css/htmlSwitchControl.css
 $(PROJECT_DIR)/css/make-css-file-arrays.pl
 $(PROJECT_DIR)/css/mathml.css
 $(PROJECT_DIR)/css/mathmlCoreExtras.css
+$(PROJECT_DIR)/css/mathmlCoreMathvariant.css
 $(PROJECT_DIR)/css/mathmlFontSizeMath.css
 $(PROJECT_DIR)/css/mathmlLegacyFontSizeMath.css
 $(PROJECT_DIR)/css/popover.css
@@ -1371,8 +1379,8 @@ $(PROJECT_DIR)/css/scripts/process-css-properties.py
 $(PROJECT_DIR)/css/scripts/process-css-pseudo-selectors.py
 $(PROJECT_DIR)/css/scripts/process-css-values.py
 $(PROJECT_DIR)/css/svg.css
-$(PROJECT_DIR)/css/typedom/CSSKeywordValue.idl
 $(PROJECT_DIR)/css/typedom/CSSNumericValue.idl
+$(PROJECT_DIR)/css/typedom/CSSOMKeywordValue.idl
 $(PROJECT_DIR)/css/typedom/CSSOMVariableReferenceValue.idl
 $(PROJECT_DIR)/css/typedom/CSSStyleImageValue.idl
 $(PROJECT_DIR)/css/typedom/CSSStyleValue.idl
@@ -1679,7 +1687,7 @@ $(PROJECT_DIR)/html/HTMLObjectElement.idl
 $(PROJECT_DIR)/html/HTMLOptGroupElement.idl
 $(PROJECT_DIR)/html/HTMLOptionElement.idl
 $(PROJECT_DIR)/html/HTMLOptionsCollection.idl
-$(PROJECT_DIR)/html/HTMLOrForeignElement.idl
+$(PROJECT_DIR)/html/HTMLOrSVGOrMathMLElement.idl
 $(PROJECT_DIR)/html/HTMLOutputElement.idl
 $(PROJECT_DIR)/html/HTMLParagraphElement.idl
 $(PROJECT_DIR)/html/HTMLParamElement.idl
@@ -1711,6 +1719,7 @@ $(PROJECT_DIR)/html/HTMLUnknownElement.idl
 $(PROJECT_DIR)/html/HTMLVideoElement+CaptionDisplaySettings.idl
 $(PROJECT_DIR)/html/HTMLVideoElement+RequestVideoFrameCallback.idl
 $(PROJECT_DIR)/html/HTMLVideoElement.idl
+$(PROJECT_DIR)/html/HyperlinkElementUtils.idl
 $(PROJECT_DIR)/html/ImageBitmap.idl
 $(PROJECT_DIR)/html/ImageBitmapOptions.idl
 $(PROJECT_DIR)/html/ImageData.idl
@@ -1919,6 +1928,7 @@ $(PROJECT_DIR)/page/NavigationNavigationType.idl
 $(PROJECT_DIR)/page/NavigationTransition.idl
 $(PROJECT_DIR)/page/Navigator+LoginStatus.idl
 $(PROJECT_DIR)/page/Navigator+UserActivation.idl
+$(PROJECT_DIR)/page/NavigatorGlobalPrivacyControl.idl
 $(PROJECT_DIR)/page/Navigator.idl
 $(PROJECT_DIR)/page/NavigatorCookies.idl
 $(PROJECT_DIR)/page/NavigatorID.idl

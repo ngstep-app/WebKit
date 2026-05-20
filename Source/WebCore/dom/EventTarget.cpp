@@ -48,12 +48,18 @@
 #include "ScriptController.h"
 #include "ScriptDisallowedScope.h"
 #include "Settings.h"
+#include "WebCoreOpaqueRoot.h"
+#include <JavaScriptCore/HeapCellInlines.h>
+#include <JavaScriptCore/JSCJSValueStructure.h>
 #include <wtf/MainThread.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/Ref.h>
 #include <wtf/SetForScope.h>
 #include <wtf/StdLibExtras.h>
 #include <wtf/TZoneMallocInlines.h>
+
+template class mpark::variant<WebCore::AddEventListenerOptions, bool>;
+template class mpark::variant<WebCore::EventListenerOptions, bool>;
 
 namespace WebCore {
 
@@ -76,6 +82,11 @@ EventTarget::~EventTarget()
     // Explicitly tearing down since WeakPtrImpl can be alive longer than EventTarget.
     if (auto* eventTargetData = this->eventTargetData())
         eventTargetData->clear();
+}
+
+WebCoreOpaqueRoot EventTarget::opaqueRoot() const
+{
+    return WebCoreOpaqueRoot { const_cast<EventTarget*>(this) };
 }
 
 bool EventTarget::isPaymentRequest() const
@@ -215,7 +226,7 @@ bool EventTarget::setAttributeEventListener(const AtomString& eventType, RefPtr<
         listener->checkValidityForEventTarget(*this);
 #endif
 
-        eventTargetData()->eventListenerMap.replace(eventType, *existingListener, *listener, { });
+        eventTargetData()->eventListenerMap.replacePreservingOptions(eventType, *existingListener, *listener);
 
         InspectorInstrumentation::didAddEventListener(*this, eventType, *listener, false);
 

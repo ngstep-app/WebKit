@@ -23,9 +23,7 @@
 #pragma once
 
 #include <JavaScriptCore/ArgList.h>
-#include <JavaScriptCore/CallFrame.h>
 #include <JavaScriptCore/CommonIdentifiers.h>
-#include <JavaScriptCore/EnsureStillAliveHere.h>
 #include <JavaScriptCore/GCOwnedDataScope.h>
 #include <JavaScriptCore/GetVM.h>
 #include <JavaScriptCore/Identifier.h>
@@ -33,10 +31,8 @@
 #include <JavaScriptCore/PropertySlot.h>
 #include <JavaScriptCore/Structure.h>
 #include <JavaScriptCore/ThrowScope.h>
-#include <array>
 #include <wtf/CheckedArithmetic.h>
 #include <wtf/ForbidHeapAllocation.h>
-#include <wtf/MathExtras.h>
 #include <wtf/UnalignedAccess.h>
 #include <wtf/text/StringView.h>
 
@@ -270,7 +266,7 @@ public:
     ALWAYS_INLINE JSRopeString* asRope()
     {
         ASSERT(isRope());
-        return jsCast<JSRopeString*>(this);
+        return uncheckedDowncast<JSRopeString>(this);
     }
 
     ALWAYS_INLINE bool isNonSubstringRope() const
@@ -282,6 +278,8 @@ public:
 
     ALWAYS_INLINE JSString* tryReplaceOneChar(JSGlobalObject*, char16_t, JSString* replacement);
     inline std::optional<size_t> tryFindOneChar(JSGlobalObject*, char16_t character, unsigned& startPosition) const;
+    inline std::optional<size_t> tryFindLastOneChar(JSGlobalObject*, char16_t character, unsigned& startPosition) const;
+    ALWAYS_INLINE std::optional<char16_t> tryGetCharAt(JSGlobalObject*, unsigned index) const;
 
     bool isSubstring() const;
 protected:
@@ -752,6 +750,8 @@ private:
     friend JSString* jsAtomString(JSGlobalObject*, VM&, JSString*, JSString*, JSString*);
 };
 
+template<> void JSRopeString::RopeBuilder<RecordOverflow>::expand();
+
 JS_EXPORT_PRIVATE JSString* jsStringWithCacheSlowCase(VM&, StringImpl&);
 
 // JSString::is8Bit is safe to be called concurrently. Concurrent threads can access is8Bit even if the main thread
@@ -774,7 +774,7 @@ ALWAYS_INLINE unsigned JSString::length() const
 {
     uintptr_t pointer = fiberConcurrently();
     if (pointer & isRopeInPointer)
-        return jsCast<const JSRopeString*>(this)->length();
+        return uncheckedDowncast<JSRopeString>(this)->length();
     return std::bit_cast<StringImpl*>(pointer)->length();
 }
 
@@ -795,7 +795,7 @@ inline StringImpl* JSString::tryGetValueImpl() const
 inline JSString* asString(JSValue value)
 {
     ASSERT(value.isStringSlow());
-    return jsCast<JSString*>(value.asCell());
+    return uncheckedDowncast<JSString>(value.asCell());
 }
 
 // This MUST NOT GC.
@@ -858,7 +858,7 @@ ALWAYS_INLINE void JSString::swapToAtomString(VM& vm, RefPtr<AtomStringImpl>&& a
 ALWAYS_INLINE Identifier JSString::toIdentifier(JSGlobalObject* globalObject) const
 {
     if constexpr (validateDFGDoesGC)
-        vm().verifyCanGC();
+        getVM(globalObject).verifyCanGC();
     if (isRope())
         return static_cast<const JSRopeString*>(this)->toIdentifier(globalObject);
     VM& vm = getVM(globalObject);
@@ -878,7 +878,7 @@ ALWAYS_INLINE Identifier JSString::toIdentifier(JSGlobalObject* globalObject) co
 ALWAYS_INLINE GCOwnedDataScope<AtomStringImpl*> JSString::toAtomString(JSGlobalObject* globalObject) const
 {
     if constexpr (validateDFGDoesGC)
-        vm().verifyCanGC();
+        getVM(globalObject).verifyCanGC();
     if (isRope())
         return { this, static_cast<const JSRopeString*>(this)->resolveRopeToAtomString(globalObject) };
     if (valueInternal().impl()->isAtom())
@@ -891,7 +891,7 @@ ALWAYS_INLINE GCOwnedDataScope<AtomStringImpl*> JSString::toAtomString(JSGlobalO
 ALWAYS_INLINE GCOwnedDataScope<AtomStringImpl*> JSString::toExistingAtomString(JSGlobalObject* globalObject) const
 {
     if constexpr (validateDFGDoesGC)
-        vm().verifyCanGC();
+        getVM(globalObject).verifyCanGC();
     if (isRope())
         return static_cast<const JSRopeString*>(this)->resolveRopeToExistingAtomString(globalObject);
     if (valueInternal().impl()->isAtom())
@@ -906,7 +906,7 @@ ALWAYS_INLINE GCOwnedDataScope<AtomStringImpl*> JSString::toExistingAtomString(J
 inline GCOwnedDataScope<const String&> JSString::value(JSGlobalObject* globalObject) const
 {
     if constexpr (validateDFGDoesGC)
-        vm().verifyCanGC();
+        getVM(globalObject).verifyCanGC();
     if (isRope())
         return { this, static_cast<const JSRopeString*>(this)->resolveRope(globalObject) };
     return { this, valueInternal() };
@@ -915,8 +915,6 @@ inline GCOwnedDataScope<const String&> JSString::value(JSGlobalObject* globalObj
 inline GCOwnedDataScope<const String&> JSString::tryGetValue(bool allocationAllowed) const
 {
     if (allocationAllowed) {
-        if constexpr (validateDFGDoesGC)
-            vm().verifyCanGC();
         if (isRope()) {
             // Pass nullptr for the JSGlobalObject so that resolveRope does not throw in the event of an OOM error.
             return { this, static_cast<const JSRopeString*>(this)->resolveRope(nullptr) };
@@ -942,7 +940,7 @@ inline JSString* jsString(VM& vm, const String& s)
     if (!size)
         return vm.smallStrings.emptyString();
     if (size == 1) {
-        if (auto c = s.characterAt(0); c <= maxSingleCharacterString)
+        if (auto c = s.codeUnitAt(0); c <= maxSingleCharacterString)
             return vm.smallStrings.singleCharacterString(c);
     }
     return JSString::create(vm, *s.impl());
@@ -954,7 +952,7 @@ inline JSString* jsString(VM& vm, String&& s)
     if (!size)
         return vm.smallStrings.emptyString();
     if (size == 1) {
-        if (auto c = s.characterAt(0); c <= maxSingleCharacterString)
+        if (auto c = s.codeUnitAt(0); c <= maxSingleCharacterString)
             return vm.smallStrings.singleCharacterString(c);
     }
     return JSString::create(vm, s.releaseImpl().releaseNonNull());
@@ -976,7 +974,7 @@ inline JSString* jsString(VM& vm, StringView s)
     if (!size)
         return vm.smallStrings.emptyString();
     if (size == 1) {
-        if (auto c = s.characterAt(0); c <= maxSingleCharacterString)
+        if (auto c = s.codeUnitAt(0); c <= maxSingleCharacterString)
             return vm.smallStrings.singleCharacterString(c);
     }
     auto impl = s.is8Bit() ? StringImpl::create(s.span8()) : StringImpl::create(s.span16());
@@ -1017,7 +1015,7 @@ inline JSString* tryJSSubstringImpl(VM& vm, JSString* base, unsigned offset, uns
         // Resolve non-substring rope bases so we don't have to deal with it.
         // FIXME: Evaluate if this would be worth adding more branches.
         if (base->isSubstring()) {
-            JSRopeString* baseRope = jsCast<JSRopeString*>(base);
+            JSRopeString* baseRope = uncheckedDowncast<JSRopeString>(base);
             ASSERT(!baseRope->substringBase()->isRope());
             return jsSubstringOfResolved(vm, nullptr, baseRope->substringBase(), baseRope->substringOffset() + offset, length);
         }
@@ -1028,7 +1026,7 @@ inline JSString* tryJSSubstringImpl(VM& vm, JSString* base, unsigned offset, uns
         if (depth >= maxTraversalDepth)
             return nullptr;
 
-        auto* rope = jsCast<JSRopeString*>(base);
+        auto* rope = uncheckedDowncast<JSRopeString>(base);
         auto* fiber0 = rope->fiber0();
         ASSERT(fiber0);
         if (offset < fiber0->length()) {
@@ -1068,7 +1066,7 @@ inline JSString* jsSubstring(JSGlobalObject* globalObject, VM& vm, JSString* bas
     RETURN_IF_EXCEPTION(scope, nullptr);
 
     if (!result) {
-        jsCast<JSRopeString*>(base)->resolveRope(globalObject);
+        uncheckedDowncast<JSRopeString>(base)->resolveRope(globalObject);
         RETURN_IF_EXCEPTION(scope, nullptr);
         return jsSubstringOfResolved(vm, nullptr, base, offset, length);
     }
@@ -1094,7 +1092,7 @@ inline JSString* jsSubstring(VM& vm, const String& s, unsigned offset, unsigned 
     if (!length)
         return vm.smallStrings.emptyString();
     if (length == 1) {
-        if (auto c = s.characterAt(offset); c <= maxSingleCharacterString)
+        if (auto c = s.codeUnitAt(offset); c <= maxSingleCharacterString)
             return vm.smallStrings.singleCharacterString(c);
     }
     auto impl = StringImpl::createSubstringSharingImpl(*s.impl(), offset, length);
@@ -1109,7 +1107,7 @@ inline JSString* jsOwnedString(VM& vm, const String& s)
     if (!size)
         return vm.smallStrings.emptyString();
     if (size == 1) {
-        if (auto c = s.characterAt(0); c <= maxSingleCharacterString)
+        if (auto c = s.codeUnitAt(0); c <= maxSingleCharacterString)
             return vm.smallStrings.singleCharacterString(c);
     }
     return JSString::createHasOtherOwner(vm, *s.impl());
@@ -1184,7 +1182,7 @@ inline bool isJSString(JSValue v)
 ALWAYS_INLINE GCOwnedDataScope<StringView> JSRopeString::view(JSGlobalObject* globalObject) const
 {
     if constexpr (validateDFGDoesGC)
-        vm().verifyCanGC();
+        getVM(globalObject).verifyCanGC();
     if (isSubstring()) {
         auto& base = substringBase()->valueInternal();
         // We return the substring as that's the owner and JSStringJoiner will end up retaining a reference to the underlying string.
@@ -1207,6 +1205,15 @@ inline bool JSString::isSubstring() const
 }
 
 } // namespace JSC
+
+SPECIALIZE_TYPE_TRAITS_BEGIN(JSC::JSRopeString)
+    static bool isType(const JSC::JSCell& cell)
+    {
+        auto* string = dynamicDowncast<JSC::JSString>(cell);
+        return string && string->isRope();
+    }
+SPECIALIZE_TYPE_TRAITS_END()
+
 namespace WTF {
 
 template<>

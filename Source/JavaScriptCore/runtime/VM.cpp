@@ -35,6 +35,7 @@
 #include "ArgList.h"
 #include "BuiltinExecutables.h"
 #include "BytecodeIntrinsicRegistry.h"
+#include "CallMode.h"
 #include "CheckpointOSRExitSideState.h"
 #include "CodeBlock.h"
 #include "CodeCache.h"
@@ -48,7 +49,6 @@
 #include "Disassembler.h"
 #include "DoublePredictionFuzzerAgent.h"
 #include "ErrorInstance.h"
-#include "EvacuatedStack.h"
 #include "EvalCodeBlockInlines.h"
 #include "EvalExecutableInlines.h"
 #include "Exception.h"
@@ -64,6 +64,7 @@
 #include "IncrementalSweeper.h"
 #include "Interpreter.h"
 #include "IntlCache.h"
+#include "IntlObject.h"
 #include "JITCode.h"
 #include "JITOperationList.h"
 #include "JITSizeStatistics.h"
@@ -78,14 +79,13 @@
 #include "JSMap.h"
 #include "JSMicrotask.h"
 #include "JSMicrotaskDispatcher.h"
+#include "JSModuleLoaderInlines.h"
 #include "JSPromise.h"
 #include "JSPromiseCombinatorsContextInlines.h"
 #include "JSPromiseCombinatorsGlobalContext.h"
 #include "JSPromiseConstructor.h"
 #include "JSPromiseReaction.h"
 #include "JSPropertyNameEnumeratorInlines.h"
-#include "JSScriptFetchParametersInlines.h"
-#include "JSScriptFetcherInlines.h"
 #include "JSSet.h"
 #include "JSSourceCodeInlines.h"
 #include "JSTemplateObjectDescriptorInlines.h"
@@ -96,8 +96,12 @@
 #include "MegamorphicCache.h"
 #include "MicrotaskQueueInlines.h"
 #include "MinimumReservedZoneSize.h"
+#include "ModuleGraphLoadingStateInlines.h"
+#include "ModuleLoadingContextInlines.h"
+#include "ModuleLoaderPayloadInlines.h"
 #include "ModuleProgramCodeBlockInlines.h"
 #include "ModuleProgramExecutableInlines.h"
+#include "ModuleRegistryEntryInlines.h"
 #include "NarrowingNumberPredictionFuzzerAgent.h"
 #include "NativeExecutable.h"
 #include "NumberObject.h"
@@ -145,6 +149,7 @@
 #include "WeakGCMapInlines.h"
 #include "WideningNumberPredictionFuzzerAgent.h"
 #include <wtf/CryptographicallyRandomNumber.h>
+#include <wtf/MemoryPressureHandler.h>
 #include <wtf/ProcessID.h>
 #include <wtf/ReadWriteLock.h>
 #include <wtf/SimpleStats.h>
@@ -165,6 +170,7 @@
 
 #if ENABLE(WEBASSEMBLY)
 #include "JSWebAssemblyInstance.h"
+#include "JSWebAssemblyStreamingContextInlines.h"
 #endif
 
 #if PLATFORM(COCOA)
@@ -181,6 +187,11 @@
 namespace JSC {
 
 DEFINE_ALLOCATOR_WITH_HEAP_IDENTIFIER(VM);
+
+MicrotaskQueue& VM::defaultMicrotaskQueue() { return m_defaultMicrotaskQueue.get(); }
+
+bool VM::currentThreadIsHoldingAPILock() const { return m_apiLock->currentThreadIsHoldingLock(); }
+JSLock& VM::apiLock() { return m_apiLock.get(); }
 
 // Note: Platform.h will enforce that ENABLE(ASSEMBLER) is true if either
 // ENABLE(JIT) or ENABLE(YARR_JIT) or both are enabled. The code below
@@ -325,10 +336,17 @@ VM::VM(VMType vmType, HeapType heapType, WTF::RunLoop* runLoop, bool* success)
     functionExecutableStructure.setWithoutWriteBarrier(FunctionExecutable::createStructure(*this, nullptr, jsNull()));
 #if ENABLE(WEBASSEMBLY)
     pinballCompletionStructure.setWithoutWriteBarrier(PinballCompletion::createStructure(*this, nullptr, jsNull()));
+    webAssemblyStreamingContextStructure.setWithoutWriteBarrier(JSWebAssemblyStreamingContext::createStructure(*this, nullptr, jsNull()));
 #endif
     moduleProgramExecutableStructure.setWithoutWriteBarrier(ModuleProgramExecutable::createStructure(*this, nullptr, jsNull()));
-    promiseReactionStructure.setWithoutWriteBarrier(JSPromiseReaction::createStructure(*this, nullptr, jsNull()));
+    slimPromiseReactionStructure.setWithoutWriteBarrier(JSSlimPromiseReaction::createStructure(*this, nullptr, jsNull()));
+    fullPromiseReactionStructure.setWithoutWriteBarrier(JSFullPromiseReaction::createStructure(*this, nullptr, jsNull()));
     jsMicrotaskDispatcherStructure.setWithoutWriteBarrier(JSMicrotaskDispatcher::createStructure(*this, nullptr, jsNull()));
+    moduleLoaderStructure.setWithoutWriteBarrier(JSModuleLoader::createStructure(*this, nullptr, jsNull()));
+    moduleRegistryEntryStructure.setWithoutWriteBarrier(ModuleRegistryEntry::createStructure(*this, nullptr, jsNull()));
+    moduleLoadingContextStructure.setWithoutWriteBarrier(ModuleLoadingContext::createStructure(*this, nullptr, jsNull()));
+    moduleLoaderPayloadStructure.setWithoutWriteBarrier(ModuleLoaderPayload::createStructure(*this, nullptr, jsNull()));
+    moduleGraphLoadingStateStructure.setWithoutWriteBarrier(ModuleGraphLoadingState::createStructure(*this, nullptr, jsNull()));
     promiseCombinatorsContextStructure.setWithoutWriteBarrier(JSPromiseCombinatorsContext::createStructure(*this, nullptr, jsNull()));
     promiseCombinatorsGlobalContextStructure.setWithoutWriteBarrier(JSPromiseCombinatorsGlobalContext::createStructure(*this, nullptr, jsNull()));
     regExpStructure.setWithoutWriteBarrier(RegExp::createStructure(*this, nullptr, jsNull()));
@@ -346,8 +364,6 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
     cellButterflyOnlyAtomStringsStructure.setWithoutWriteBarrier(JSCellButterfly::createStructure(*this, nullptr, jsNull(), CopyOnWriteArrayWithContiguous));
 
     sourceCodeStructure.setWithoutWriteBarrier(JSSourceCode::createStructure(*this, nullptr, jsNull()));
-    scriptFetcherStructure.setWithoutWriteBarrier(JSScriptFetcher::createStructure(*this, nullptr, jsNull()));
-    scriptFetchParametersStructure.setWithoutWriteBarrier(JSScriptFetchParameters::createStructure(*this, nullptr, jsNull()));
     structureChainStructure.setWithoutWriteBarrier(StructureChain::createStructure(*this, nullptr, jsNull()));
     sparseArrayValueMapStructure.setWithoutWriteBarrier(SparseArrayValueMap::createStructure(*this, nullptr, jsNull()));
     templateObjectDescriptorStructure.setWithoutWriteBarrier(JSTemplateObjectDescriptor::createStructure(*this, nullptr, jsNull()));
@@ -366,6 +382,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
     bigIntStructure.setWithoutWriteBarrier(JSBigInt::createStructure(*this, nullptr, jsNull()));
     m_orderedHashTableDeletedValue.setWithoutWriteBarrier(OrderedHashMap::createDeletedValue(*this));
     m_orderedHashTableSentinel.setWithoutWriteBarrier(OrderedHashMap::createSentinel(*this));
+    m_sortScratchSentinel.setWithoutWriteBarrier(JSCellButterfly::create(*this, CopyOnWriteArrayWithContiguous, 0));
 
     // Eagerly initialize constant cells since the concurrent compiler can access them.
     if (Options::useJIT()) {
@@ -407,17 +424,17 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
         std::call_once(registerFlag, [this]() {
             int pid = getpid();
             const char* key = "com.apple.WebKit.bytecode.profiler";
-            dataLogF("<BYTECODE.STAT><%d> Registering callback for dumping profiles, dumping to %s.\n", pid, pathOutString->data());
-            dataLogF("<BYTECODE.STAT><%d> Use `notifyutil -v -p %s` to dump statistics.\n", pid, key);
+            dataLogLn("<BYTECODE.STAT><", pid, "> Registering callback for dumping profiles, dumping to ", pathOutString.get(), ".");
+            dataLogLn("<BYTECODE.STAT><", pid, "> Use `notifyutil -v -p ", key, "` to dump statistics.");
 
             int token;
             notify_register_dispatch(key, &token, mainDispatchQueueSingleton(), ^(int) {
-                dataLogF("<BYTECODE.STAT><%d> Dumping\n", pid);
+                dataLogLn("<BYTECODE.STAT><", pid, "> Dumping");
                 if (!m_perBytecodeProfiler->save(pathOutString->data()))
-                    dataLogF("<BYTECODE.STAT><%d> Failed to dump to %s. Do you need to add a sandbox extension? ((allow file-write* (subpath \"/private/tmp/\")) in WebProcess.sb.in\n", pid, pathOutString->data());
+                    dataLogLn("<BYTECODE.STAT><", pid, "> Failed to dump to ", pathOutString.get(), ". Do you need to add a sandbox extension? ((allow file-write* (subpath \"/private/tmp/\")) in WebProcess.sb.in");
                 else
-                    dataLogF("<BYTECODE.STAT><%d> Dumped to %s\n", pid, pathOutString->data());
-                dataLogF("<BYTECODE.STAT><%d> Dumping finished\n", pid);
+                    dataLogLn("<BYTECODE.STAT><", pid, "> Dumped to ", pathOutString.get());
+                dataLogLn("<BYTECODE.STAT><", pid, "> Dumping finished");
             });
         });
 #endif
@@ -499,6 +516,12 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 #endif
 
     Config::finalize();
+
+    if (!isInMiniMode()) {
+        initializeAvailableTimeZones();
+        if (heapType == HeapType::Large)
+            dateCache.timeZoneDisplayName(/* isDST */ false);
+    }
 
     // We must set this at the end only after the VM is fully initialized.
     WTF::storeStoreFence();
@@ -596,7 +619,7 @@ VM::~VM()
 #if ENABLE(WEBASSEMBLY_DEBUGGER)
     if (Options::enableWasmDebugger()) [[unlikely]] {
         auto& debugServer = Wasm::DebugServer::singleton();
-        if (debugServer.isConnected())
+        if (debugServer.hasDebugger())
             debugServer.execution().notifyVMDestruction(this);
     }
 #endif
@@ -966,6 +989,21 @@ void VM::deleteAllCode(DeleteAllCodeEffort effort)
         heap.deleteAllCodeBlocks(effort);
         heap.deleteAllUnlinkedCodeBlocks(effort);
         heap.reportAbandonedObjectGraph();
+
+        if (MemoryPressureHandler::singleton().memoryPressureStatus() == SystemMemoryPressureStatus::Normal)
+            return;
+        // If we're deleting all code as a response to memory pressure, allow
+        // worklist threads to temporarily stop, which frees any thread-local
+        // data (specifically, any bulky heap-allocated data for the assembler
+        // buffer).
+#if ENABLE(JIT)
+        if (auto worklist = JITWorklist::existingGlobalWorklistOrNull())
+            worklist->requestTemporaryStop();
+#if ENABLE(WEBASSEMBLY)
+        if (auto worklist = Wasm::existingWorklistOrNull())
+            worklist->requestTemporaryStop();
+#endif // ENABLE(WEBASSEMBLY)
+#endif // ENABLE(JIT)
     });
 }
 
@@ -1020,6 +1058,11 @@ void VM::throwTerminationException()
 {
     ASSERT(hasTerminationRequest());
     ASSERT(!traps().isDeferringTermination());
+    // Termination can occur while executing DFG/FTL code that has set
+    // doesGC expectations. Reset the expectation so that subsequent
+    // heap access (e.g. JSLock re-acquisition) doesn't hit a stale
+    // doesGC assertion.
+    setDoesGCExpectation(true, DoesGCCheck::Special::Termination);
     setException(terminationException());
     if (m_executionForbiddenOnTermination)
         setExecutionForbidden();
@@ -1063,7 +1106,7 @@ Exception* VM::throwException(JSGlobalObject* globalObject, Exception* exception
 
 Exception* VM::throwException(JSGlobalObject* globalObject, JSValue thrownValue)
 {
-    Exception* exception = jsDynamicCast<Exception*>(thrownValue);
+    Exception* exception = dynamicDowncast<Exception>(thrownValue);
     if (!exception)
         exception = Exception::create(*this, thrownValue);
 
@@ -1182,21 +1225,6 @@ void VM::scanSideState(ConservativeRoots& roots) const
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 #endif // ENABLE(DFG_JIT)
-
-#if ENABLE(WEBASSEMBLY)
-
-void VM::gatherEvacuatedStackRoots(ConservativeRoots& roots)
-{
-    Locker locker { m_evacuatedStacksLock };
-    for (auto* slice : m_evacuatedStackSlices) {
-        std::span<Register> slots = slice->slots();
-        roots.add(slots.data(), slots.data() + slots.size());
-    }
-    for (const auto& span : m_evacuatedCalleeSaves)
-        roots.add(span.data(), span.data() + span.size());
-}
-
-#endif // ENABLE(WEBASSEMBLY)
 
 void VM::pushCheckpointOSRSideState(std::unique_ptr<CheckpointOSRExitSideState>&& payload)
 {
@@ -1504,6 +1532,11 @@ void VM::verifyExceptionCheckNeedIsSatisfied(unsigned recursionDepth, ExceptionE
         RELEASE_ASSERT_NOT_REACHED_WITH_MESSAGE("exception check validation failed");
     }
 }
+
+void VM::clearNativeStackTraceOfLastThrow()
+{
+    m_nativeStackTraceOfLastThrow = nullptr;
+}
 #endif
 
 ScratchBuffer* VM::scratchBufferForSize(size_t size)
@@ -1545,32 +1578,6 @@ bool VM::isScratchBuffer(void* ptr)
             return true;
     }
     return false;
-}
-
-void VM::addEvacuatedStackSlice(EvacuatedStackSlice* slice)
-{
-    Locker lock { m_evacuatedStacksLock };
-    m_evacuatedStackSlices.append(slice);
-}
-
-void VM::removeEvacuatedStackSlice(EvacuatedStackSlice* slice)
-{
-    Locker lock { m_evacuatedStacksLock };
-    m_evacuatedStackSlices.removeAll(slice);
-}
-
-void VM::addEvacuatedCalleeSaves(std::span<CPURegister> span)
-{
-    Locker lock { m_evacuatedStacksLock };
-    m_evacuatedCalleeSaves.constructAndAppend(span);
-}
-
-void VM::removeEvacuatedCalleeSaves(std::span<CPURegister> span)
-{
-    Locker lock { m_evacuatedStacksLock };
-    m_evacuatedCalleeSaves.removeAllMatching([&](const std::span<CPURegister>& existing) {
-        return existing.data() == span.data() && existing.size() == span.size();
-    });
 }
 
 Ref<Waiter> VM::syncWaiter()
@@ -1856,10 +1863,17 @@ void VM::visitAggregateImpl(Visitor& visitor)
 #if ENABLE(WEBASSEMBLY)
     visitor.append(pinballCompletionStructure);
     visitor.append(webAssemblyCalleeGroupStructure);
+    visitor.append(webAssemblyStreamingContextStructure);
 #endif
     visitor.append(moduleProgramExecutableStructure);
-    visitor.append(promiseReactionStructure);
+    visitor.append(slimPromiseReactionStructure);
+    visitor.append(fullPromiseReactionStructure);
     visitor.append(jsMicrotaskDispatcherStructure);
+    visitor.append(moduleLoaderStructure);
+    visitor.append(moduleRegistryEntryStructure);
+    visitor.append(moduleLoadingContextStructure);
+    visitor.append(moduleLoaderPayloadStructure);
+    visitor.append(moduleGraphLoadingStateStructure);
     visitor.append(promiseCombinatorsContextStructure);
     visitor.append(promiseCombinatorsGlobalContextStructure);
     visitor.append(regExpStructure);
@@ -1869,8 +1883,6 @@ void VM::visitAggregateImpl(Visitor& visitor)
         visitor.append(structure);
     visitor.append(cellButterflyOnlyAtomStringsStructure);
     visitor.append(sourceCodeStructure);
-    visitor.append(scriptFetcherStructure);
-    visitor.append(scriptFetchParametersStructure);
     visitor.append(structureChainStructure);
     visitor.append(sparseArrayValueMapStructure);
     visitor.append(templateObjectDescriptorStructure);
@@ -1893,6 +1905,8 @@ void VM::visitAggregateImpl(Visitor& visitor)
     visitor.append(m_emptyPropertyNameEnumerator);
     visitor.append(m_orderedHashTableDeletedValue);
     visitor.append(m_orderedHashTableSentinel);
+    visitor.append(m_cachedSortScratch);
+    visitor.append(m_sortScratchSentinel);
     visitor.append(m_fastCanConstructBoundExecutable);
     visitor.append(m_slowCanConstructBoundExecutable);
     visitor.append(lastCachedString);

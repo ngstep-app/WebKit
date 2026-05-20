@@ -42,11 +42,9 @@
 #include <WebCore/MediaElementSession.h>
 #include <WebCore/MediaPlayer.h>
 #include <WebCore/MediaProducer.h>
-#include <WebCore/MediaResourceSniffer.h>
 #include <WebCore/MediaUniqueIdentifier.h>
 #include <WebCore/MessageTargetForTesting.h>
 #include <WebCore/PlatformDynamicRangeLimit.h>
-#include <WebCore/ReducedResolutionSeconds.h>
 #include <WebCore/TextTrackClient.h>
 #include <WebCore/URLKeepingBlobAlive.h>
 #include <WebCore/VideoTrackClient.h>
@@ -138,6 +136,7 @@ class RemotePlayback;
 
 using CueInterval = PODInterval<MediaTime, TextTrackCue*>;
 using CueList = Vector<CueInterval>;
+using PlatformDisplayID = uint32_t;
 
 using MediaProvider = Variant<
 #if ENABLE(MEDIA_STREAM)
@@ -159,6 +158,9 @@ public:
 
     virtual void audioSessionCategoryChanged(AudioSessionCategory, AudioSessionMode, RouteSharingPolicy) { }
     virtual void routingContextUIDChanged(const String&) { }
+
+    virtual void captionTracksChanged() { }
+    virtual void captionsEnabledChanged() { }
 };
 
 class HTMLMediaElement
@@ -530,7 +532,7 @@ public:
 
 #if ENABLE(FULLSCREEN_API)
     void documentFullscreenChanged(bool isChildOfElementFullscreen);
-    WEBCORE_EXPORT bool isChildOfElementFullscreen() const;
+    WEBCORE_EXPORT bool NODELETE isChildOfElementFullscreen() const;
 #endif
 
     bool hasClosedCaptions() const override;
@@ -605,6 +607,8 @@ public:
 
     void resetPlaybackSessionState();
     WEBCORE_EXPORT bool NODELETE isVisibleInViewport() const;
+    virtual bool isIntersectingViewport() const { return false; }
+    WEBCORE_EXPORT ViewportVisibility viewportVisibility() const;
     bool NODELETE hasEverNotifiedAboutPlaying() const;
     void setShouldDelayLoadEvent(bool);
 
@@ -737,6 +741,14 @@ public:
     }
 
     void forceStereoDecoding() { m_forceStereoDecoding = true; }
+
+#if ENABLE(MEDIA_SESSION)
+    RefPtr<MediaSession> mediaSessionIfNeededAndExists() const;
+#endif
+
+    void mediaSessionCaptionTracksChanged();
+    void mediaSessionCaptionsEnabledChanged();
+
 protected:
     HTMLMediaElement(const QualifiedName&, Document&, bool createdByParser);
     virtual ~HTMLMediaElement();
@@ -1059,6 +1071,7 @@ private:
     bool shouldOverrideBackgroundPlaybackRestriction(PlatformMediaSession::InterruptionType) const override;
     bool shouldOverrideBackgroundLoadingRestriction() const override;
     bool canProduceAudio() const final;
+    bool computeCanProduceAudio() const;
     bool isEnded() const final { return ended(); }
     MediaTime mediaSessionDuration() const final;
     bool hasMediaStreamSource() const final;
@@ -1128,9 +1141,6 @@ private:
     void checkForAudioAndVideo();
 
     bool needsContentTypeToPlay() const;
-    using SnifferPromise = MediaResourceSniffer::Promise;
-    Ref<SnifferPromise> sniffForContentType(const URL&);
-    void cancelSniffer();
 
     void playPlayer();
     void pausePlayer();
@@ -1181,6 +1191,11 @@ private:
     void rebuildMediaEngineForWirelessPlayback();
 #endif
 
+    void screenPropertiesChanged(PlatformDisplayID);
+#if PLATFORM(MAC)
+    void setScreenReserved(bool);
+#endif
+
     Timer m_progressEventTimer;
     Timer m_playbackProgressTimer;
     Timer m_scanTimer;
@@ -1200,6 +1215,7 @@ private:
     TaskCancellationGroup m_updateShouldAutoplayTaskCancellationGroup;
     RefPtr<TimeRanges> m_playedTimeRanges;
     TaskCancellationGroup m_asyncEventsCancellationGroup;
+    TaskCancellationGroup m_periodicTimeupdateCancellationGroup;
     TaskCancellationGroup m_volumeRevertTaskCancellationGroup;
 
     PlayPromiseVector m_pendingPlayPromises;
@@ -1451,6 +1467,9 @@ private:
 
     bool m_showingStats { false };
 
+    // Cached by canProduceAudioChanged() so virtualHasPendingActivity() can read it safely from the GC thread.
+    std::atomic<bool> m_cachedCanProduceAudio { false };
+
 #if ENABLE(SPEECH_SYNTHESIS)
     RefPtr<SpeechSynthesis> m_speechSynthesis;
 #endif
@@ -1462,9 +1481,6 @@ private:
     bool m_changingSynthesisState { false };
 
     FloatSize m_videoLayerSize { };
-    RefPtr<MediaResourceSniffer> m_sniffer;
-    bool m_networkErrorOccured { false };
-    std::optional<ContentType> m_lastContentTypeUsed;
 
 #if HAVE(SPATIAL_TRACKING_LABEL)
     using DefaultSpatialTrackingLabelChangedObserver = WTF::Observer<void(String&&)>;
@@ -1497,6 +1513,13 @@ private:
     RefPtr<AggregateMessageClientForTesting> m_internalMessageClient;
 
     bool m_forceStereoDecoding { false };
+
+    using ScreenPropertiesChangedObserver = Observer<void(PlatformDisplayID)>;
+    RefPtr<ScreenPropertiesChangedObserver> m_screenPropertiesChangedObserver;
+
+#if PLATFORM(MAC)
+    bool m_screenReserved { false };
+#endif
 };
 
 String convertEnumerationToString(HTMLMediaElement::AutoplayEventPlaybackState);

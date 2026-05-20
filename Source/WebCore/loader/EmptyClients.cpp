@@ -92,7 +92,6 @@
 #include <pal/SessionID.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/TZoneMallocInlines.h>
-#include <wtf/Unexpected.h>
 
 #if ENABLE(CONTENT_EXTENSIONS)
 #include "CompiledContentExtension.h"
@@ -1255,6 +1254,7 @@ PageConfiguration pageConfigurationWithEmptyClients(std::optional<PageIdentifier
 {
     PageConfiguration pageConfiguration {
         identifier,
+        std::nullopt,
         sessionID,
         makeUniqueRef<EmptyEditorClient>(),
         adoptRef(*new EmptySocketProvider),

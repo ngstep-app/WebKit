@@ -73,7 +73,7 @@ RefPtr<SkiaGPUAtlas> SkiaGPUAtlas::create(const SkiaImageAtlasLayout& layout, Re
     return adoptRef(*new SkiaGPUAtlas(WTF::move(atlasTexture), WTF::move(backendTexture), layout, atlasSize));
 }
 
-bool SkiaGPUAtlas::uploadImages()
+void SkiaGPUAtlas::uploadImages()
 {
     Vector<uint8_t> conversionBuffer;
 
@@ -102,15 +102,14 @@ bool SkiaGPUAtlas::uploadImages()
     if (auto* gpuBuffer = m_atlasTexture->memoryMappedGPUBuffer()) {
         if (gpuBuffer->isLinear() || gpuBuffer->isVivanteSuperTiled()) {
             auto writeScope = makeGPUBufferWriteScope(*gpuBuffer);
-            if (!writeScope)
-                return false;
+            RELEASE_ASSERT_WITH_MESSAGE(writeScope, "Failed to map GPU buffer for atlas upload");
 
             for (const auto& entry : m_layout->entries()) {
                 if (auto pixels = pixelDataInSRGB(entry.rasterImage))
                     gpuBuffer->updateContents(*writeScope, pixels->first, entry.atlasRect, pixels->second);
             }
 
-            return true;
+            return;
         }
     }
 #endif
@@ -120,8 +119,6 @@ bool SkiaGPUAtlas::uploadImages()
         if (auto pixels = pixelDataInSRGB(entry.rasterImage))
             m_atlasTexture->updateContents(pixels->first, entry.atlasRect, IntPoint::zero(), pixels->second, PixelFormat::BGRA8);
     }
-
-    return true;
 }
 
 } // namespace WebCore

@@ -24,11 +24,11 @@
  */
 
 #import "config.h"
-#import "Test.h"
+#import "Helpers/Test.h"
 
 #if PLATFORM(COCOA) && ENABLE(WEBGL)
-#import "GraphicsTestUtilities.h"
-#import "WebCoreTestUtilities.h"
+#import "Helpers/GraphicsTestUtilities.h"
+#import "Helpers/WebCoreTestUtilities.h"
 #import <Metal/Metal.h>
 #import <WebCore/Color.h>
 #import <WebCore/GraphicsContextGLCocoa.h>
@@ -40,6 +40,7 @@
 #import <wtf/MemoryFootprint.h>
 #import <wtf/StdLibExtras.h>
 #import <wtf/TZoneMallocInlines.h>
+#import <wtf/Threading.h>
 
 namespace TestWebKitAPI {
 
@@ -62,7 +63,7 @@ class TestedGraphicsContextGLCocoa : public GraphicsContextGLCocoa {
 public:
     static RefPtr<TestedGraphicsContextGLCocoa> create(GraphicsContextGLAttributes&& attributes)
     {
-        auto context = adoptRef(*new TestedGraphicsContextGLCocoa(WTF::move(attributes)));
+        Ref context = adoptRef(*new TestedGraphicsContextGLCocoa(WTF::move(attributes)));
         if (!context->initialize())
             return nullptr;
         return context;

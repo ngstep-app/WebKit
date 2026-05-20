@@ -145,6 +145,10 @@ void WPEQtView::createWebView()
     else if (!d->m_html.isEmpty())
         webkit_web_view_load_html(d->m_webView.get(), d->m_html.toUtf8().constData(), d->m_baseUrl.toString().toUtf8().constData());
 
+    updateWpeToplevelState();
+    connect(window(), &QQuickWindow::activeChanged, this, &WPEQtView::updateWpeToplevelState);
+    connect(window(), &QQuickWindow::windowStateChanged, this, &WPEQtView::updateWpeToplevelState);
+
     Q_EMIT webViewCreated();
 }
 
@@ -506,9 +510,9 @@ void WPEQtView::runJavaScript(const QString& script, const QJSValue& callback)
 void WPEQtView::mousePressEvent(QMouseEvent* event)
 {
     Q_D(WPEQtView);
-    forceActiveFocus();
     if (!d->m_webView)
         return;
+    forceActiveFocus();
     auto* wpeView = webkit_web_view_get_wpe_view(d->m_webView.get());
     wpe_view_dispatch_mouse_press_event(WPE_VIEW_QTQUICK(wpeView), event);
 }
@@ -590,8 +594,27 @@ void WPEQtView::touchEvent(QTouchEvent* event)
     Q_D(WPEQtView);
     if (!d->m_webView)
         return;
+    forceActiveFocus();
     auto* wpeView = webkit_web_view_get_wpe_view(d->m_webView.get());
     wpe_view_dispatch_touch_event(WPE_VIEW_QTQUICK(wpeView), event);
+}
+
+void WPEQtView::focusInEvent(QFocusEvent*)
+{
+    Q_D(WPEQtView);
+    if (!d->m_webView)
+        return;
+    auto* wpeView = webkit_web_view_get_wpe_view(d->m_webView.get());
+    wpe_view_focus_in(WPE_VIEW(wpeView));
+}
+
+void WPEQtView::focusOutEvent(QFocusEvent*)
+{
+    Q_D(WPEQtView);
+    if (!d->m_webView)
+        return;
+    auto* wpeView = webkit_web_view_get_wpe_view(d->m_webView.get());
+    wpe_view_focus_out(WPE_VIEW(wpeView));
 }
 
 void WPEQtView::invalidateSceneGraph()
@@ -602,6 +625,25 @@ void WPEQtView::invalidateSceneGraph()
 
     auto* wpeView = webkit_web_view_get_wpe_view(d->m_webView.get());
     wpe_view_qtquick_invalidate_rendering(WPE_VIEW_QTQUICK(wpeView));
+}
+
+void WPEQtView::updateWpeToplevelState()
+{
+    Q_D(WPEQtView);
+    auto* wpeView = webkit_web_view_get_wpe_view(d->m_webView.get());
+    if (auto* wpeToplevel = wpe_view_get_toplevel(wpeView)) {
+        auto active = window()->isActive();
+        auto states = window()->windowStates();
+        uint32_t toplevelState = WPE_TOPLEVEL_STATE_NONE;
+        if (states & Qt::WindowMaximized)
+            toplevelState |= WPE_TOPLEVEL_STATE_MAXIMIZED;
+        if (states & Qt::WindowFullScreen)
+            toplevelState |= WPE_TOPLEVEL_STATE_FULLSCREEN;
+        if (active)
+            toplevelState |= WPE_TOPLEVEL_STATE_ACTIVE;
+
+        wpe_toplevel_state_changed(wpeToplevel, static_cast<WPEToplevelState>(toplevelState));
+    }
 }
 
 WebKitWebView* WPEQtView::webView() const

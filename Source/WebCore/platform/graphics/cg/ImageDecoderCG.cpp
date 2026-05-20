@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2025 Apple Inc. All rights reserved.
+ * Copyright (C) 2016-2026 Apple Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -30,10 +30,6 @@
 
 #include "FourCC.h"
 #include "ImageFrame.h"
-#include "ImageOrientation.h"
-#include "ImageResolution.h"
-#include "IntPoint.h"
-#include "IntSize.h"
 #include "Logging.h"
 #include "MIMETypeRegistry.h"
 #include "ProcessCapabilities.h"
@@ -46,11 +42,14 @@
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/cf/TypeCastsCF.h>
 
+#include "CoreVideoSoftLink.h"
 #include "MediaAccessibilitySoftLink.h"
 
 #if ENABLE(SPATIAL_IMAGE_DETECTION)
 #include "PhotosFormatSoftLink.h"
 #endif
+
+WTF_DECLARE_CF_TYPE_TRAIT(CGImageMetadata)
 
 namespace WebCore {
 
@@ -122,14 +121,14 @@ static void appendImageSourceOption(CFMutableDictionaryRef options, const IntSiz
     CFDictionarySetValue(options, kCGImageSourceThumbnailMaxPixelSize, maxDimensionNumber.get());
 }
 
-static void NODELETE appendImageSourceOption(CFMutableDictionaryRef options, ShouldDecodeToHDR shouldDecodeToHDR)
+static void appendImageSourceOption(CFMutableDictionaryRef options, DecodingDestination decodingDestination)
 {
 #if HAVE(SUPPORT_HDR_DISPLAY_APIS)
-    if (shouldDecodeToHDR == ShouldDecodeToHDR::Yes)
+    if (decodingDestination == DecodingDestination::ShouldDecodeToHDR)
         CFDictionarySetValue(options, kCGImageSourceDecodeRequest, kCGImageSourceDecodeToHDR);
 #else
     UNUSED_PARAM(options);
-    UNUSED_PARAM(shouldDecodeToHDR);
+    UNUSED_PARAM(decodingDestination);
 #endif
 }
 
@@ -145,19 +144,19 @@ static RetainPtr<CFMutableDictionaryRef> imageSourceMetadataOptions()
     return options;
 }
 
-static RetainPtr<CFDictionaryRef> imageSourceOptions(SubsamplingLevel subsamplingLevel = SubsamplingLevel::Default, ShouldDecodeToHDR shouldDecodeToHDR = ShouldDecodeToHDR::No)
+static RetainPtr<CFDictionaryRef> imageSourceOptions(SubsamplingLevel subsamplingLevel = SubsamplingLevel::Default, DecodingDestination decodingDestination = DecodingDestination::Base)
 {
     static const auto options = createImageSourceOptions().leakRef();
-    if (subsamplingLevel == SubsamplingLevel::Default && shouldDecodeToHDR == ShouldDecodeToHDR::No)
+    if (subsamplingLevel == SubsamplingLevel::Default && decodingDestination == DecodingDestination::Base)
         return options;
 
     auto extendedOptions = adoptCF(CFDictionaryCreateMutableCopy(nullptr, 0, options));
     appendImageSourceOption(extendedOptions.get(), subsamplingLevel);
-    appendImageSourceOption(extendedOptions.get(), shouldDecodeToHDR);
+    appendImageSourceOption(extendedOptions.get(), decodingDestination);
     return extendedOptions;
 }
 
-static RetainPtr<CFDictionaryRef> imageSourceThumbnailOptions(SubsamplingLevel subsamplingLevel, const IntSize& sizeForDrawing, ShouldDecodeToHDR shouldDecodeToHDR = ShouldDecodeToHDR::No)
+static RetainPtr<CFDictionaryRef> imageSourceThumbnailOptions(SubsamplingLevel subsamplingLevel, const IntSize& sizeForDrawing, DecodingDestination decodingDestination = DecodingDestination::Base)
 {
     static CFMutableDictionaryRef options;
     static std::once_flag initializeOptionsOnce;
@@ -168,7 +167,7 @@ static RetainPtr<CFDictionaryRef> imageSourceThumbnailOptions(SubsamplingLevel s
     auto extendedOptions = adoptCF(CFDictionaryCreateMutableCopy(nullptr, 0, options));
     appendImageSourceOption(extendedOptions.get(), subsamplingLevel);
     appendImageSourceOption(extendedOptions.get(), sizeForDrawing);
-    appendImageSourceOption(extendedOptions.get(), shouldDecodeToHDR);
+    appendImageSourceOption(extendedOptions.get(), decodingDestination);
     return extendedOptions;
 }
 
@@ -241,18 +240,26 @@ static ImageOrientation orientationFromProperties(CFDictionaryRef imagePropertie
     return ImageOrientation::fromEXIFValue(exifValue);
 }
 
-static bool mayHaveDensityCorrectedSize(CFDictionaryRef imageProperties)
+static FloatSize frameDensityFromProperties(CFDictionaryRef imageProperties)
 {
     ASSERT(imageProperties);
     auto resolutionXProperty = (CFNumberRef)CFDictionaryGetValue(imageProperties, kCGImagePropertyDPIWidth);
     auto resolutionYProperty = (CFNumberRef)CFDictionaryGetValue(imageProperties, kCGImagePropertyDPIHeight);
     if (!resolutionXProperty || !resolutionYProperty)
-        return false;
+        return { ImageResolution::DefaultResolution, ImageResolution::DefaultResolution };
 
-    float resolutionX, resolutionY;
-    return CFNumberGetValue(resolutionXProperty, kCFNumberFloat32Type, &resolutionX)
-        && CFNumberGetValue(resolutionYProperty, kCFNumberFloat32Type, &resolutionY)
-        && (resolutionX != ImageResolution::DefaultResolution || resolutionY != ImageResolution::DefaultResolution);
+    float resolutionX = 0;
+    float resolutionY = 0;
+    CFNumberGetValue(resolutionXProperty, kCFNumberFloat32Type, &resolutionX);
+    CFNumberGetValue(resolutionYProperty, kCFNumberFloat32Type, &resolutionY);
+
+    return { resolutionX, resolutionY };
+}
+
+static bool mayHaveDensityCorrectedSize(CFDictionaryRef imageProperties)
+{
+    auto density = frameDensityFromProperties(imageProperties);
+    return density.width() != ImageResolution::DefaultResolution || density.height() != ImageResolution::DefaultResolution;
 }
 
 static std::optional<IntSize> densityCorrectedSizeFromProperties(CFDictionaryRef imageProperties)
@@ -517,6 +524,12 @@ IntSize ImageDecoderCG::frameSizeAtIndex(size_t index, SubsamplingLevel subsampl
     return frameSizeFromProperties(properties.get());
 }
 
+FloatSize ImageDecoderCG::frameDensityAtIndex(size_t index) const
+{
+    RetainPtr properties = adoptCF(CGImageSourceCopyPropertiesAtIndex(m_nativeDecoder.get(), index, imageSourceOptions().get()));
+    return frameDensityFromProperties(properties.get());
+}
+
 bool ImageDecoderCG::frameIsCompleteAtIndex(size_t index) const
 {
     ASSERT(frameCount());
@@ -599,10 +612,12 @@ bool ImageDecoderCG::fetchFrameMetaDataAtIndex(size_t index, SubsamplingLevel su
         return false;
 
     if (options.hasSizeForDrawing()) {
-        ASSERT(frame.hasNativeImage(options.shouldDecodeToHDR()));
-        frame.m_size = frame.nativeImage(options.shouldDecodeToHDR())->size();
+        ASSERT(frame.hasNativeImage(options.decodingDestination()));
+        frame.m_size = frame.nativeImage(options.decodingDestination())->size();
     } else
         frame.m_size = frameSizeFromProperties(properties.get());
+
+    frame.m_density = frameDensityFromProperties(properties.get());
 
     if (!mayHaveDensityCorrectedSize(properties.get()))
         frame.m_densityCorrectedSize = std::nullopt;
@@ -620,6 +635,41 @@ bool ImageDecoderCG::fetchFrameMetaDataAtIndex(size_t index, SubsamplingLevel su
     return true;
 }
 
+std::optional<GainMap> ImageDecoderCG::frameGainMapAtIndex(size_t index, const DecodingOptions& decodingOptions)
+{
+#if HAVE(SUPPORT_HDR_DISPLAY_APIS)
+    if (decodingOptions.decodingDestination() != DecodingDestination::BaseAndGainMap)
+        return std::nullopt;
+
+    RetainPtr auxiliaryOptions = adoptCF(CFDictionaryCreateMutable(nullptr, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks));
+    CFDictionarySetValue(auxiliaryOptions.get(), kCGImageAuxiliaryDataRepresentation, kCGImageAuxiliaryDataRepresentationPixelBuffer);
+
+    RetainPtr auxiliaryInfo = adoptCF(CGImageSourceCopyAuxiliaryDataInfoAtIndexWithOptions(m_nativeDecoder.get(), index, kCGImageAuxiliaryDataTypeISOGainMap, auxiliaryOptions.get()));
+    if (!auxiliaryInfo)
+        auxiliaryInfo = adoptCF(CGImageSourceCopyAuxiliaryDataInfoAtIndexWithOptions(m_nativeDecoder.get(), index, kCGImageAuxiliaryDataTypeHDRGainMap, auxiliaryOptions.get()));
+
+    if (!auxiliaryInfo)
+        return std::nullopt;
+
+    RetainPtr metadata = dynamic_cf_cast<CGImageMetadataRef>(CFDictionaryGetValue(auxiliaryInfo.get(), kCGImageAuxiliaryDataInfoMetadata));
+    RetainPtr gainMapPixelBuffer = dynamic_cf_cast<CVPixelBufferRef>(CFDictionaryGetValue(auxiliaryInfo.get(), kCGImageAuxiliaryDataInfoPixelBuffer));
+    RetainPtr colorSpace = dynamic_cf_cast<CGColorSpaceRef>(CFDictionaryGetValue(auxiliaryInfo.get(), kCGImageAuxiliaryDataInfoColorSpace));
+
+    if (!metadata || !gainMapPixelBuffer)
+        return std::nullopt;
+
+    return GainMap {
+        WTF::move(metadata),
+        WTF::move(gainMapPixelBuffer),
+        colorSpace ? std::optional<DestinationColorSpace> { DestinationColorSpace(WTF::move(colorSpace)) } : std::nullopt
+    };
+#else
+    UNUSED_PARAM(index);
+    UNUSED_PARAM(decodingOptions);
+    return std::nullopt;
+#endif
+}
+
 PlatformImagePtr ImageDecoderCG::createFrameImageAtIndex(size_t index, SubsamplingLevel subsamplingLevel, const DecodingOptions& decodingOptions)
 {
     LOG(Images, "ImageDecoder %p createFrameImageAtIndex %lu", this, index);
@@ -630,7 +680,7 @@ PlatformImagePtr ImageDecoderCG::createFrameImageAtIndex(size_t index, Subsampli
 
     if (decodingOptions.decodingMode() == DecodingMode::Synchronous) {
         // Decode an image synchronously for its native size.
-        options = imageSourceOptions(subsamplingLevel, decodingOptions.shouldDecodeToHDR());
+        options = imageSourceOptions(subsamplingLevel, decodingOptions.decodingDestination());
         image = adoptCF(CGImageSourceCreateImageAtIndex(m_nativeDecoder.get(), index, options.get()));
     } else {
         auto size = frameSizeAtIndex(index, SubsamplingLevel::Default);
@@ -642,7 +692,7 @@ PlatformImagePtr ImageDecoderCG::createFrameImageAtIndex(size_t index, Subsampli
                 size = *sizeForDrawing;
         }
 
-        options = imageSourceThumbnailOptions(subsamplingLevel, size, decodingOptions.shouldDecodeToHDR());
+        options = imageSourceThumbnailOptions(subsamplingLevel, size, decodingOptions.decodingDestination());
         image = adoptCF(CGImageSourceCreateThumbnailAtIndex(m_nativeDecoder.get(), index, options.get()));
     }
     

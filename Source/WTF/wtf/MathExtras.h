@@ -168,6 +168,35 @@ constexpr T fabsConstExpr(T value)
 inline double roundTowardsPositiveInfinity(double value) { return std::floor(value + 0.5); }
 inline float roundTowardsPositiveInfinity(float value) { return std::floor(value + 0.5f); }
 
+// C23 roundeven polyfill.
+#if CPU(ARM64)
+// On ARM64, __builtin_roundeven(f) inlines to frintn. On x86_64, Clang
+// may emit a library call to roundeven which is C23 and not
+// universally available.
+inline float roundevenf(float value) { return __builtin_roundevenf(value); }
+inline double roundeven(double value) { return __builtin_roundeven(value); }
+#else
+inline float roundevenf(float value)
+{
+    float rounded = std::round(value);
+    if (std::fabs(value - rounded) == 0.5f) {
+        if (std::fmod(rounded, 2.0f) != 0.0f)
+            return rounded - std::copysign(1.0f, value);
+    }
+    return rounded;
+}
+
+inline double roundeven(double value)
+{
+    double rounded = std::round(value);
+    if (std::fabs(value - rounded) == 0.5) {
+        if (std::fmod(rounded, 2.0) != 0.0)
+            return rounded - std::copysign(1.0, value);
+    }
+    return rounded;
+}
+#endif
+
 // std::numeric_limits<T>::min() returns the smallest positive value for floating point types
 template<typename T> consteval T defaultMinimumForClamp() { return std::numeric_limits<T>::min(); }
 template<> consteval float defaultMinimumForClamp() { return -std::numeric_limits<float>::max(); }
@@ -600,92 +629,30 @@ constexpr void shuffleVector(VectorType& vector, const RandomFunc& randomFunc)
 }
 
 template<typename T>
-constexpr unsigned clzConstexpr(T value)
+constexpr unsigned clz(T value)
 {
-    constexpr unsigned bitSize = sizeof(T) * CHAR_BIT;
-
-    auto uValue = unsignedCast(value);
-
-    unsigned zeroCount = 0;
-    for (int i = bitSize - 1; i >= 0; i--) {
-        if (uValue >> i)
-            break;
-        zeroCount++;
-    }
-    return zeroCount;
+    return std::countl_zero(unsignedCast(value));
 }
 
 template<typename T>
-inline unsigned clz(T value)
+constexpr unsigned ctz(T value)
 {
-    constexpr unsigned bitSize = sizeof(T) * CHAR_BIT;
-
-    auto uValue = unsignedCast(value);
-
-    constexpr unsigned bitSize64 = sizeof(uint64_t) * CHAR_BIT;
-    if (uValue)
-        return __builtin_clzll(uValue) - (bitSize64 - bitSize);
-    return bitSize;
+    return std::countr_zero(unsignedCast(value));
 }
 
 template<typename T>
-constexpr unsigned ctzConstexpr(T value)
+constexpr unsigned getLSBSet(T t)
 {
-    constexpr unsigned bitSize = sizeof(T) * CHAR_BIT;
-
-    auto uValue = unsignedCast(value);
-
-    unsigned zeroCount = 0;
-    for (unsigned i = 0; i < bitSize; i++) {
-        if (uValue & 1)
-            break;
-
-        zeroCount++;
-        uValue >>= 1;
-    }
-    return zeroCount;
-}
-
-template<typename T>
-inline unsigned ctz(T value)
-{
-    constexpr unsigned bitSize = sizeof(T) * CHAR_BIT;
-
-    auto uValue = unsignedCast(value);
-
-    if (uValue)
-        return __builtin_ctzll(uValue);
-    return bitSize;
-}
-
-template<typename T>
-inline unsigned getLSBSet(T t)
-{
-    ASSERT(t);
+    ASSERT_UNDER_CONSTEXPR_CONTEXT(t);
     return ctz(t);
 }
 
 template<typename T>
-constexpr unsigned getLSBSetConstexpr(T t)
-{
-    ASSERT_UNDER_CONSTEXPR_CONTEXT(t);
-    return ctzConstexpr(t);
-}
-
-template<typename T>
-inline unsigned getMSBSet(T t)
+constexpr unsigned getMSBSet(T t)
 {
     constexpr unsigned bitSize = sizeof(T) * CHAR_BIT;
-    ASSERT(t);
+    ASSERT_UNDER_CONSTEXPR_CONTEXT(t);
     return bitSize - 1 - clz(t);
-}
-
-template<typename T>
-constexpr unsigned getMSBSetConstexpr(T t)
-{
-    constexpr unsigned bitSize = sizeof(T) * CHAR_BIT;
-    ASSERT_UNDER_CONSTEXPR_CONTEXT(t);
-    return bitSize - 1 - clzConstexpr(t);
 }
 
 inline uint32_t reverseBits32(uint32_t value)

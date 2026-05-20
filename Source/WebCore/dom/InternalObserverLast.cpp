@@ -28,14 +28,16 @@
 
 #include "AbortController.h"
 #include "AbortSignal.h"
+#include "ContextDestructionObserverInlines.h"
 #include "Exception.h"
 #include "ExceptionCode.h"
 #include "InternalObserver.h"
 #include "JSDOMConvertAny.h"
 #include "JSDOMPromiseDeferred.h"
-#include "JSValueInWrappedObject.h"
+#include "JSValueInWrappedObjectInlines.h"
 #include "Observable.h"
 #include "ScriptExecutionContext.h"
+#include "ScriptWrappableInlines.h"
 #include "SubscribeOptions.h"
 #include "Subscriber.h"
 #include "SubscriberCallback.h"
@@ -61,7 +63,8 @@ private:
         auto* globalObject = context->globalObject();
         if (!globalObject)
             return;
-        m_lastValue.setWeakly(*globalObject, value);
+        auto* owner = subscriber() ? subscriber()->wrapper() : nullptr;
+        m_lastValue.set(*globalObject, owner, value);
     }
 
     void error(JSC::JSValue value) final

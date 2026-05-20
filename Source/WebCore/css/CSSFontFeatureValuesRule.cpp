@@ -45,7 +45,7 @@ String CSSFontFeatureValuesRule::cssText() const
         for (auto element : elements) {
             if (!first)
                 builder.append(separator);
-            builder.append(serializeFontFamily(element));
+            serializeFontFamily(builder, element);
             first = false;
         }
     };
@@ -57,7 +57,7 @@ String CSSFontFeatureValuesRule::cssText() const
         if (!tags.isEmpty()) {
             builder.append('@', variantName, " { "_s);
             for (auto tag : tags) {
-                serializeIdentifier(tag.key, builder);
+                serializeIdentifier(builder, tag.key);
                 builder.append(':');
                 for (auto integer : tag.value)
                     builder.append(' ', integer);

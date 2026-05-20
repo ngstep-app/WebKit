@@ -117,6 +117,7 @@ namespace JSC::B3 {
     macro(JSGlobalObject_regExpGlobalData_cachedResult_result_end, JSGlobalObject::regExpGlobalDataOffset() + RegExpGlobalData::offsetOfCachedResult() + RegExpCachedResult::offsetOfResult() + OBJECT_OFFSETOF(MatchResult, end), Mutability::Mutable) \
     macro(JSGlobalObject_regExpGlobalData_cachedResult_reified, JSGlobalObject::regExpGlobalDataOffset() + RegExpGlobalData::offsetOfCachedResult() + RegExpCachedResult::offsetOfReified(), Mutability::Mutable) \
     macro(JSGlobalObject_regExpGlobalData_cachedResult_oneCharacterMatch, JSGlobalObject::regExpGlobalDataOffset() + RegExpGlobalData::offsetOfCachedResult() + RegExpCachedResult::offsetOfOneCharacterMatch(), Mutability::Mutable) \
+    macro(JSGlobalObject_canDoASCIIUCADUCETLocaleCompare, JSGlobalObject::offsetOfCanDoASCIIUCADUCETLocaleCompare(), Mutability::Mutable) \
     macro(JSGlobalProxy_target, JSGlobalProxy::targetOffset(), Mutability::Mutable) \
     macro(JSObject_butterfly, JSObject::butterflyOffset(), Mutability::Mutable) \
     macro(JSPropertyNameEnumerator_cachedInlineCapacity, JSPropertyNameEnumerator::cachedInlineCapacityOffset(), Mutability::Mutable) \
@@ -179,6 +180,8 @@ namespace JSC::B3 {
     macro(SpecialPropertyCache_cachedToStringTagValue, SpecialPropertyCache::offsetOfCache(CachedSpecialPropertyKey::ToStringTag) + SpecialPropertyCacheEntry::offsetOfValue(), Mutability::Mutable) \
     macro(JSMap_storage, (JSMap::offsetOfStorage()), Mutability::Mutable) \
     macro(JSSet_storage, (JSSet::offsetOfStorage()), Mutability::Mutable) \
+    macro(JSPromise_packed, JSPromise::offsetOfPacked(), Mutability::Mutable) \
+    macro(JSPromise_slot, JSPromise::offsetOfSlot(), Mutability::Mutable) \
     macro(VM_heap_barrierThreshold, VM::offsetOfHeapBarrierThreshold(), Mutability::Mutable) \
     macro(VM_heap_mutatorShouldBeFenced, VM::offsetOfHeapMutatorShouldBeFenced(), Mutability::Mutable) \
     macro(VM_exception, VM::exceptionOffset(), Mutability::Mutable) \
@@ -206,7 +209,9 @@ namespace JSC::B3 {
     macro(WebAssemblyFunctionBase_targetInstance, WebAssemblyFunctionBase::offsetOfTargetInstance(), Mutability::Immutable) \
     macro(WebAssemblyGCStructure_rtt, WebAssemblyGCStructure::offsetOfRTT(), Mutability::Immutable) \
     macro(WebAssemblyModuleRecord_exportsObject, WebAssemblyModuleRecord::offsetOfExportsObject(), Mutability::Mutable) \
+    macro(Symbol_description, Symbol::offsetOfDescription(), Mutability::Mutable) \
     macro(Symbol_symbolImpl, Symbol::offsetOfSymbolImpl(), Mutability::Immutable) \
+    macro(Symbol_string, Symbol::offsetOfString(), Mutability::Mutable) \
 
 #define FOR_EACH_INDEXED_ABSTRACT_HEAP(macro) \
     macro(ArrayStorage_vector, ArrayStorage::vectorOffset(), sizeof(WriteBarrier<Unknown>)) \
@@ -263,6 +268,7 @@ namespace JSC::B3 {
 
 class AbstractHeapRepository {
     WTF_MAKE_NONCOPYABLE(AbstractHeapRepository);
+    WTF_MAKE_TZONE_ALLOCATED(AbstractHeapRepository);
 public:
     AbstractHeapRepository();
     ~AbstractHeapRepository();
@@ -349,6 +355,9 @@ public:
     void decorateFencedAccess(const AbstractHeap*, Value*);
     void decorateWasmStructGet(const AbstractHeap*, Value*);
     void decorateWasmStructSet(const AbstractHeap*, Value*);
+    void decorateWasmArrayGet(const AbstractHeap*, Value*);
+    void decorateWasmArraySet(const AbstractHeap*, Value*);
+    void decorateWasmArrayLength(const AbstractHeap*, Value*);
 
     void computeRangesAndDecorateInstructions();
 
@@ -379,6 +388,9 @@ private:
     Vector<HeapForValue> m_heapForFencedAccess;
     Vector<HeapForValue> m_heapForWasmStructGet;
     Vector<HeapForValue> m_heapForWasmStructSet;
+    Vector<HeapForValue> m_heapForWasmArrayGet;
+    Vector<HeapForValue> m_heapForWasmArraySet;
+    Vector<HeapForValue> m_heapForWasmArrayLength;
 };
 
 } // namespace JSC::B3

@@ -63,11 +63,14 @@
 #include "MeterPart.h"
 #include "Page.h"
 #include "PaintInfo.h"
+#include "PlatformRenderTheme.h"
 #include "ProgressBarPart.h"
 #include "RenderMeter.h"
 #include "RenderElementInlines.h"
+#include "RenderObjectInlines.h"
 #include "RenderProgress.h"
 #include "RenderStyle+GettersInlines.h"
+#include "RenderText.h"
 #include "RenderStyle+SettersInlines.h"
 #include "RenderView.h"
 #include "SearchFieldCancelButtonPart.h"
@@ -93,6 +96,13 @@
 #include <wtf/FileSystem.h>
 #include <wtf/Language.h>
 #include <wtf/NeverDestroyed.h>
+#if PLATFORM(COCOA)
+#include <wtf/cocoa/RuntimeApplicationChecksCocoa.h>
+#endif
+
+#if PLATFORM(COCOA)
+#include <wtf/cocoa/RuntimeApplicationChecksCocoa.h>
+#endif
 
 #if ENABLE(SERVICE_CONTROLS)
 #include "ImageControlsMac.h"
@@ -1694,7 +1704,25 @@ void RenderTheme::adjustSwitchStyle(RenderStyle& style, const Element*) const
     style.setLogicalHeight(Style::PreferredSize { controlSize.height() });
 }
 
-Style::PaddingBox RenderTheme::popupInternalPaddingBox(const RenderStyle&) const
+Style::PaddingBox RenderTheme::popupInternalPaddingBox(const RenderStyle& style) const
+{
+    auto padding = platformPopupInternalPaddingBox(style);
+    auto mode = style.writingMode();
+    // Platform returns padding in horizontal-tb LTR.
+    Style::PaddingBox result { 0_css_px };
+    if (mode.isLineInverted()) {
+        result.after(mode) = padding.top();
+        result.before(mode) = padding.bottom();
+    } else {
+        result.before(mode) = padding.top();
+        result.after(mode) = padding.bottom();
+    }
+    result.start(mode) = padding.left();
+    result.end(mode) = padding.right();
+    return result;
+}
+
+Style::PaddingBox RenderTheme::platformPopupInternalPaddingBox(const RenderStyle&) const
 {
     return Style::PaddingBox { 0_css_px };
 }
@@ -2054,7 +2082,6 @@ Color RenderTheme::datePlaceholderTextColor(const Color& textColor, const Color&
     return convertColor<SRGBA<float>>(hsla);
 }
 
-
 Color RenderTheme::spellingMarkerColor(OptionSet<StyleColorOptions> options) const
 {
     auto& cache = colorCache(options);
@@ -2160,12 +2187,14 @@ String RenderTheme::fileListNameForWidth(const FileList* fileList, const FontCas
 }
 
 #if USE(SYSTEM_PREVIEW)
-void RenderTheme::paintSystemPreviewBadge(Image& image, const PaintInfo& paintInfo, const FloatRect& rect)
+void RenderTheme::paintSystemPreviewBadge(Image&, const PaintInfo& paintInfo, const FloatRect& rect)
 {
-    // The default implementation paints a small marker
-    // in the upper right corner, as long as the image is big enough.
+    paintSystemPreviewBadge(paintInfo, rect);
+}
 
-    UNUSED_PARAM(image);
+void RenderTheme::paintSystemPreviewBadge(const PaintInfo& paintInfo, const FloatRect& rect)
+{
+    // Default imageless variant: draw the same fallback marker.
     auto& context = paintInfo.context();
 
     GraphicsContextStateSaver stateSaver { context };
@@ -2173,7 +2202,7 @@ void RenderTheme::paintSystemPreviewBadge(Image& image, const PaintInfo& paintIn
     if (rect.width() < 32 || rect.height() < 32)
         return;
 
-    auto markerRect = FloatRect {rect.x() + rect.width() - 24, rect.y() + 8, 16, 16 };
+    auto markerRect = FloatRect { rect.x() + rect.width() - 24, rect.y() + 8, 16, 16 };
     auto roundedMarkerRect = FloatRoundedRect { markerRect, CornerRadii { 8 } };
     context.fillRoundedRect(roundedMarkerRect, Color::red);
 }

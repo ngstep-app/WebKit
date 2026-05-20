@@ -485,7 +485,9 @@ Device::ExternalTextureData Device::createExternalTextureFromPixelBuffer(CVPixel
             textureDescriptor.mipmapLevelCount = 1;
             textureDescriptor.sampleCount = 1;
 #if PLATFORM(MAC) || PLATFORM(MACCATALYST)
+            ALLOW_DEPRECATED_DECLARATIONS_BEGIN
             textureDescriptor.storageMode = hasUnifiedMemory() ? MTLStorageModeShared : MTLStorageModeManaged;
+            ALLOW_DEPRECATED_DECLARATIONS_END
 #else
             textureDescriptor.storageMode = hasUnifiedMemory() ? MTLStorageModeShared : MTLStorageModePrivate;
 #endif
@@ -1535,7 +1537,7 @@ bool BindGroup::makeSubmitInvalid(ShaderStage stage, const BindGroupLayout* pipe
     if (!m_bindGroupLayout)
         return true;
 
-    Ref pipelineBindGroupLayout = Ref { *pipelineLayout };
+    Ref pipelineBindGroupLayout { *pipelineLayout };
     switch (stage) {
     case ShaderStage::Vertex:
         return m_vertexArgumentBuffer.length != pipelineBindGroupLayout->encodedLength(stage);

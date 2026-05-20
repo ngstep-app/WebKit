@@ -24,6 +24,7 @@
 
 #include "config.h"
 #include "LegacyRenderSVGResourceFilter.h"
+#include "LegacyRenderSVGModelObjectInlines.h"
 
 #include "FilterEffect.h"
 #include "FloatPoint.h"
@@ -96,7 +97,8 @@ auto LegacyRenderSVGResourceFilter::applyResource(RenderElement& renderer, const
     }
 
     auto addResult = m_rendererFilterDataMap.set(renderer, makeUnique<FilterData>());
-    auto filterData = addResult.iterator->value.get();
+    auto addedIterator = addResult.iterator;
+    auto filterData = addedIterator->value.get();
 
     Ref filterElement = this->filterElement();
     RefPtr contextElement = dynamicDowncast<SVGElement>(renderer.element());
@@ -104,14 +106,14 @@ auto LegacyRenderSVGResourceFilter::applyResource(RenderElement& renderer, const
 
     auto filterRegion = SVGLengthContext::resolveRectangle(contextElement.get(), filterElement.get(), filterElement->filterUnits(), targetBoundingBox);
     if (filterRegion.isEmpty()) {
-        m_rendererFilterDataMap.remove(renderer);
+        m_rendererFilterDataMap.remove(addedIterator);
         return { };
     }
 
     // Determine absolute transformation matrix for filter.
     auto absoluteTransform = SVGRenderingContext::calculateTransformationToOutermostCoordinateSystem(renderer);
     if (!absoluteTransform.isInvertible()) {
-        m_rendererFilterDataMap.remove(renderer);
+        m_rendererFilterDataMap.remove(addedIterator);
         return { };
     }
 
@@ -126,20 +128,20 @@ auto LegacyRenderSVGResourceFilter::applyResource(RenderElement& renderer, const
     ImageBuffer::sizeNeedsClamping(filterData->sourceImageRect.size(), filterScale);
 
     auto preferredFilterModes = renderer.page().preferredFilterRenderingModes(*context);
+    auto renderingOptions(renderer.settings().showDebugBorders() ? std::make_optional(FilterRenderingOption::ShowDebugOverlay) : std::nullopt);
 
     // Create the SVGFilterRenderer object.
     filterData->filter = SVGFilterRenderer::create(contextElement.get(), filterElement, {
         .referenceBox = targetBoundingBox,
         .filterRegion = filterRegion,
         .scale = filterScale,
-    }, preferredFilterModes, *context, RenderingResourceIdentifier::generate());
+    }, preferredFilterModes, renderingOptions, *context, RenderingResourceIdentifier::generate());
 
     if (!filterData->filter) {
-        m_rendererFilterDataMap.remove(renderer);
+        m_rendererFilterDataMap.remove(addedIterator);
         return { };
     }
 
-    filterData->filter->setIsShowingDebugOverlay(renderer.settings().showDebugBorders());
     filterData->filter->clampFilterRegionIfNeeded();
 
 #if USE(CAIRO)
@@ -154,7 +156,7 @@ auto LegacyRenderSVGResourceFilter::applyResource(RenderElement& renderer, const
 
     filterData->targetSwitcher = GraphicsContextSwitcher::create(*context, filterData->sourceImageRect, colorSpace, filterData->filter, &results);
     if (!filterData->targetSwitcher) {
-        m_rendererFilterDataMap.remove(renderer);
+        m_rendererFilterDataMap.remove(addedIterator);
         return { };
     }
     

@@ -23,10 +23,12 @@
 
 #include "RenderSVGResourceGradient.h"
 #include "RenderStyle+GettersInlines.h"
+#include "LocalFrameView.h"
 #include "RenderView.h"
 #include "SVGPaintServerHandling.h"
 #include "SVGRenderSupport.h"
 #include "StyleComputedStyle+InitialInlines.h"
+#include "StylePrimitiveNumericTypes+Evaluation.h"
 
 namespace WebCore {
 
@@ -122,11 +124,11 @@ SVGPaintServerOrColor SVGPaintServerHandling::requestPaintServer(const RenderLay
 
 inline void SVGPaintServerHandling::prepareFillOperation(const RenderLayerModelObject& renderer, const RenderStyle& style, const Color& fillColor) const
 {
-    if (protect(renderer.view().frameView())->paintBehavior().contains(PaintBehavior::RenderingSVGClipOrMask)) {
+    if (renderer.view().frameView().paintBehavior().contains(PaintBehavior::RenderingSVGClipOrMask)) {
         m_context.setAlpha(1);
         m_context.setFillRule(style.clipRule());
     } else {
-        m_context.setAlpha(style.fillOpacity().value.value);
+        m_context.setAlpha(Style::evaluate<float>(style.fillOpacity()));
         m_context.setFillRule(style.fillRule());
     }
 
@@ -136,7 +138,7 @@ inline void SVGPaintServerHandling::prepareFillOperation(const RenderLayerModelO
 
 inline void SVGPaintServerHandling::prepareStrokeOperation(const RenderLayerModelObject& renderer, const RenderStyle& style, const Color& strokeColor) const
 {
-    m_context.setAlpha(style.strokeOpacity().value.value);
+    m_context.setAlpha(Style::evaluate<float>(style.strokeOpacity()));
 
     Style::ColorResolver colorResolver { style };
     m_context.setStrokeColor(colorResolver.colorApplyingColorFilter(strokeColor));

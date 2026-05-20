@@ -25,15 +25,12 @@
 
 #pragma once
 
+#include <WebCore/AXObjectTypes.h>
 #include <WebCore/Frame.h>
 #include <WebCore/LayerHostingContextIdentifier.h>
 #include <wtf/RefPtr.h>
 #include <wtf/TypeCasts.h>
 #include <wtf/UniqueRef.h>
-
-#if ENABLE(ACCESSIBILITY_LOCAL_FRAME)
-#include <WebCore/AXObjectCache.h>
-#endif
 
 namespace WebCore {
 
@@ -42,6 +39,8 @@ class RemoteDOMWindow;
 class RemoteFrameClient;
 class RemoteFrameView;
 class WeakPtrImplWithEventTargetData;
+class ResourceTiming;
+
 
 enum class AdvancedPrivacyProtections : uint16_t;
 enum class AutoplayPolicy : uint8_t;
@@ -85,14 +84,19 @@ public:
     void setAdvancedPrivacyProtections(OptionSet<AdvancedPrivacyProtections> advancedPrivacyProtections) { m_advancedPrivacyProtections = advancedPrivacyProtections; }
     OptionSet<AdvancedPrivacyProtections> NODELETE advancedPrivacyProtections() const final;
 
+    void setAllowPrivacyProxy(bool allowPrivacyProxy) { m_allowPrivacyProxy = allowPrivacyProxy; }
+    bool NODELETE allowPrivacyProxy() const final;
+
     void setAutoplayPolicy(AutoplayPolicy autoplayPolicy) { m_autoplayPolicy = autoplayPolicy; }
     AutoplayPolicy NODELETE autoplayPolicy() const final;
 
     void updateScrollingMode() final;
     void reportMixedContentViolation(bool blocked, const URL& target) const final;
+    void addResourceTimingFromChild(ResourceTiming&&);
 
     String debugDescription() const final;
     const SecurityOrigin& frameDocumentSecurityOriginOrOpaque() const;
+    bool frameDocumentIsSandboxedOrigin() const;
 
 private:
     WEBCORE_EXPORT explicit RemoteFrame(Page&, ClientCreator&&, FrameIdentifier, HTMLFrameOwnerElement*, Frame* parent, Markable<LayerHostingContextIdentifier>, Frame* opener, Ref<FrameTreeSyncData>&&, AddToFrameTree = AddToFrameTree::Yes);
@@ -123,6 +127,7 @@ private:
     String m_customUserAgentAsSiteSpecificQuirks;
     String m_customNavigatorPlatform;
     OptionSet<AdvancedPrivacyProtections> m_advancedPrivacyProtections;
+    bool m_allowPrivacyProxy { true };
     AutoplayPolicy m_autoplayPolicy;
     bool m_preventsParentFromBeingComplete { true };
 };

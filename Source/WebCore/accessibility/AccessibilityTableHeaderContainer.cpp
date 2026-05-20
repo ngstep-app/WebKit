@@ -58,8 +58,9 @@ bool AccessibilityTableHeaderContainer::computeIsIgnored() const
 {
 #if PLATFORM(IOS_FAMILY) || USE(ATSPI)
     return true;
-#endif
+#else
     return !m_parent || m_parent->isIgnored();
+#endif
 }
 
 void AccessibilityTableHeaderContainer::addChildren()
@@ -77,7 +78,7 @@ void AccessibilityTableHeaderContainer::addChildren()
     for (const auto& child : m_children)
         m_headerRect.unite(child->elementRect());
 
-#ifndef NDEBUG
+#if ASSERT_ENABLED
     verifyChildrenIndexInParent();
 #endif
 }

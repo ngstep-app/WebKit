@@ -30,6 +30,7 @@
 
 #include "config.h"
 #include "HistoryController.h"
+#include "LocalFrameInlines.h"
 
 #include "BackForwardCache.h"
 #include "BackForwardController.h"
@@ -58,7 +59,12 @@
 #include "SharedStringHash.h"
 #include "ShouldTreatAsContinuingLoad.h"
 #include "VisitedLinkStore.h"
+#include <WebCore/HTTPStatusCodes.h>
 #include <wtf/text/CString.h>
+
+#if PLATFORM(COCOA)
+#import <wtf/cocoa/RuntimeApplicationChecksCocoa.h>
+#endif
 
 namespace WebCore {
 
@@ -564,6 +570,16 @@ void HistoryController::updateForStandardLoad(HistoryUpdateType updateType)
         if (!historyURL.isEmpty()) {
             if (updateType != UpdateAllExceptBackForwardList)
                 updateBackForwardListClippedAtTarget(true);
+
+#if PLATFORM(COCOA)
+            if (linkedOnOrAfterSDKWithBehavior(SDKAlignedBehavior::AllBackForwardItemsWithoutUserGestureInvisibleToUI)) {
+                if (m_currentItem && m_frame->isMainFrame() && !documentLoader->triggeringAction().processingUserGesture() && !documentLoader->isRequestFromClientOrUserInput()) {
+                    if (RefPtr document = m_frame->document(); document && !document->hasRecentUserInteractionForNavigationFromJS())
+                        m_currentItem->setWasCreatedByJSWithoutUserInteraction(true);
+                }
+            }
+#endif
+
             if (canRecordHistory) {
                 protect(frameLoader->client())->updateGlobalHistory();
                 documentLoader->setDidCreateGlobalHistoryEntry(true);
@@ -861,7 +877,7 @@ void HistoryController::initializeItem(HistoryItem& item, RefPtr<DocumentLoader>
     item.setTitle(WTF::move(title.string));
     item.setOriginalURLString(originalURL.string());
 
-    if (!unreachableURL.isEmpty() || documentLoader->response().httpStatusCode() >= 400)
+    if (!unreachableURL.isEmpty() || documentLoader->response().httpStatusCode() >= httpStatus400BadRequest)
         item.setLastVisitWasFailure(true);
 
     item.setShouldOpenExternalURLsPolicy(documentLoader->shouldOpenExternalURLsPolicyToPropagate());
@@ -911,9 +927,11 @@ Ref<HistoryItem> HistoryController::createItemTree(HistoryItemClient& client, Lo
         // we should copy the documentSequenceNumber over to the newly create
         // item.  Non-target items are just clones, and they should therefore
         // preserve the same itemSequenceNumber.
-        if (auto* previousItem = m_previousItem.get()) {
-            if (m_frame.ptr() != &targetFrame)
+        if (RefPtr previousItem = m_previousItem) {
+            if (m_frame.ptr() != &targetFrame) {
                 item->setItemSequenceNumber(previousItem->itemSequenceNumber());
+                item->setStateObject(RefPtr { previousItem->stateObject() });
+            }
             item->setDocumentSequenceNumber(previousItem->documentSequenceNumber());
         }
 
@@ -1029,12 +1047,12 @@ void HistoryController::updateCurrentItem()
         // property of how this HistoryItem was originally created and is not
         // dependent on the document.
         bool isTargetItem = currentItem->isTargetItem();
-        auto uuidIdentifier = currentItem->uuidIdentifier();
+        auto navigationAPIKey = currentItem->navigationAPIKey();
         bool sameOrigin = SecurityOrigin::create(currentItem->url())->isSameOriginAs(SecurityOrigin::create(documentLoader->url()));
         currentItem->reset();
         initializeItem(*currentItem, documentLoader);
         if (sameOrigin)
-            currentItem->setUUIDIdentifier(uuidIdentifier);
+            currentItem->setNavigationAPIKey(navigationAPIKey);
         currentItem->setIsTargetItem(isTargetItem);
     } else {
         // Even if the final URL didn't change, the form data may have changed.

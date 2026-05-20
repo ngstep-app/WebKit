@@ -32,7 +32,6 @@
 #include "BeforeTextInsertedEvent.h"
 #include "BreakBlockquoteCommand.h"
 #include "CSSComputedStyleDeclaration.h"
-#include "CSSPrimitiveValueMappings.h"
 #include "CSSSerializationContext.h"
 #include "CSSStyleDeclaration.h"
 #include "CommonAtomStrings.h"
@@ -44,6 +43,7 @@
 #include "DocumentView.h"
 #include "Editing.h"
 #include "EditingBehavior.h"
+#include "EditingStyle.h"
 #include "EditingInlines.h"
 #include "ElementIteratorInlines.h"
 #include "EventNames.h"
@@ -77,6 +77,7 @@
 #include "SimplifyMarkupCommand.h"
 #include "SmartReplace.h"
 #include "StyleExtractor.h"
+#include "StyleKeyword+Mappings.h"
 #include "StylePropertiesInlines.h"
 #include "Text.h"
 #include "TextIterator.h"
@@ -89,6 +90,7 @@
 #include <wtf/RobinHoodHashSet.h>
 #include <wtf/StdLibExtras.h>
 #include <wtf/TZoneMallocInlines.h>
+#include "DocumentPage.h"
 
 namespace WebCore {
 

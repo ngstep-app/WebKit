@@ -45,7 +45,6 @@
 #include "HTMLDivElement.h"
 #include "HTMLStyleElement.h"
 #include "Logging.h"
-#include "NodeInlines.h"
 #include "NodeTraversal.h"
 #include "ScriptDisallowedScope.h"
 #include "Text.h"
@@ -79,6 +78,8 @@ TextTrackCueBox::TextTrackCueBox(Document& document, TextTrackCue& cue)
     , m_cue(cue)
 {
 }
+
+TextTrackCueBox::~TextTrackCueBox() = default;
 
 void TextTrackCueBox::initialize()
 {
@@ -303,12 +304,16 @@ void TextTrackCue::setStartTime(const MediaTime& value)
     didChange(true);
 }
 
-void TextTrackCue::setEndTime(double value)
+ExceptionOr<void> TextTrackCue::setEndTime(double value)
 {
+    if (std::isnan(value) || value == -std::numeric_limits<double>::infinity())
+        return Exception { ExceptionCode::TypeError, "The provided value is NaN or negative Infinity"_s };
+
     if (m_endTime.toDouble() == value)
-        return;
+        return { };
 
     setEndTime(MediaTime::createWithDouble(value));
+    return { };
 }
 
 void TextTrackCue::setEndTime(const MediaTime& value)

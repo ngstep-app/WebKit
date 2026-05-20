@@ -47,17 +47,13 @@
 #include <WebCore/ResourceError.h>
 #include <WebCore/ResourceResponse.h>
 #include <WebCore/SharedBuffer.h>
+#include <wtf/Borrow.h>
 #include <wtf/RunLoop.h>
 
 namespace WebKit {
 using namespace WebCore;
 
 static const unsigned bufferSize = 512 * 1024;
-
-static const int httpOK = 200;
-static const int httpPartialContent = 206;
-static constexpr auto httpOKText = "OK"_s;
-static constexpr auto httpPartialContentText = "Partial Content"_s;
 
 static constexpr auto webKitBlobResourceDomain = "WebKitBlobResource"_s;
 
@@ -80,7 +76,7 @@ NetworkDataTaskBlob::NetworkDataTaskBlob(NetworkSession& session, NetworkDataTas
     , m_fileReferences(fileReferences)
     , m_networkProcess(session.networkProcess())
 {
-    for (auto& fileReference : m_fileReferences)
+    for (Ref fileReference : borrow(m_fileReferences).get())
         fileReference->prepareForFileAccess();
 
     LOG(NetworkSession, "%p - Created NetworkDataTaskBlob for %s", this, request.url().string().utf8().data());
@@ -88,7 +84,7 @@ NetworkDataTaskBlob::NetworkDataTaskBlob(NetworkSession& session, NetworkDataTas
 
 NetworkDataTaskBlob::~NetworkDataTaskBlob()
 {
-    for (auto& fileReference : m_fileReferences)
+    for (Ref fileReference : borrow(m_fileReferences).get())
         fileReference->revokeFileAccess();
 
     clearStream();

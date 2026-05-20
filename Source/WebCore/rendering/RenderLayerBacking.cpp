@@ -36,6 +36,7 @@
 #include "CanvasRenderingContext2DBase.h"
 #include "Chrome.h"
 #include "ContainerNodeInlines.h"
+#include "CornerRadii.h"
 #include "DebugOverlayRegions.h"
 #include "DebugPageOverlays.h"
 #include "DocumentPage.h"
@@ -48,6 +49,7 @@
 #include "GraphicsLayerFloatAnimationValue.h"
 #include "GraphicsLayerKeyframeValueList.h"
 #include "GraphicsLayerTransformAnimationValue.h"
+#include "HTMLAnchorElement.h"
 #include "HTMLBodyElement.h"
 #include "HTMLCanvasElement.h"
 #include "HTMLModelElement.h"
@@ -62,6 +64,7 @@
 #include "Model.h"
 #include "NullGraphicsContext.h"
 #include "Page.h"
+#include "PaintInfo.h"
 #include "PathOperation.h"
 #include "PerformanceLoggingClient.h"
 #include "PluginViewBase.h"
@@ -84,6 +87,7 @@
 #include "RenderModel.h"
 #include "RenderSVGHiddenContainer.h"
 #include "RenderSVGModelObject.h"
+#include "RenderTheme.h"
 #include "RenderVideo.h"
 #include "RenderView.h"
 #include "RenderViewTransitionCapture.h"
@@ -92,6 +96,7 @@
 #include "ScaleTransformOperation.h"
 #include "ScrollingCoordinator.h"
 #include "Settings.h"
+#include "StylePrimitiveNumericTypes+Evaluation.h"
 #include "StyleResolver.h"
 #include "StyleTransformResolver.h"
 #include "Styleable.h"
@@ -107,7 +112,7 @@
 #endif
 
 #if PLATFORM(IOS_FAMILY)
-#include <wtf/RuntimeApplicationChecks.h>
+#include <wtf/cocoa/RuntimeApplicationChecksCocoa.h>
 #endif
 
 #if PLATFORM(MAC)
@@ -125,6 +130,10 @@
 
 #if ENABLE(MODEL_CONTEXT)
 #include "ModelContext.h"
+#endif
+
+#if USE(SYSTEM_PREVIEW) && ENABLE(MODEL_PROCESS) && ENABLE(INTERACTION_REGIONS_IN_EVENT_REGION)
+#include "ARKitBadgeSystemImage.h"
 #endif
 
 namespace WebCore {
@@ -693,6 +702,10 @@ void RenderLayerBacking::destroyGraphicsLayers()
     GraphicsLayer::unparentAndClear(m_childContainmentLayer);
     GraphicsLayer::unparentAndClear(m_scrollContainerLayer);
     GraphicsLayer::unparentAndClear(m_scrolledContentsLayer);
+#if USE(SYSTEM_PREVIEW) && ENABLE(MODEL_PROCESS)
+    GraphicsLayer::unparentAndClear(m_systemPreviewBadgeLayer);
+    GraphicsLayer::unparentAndClear(m_systemPreviewWrapperLayer);
+#endif
     GraphicsLayer::unparentAndClear(m_graphicsLayer);
 }
 
@@ -726,7 +739,7 @@ static LayoutRect overflowControlsHostLayerRect(const RenderBox& renderBox)
 
 void RenderLayerBacking::updateOpacity(const RenderStyle& style)
 {
-    m_graphicsLayer->setOpacity(compositingOpacity(style.opacity().value.value));
+    m_graphicsLayer->setOpacity(compositingOpacity(Style::evaluate<float>(style.opacity())));
 }
 
 void RenderLayerBacking::updateTransform(const RenderStyle& style)
@@ -1192,6 +1205,14 @@ bool RenderLayerBacking::updateConfiguration(const RenderLayer* compositingAnces
     if (updateForegroundLayer(compositor.needsContentsCompositingLayer(m_owningLayer)))
         layerConfigChanged = true;
 
+#if USE(SYSTEM_PREVIEW) && ENABLE(MODEL_PROCESS)
+    if (updateSystemPreviewBadgeLayer(needsSystemPreviewBadgeLayer())) {
+        // Badge layer needs the contents containment layer to live as its parent so it sits next to m_graphicsLayer.
+        updateContentsContainmentLayer();
+        layerConfigChanged = true;
+    }
+#endif
+
     bool needsDescendantsClippingLayer = false;
     bool usesCompositedScrolling = m_owningLayer.hasCompositedScrollableOverflow();
 
@@ -1320,9 +1341,17 @@ bool RenderLayerBacking::updateConfiguration(const RenderLayer* compositingAnces
     }
 #if ENABLE(MODEL_ELEMENT)
     else if (is<RenderModel>(renderer())) {
+#if ENABLE(GPU_PROCESS_MODEL)
+        auto modelBackgroundColor = rendererBackgroundColor();
+        modelBackgroundColor = modelBackgroundColor.isValid() ? modelBackgroundColor.opaqueColor() : Color::black;
+        m_graphicsLayer->setBackgroundColor(modelBackgroundColor);
+#else
+        auto modelBackgroundColor = rendererBackgroundColor();
+#endif
+
         RefPtr element = downcast<HTMLModelElement>(renderer().element());
 
-        element->configureGraphicsLayer(*m_graphicsLayer, rendererBackgroundColor());
+        element->configureGraphicsLayer(*m_graphicsLayer, modelBackgroundColor);
         element->sizeMayHaveChanged();
 
         layerConfigChanged = true;
@@ -1595,6 +1624,15 @@ void RenderLayerBacking::updateGeometry(const RenderLayer* compositedAncestor)
 
     setNeedsFixedContainerEdgesUpdateIfNeeded();
 
+#if USE(SYSTEM_PREVIEW) && ENABLE(MODEL_PROCESS)
+    if (m_systemPreviewWrapperLayer) {
+        m_systemPreviewWrapperLayer->setPreserves3D(preserves3D);
+        m_systemPreviewWrapperLayer->setPosition(primaryLayerPosition);
+        primaryLayerPosition = { };
+        m_systemPreviewWrapperLayer->setSize(primaryGraphicsLayerRect.size());
+    }
+#endif
+
     if (m_contentsContainmentLayer) {
         m_contentsContainmentLayer->setPreserves3D(preserves3D);
         m_contentsContainmentLayer->setPosition(primaryLayerPosition);
@@ -1736,6 +1774,10 @@ void RenderLayerBacking::updateGeometry(const RenderLayer* compositedAncestor)
         m_foregroundLayer->setSize(foregroundSize);
         m_foregroundLayer->setOffsetFromRenderer(foregroundOffset, needsDisplayOnOffsetChange);
     }
+
+#if USE(SYSTEM_PREVIEW) && ENABLE(MODEL_PROCESS)
+    updateSystemPreviewBadgeLayerGeometry();
+#endif
 
     if (m_backgroundLayer) {
         FloatPoint backgroundPosition;
@@ -1921,7 +1963,11 @@ void RenderLayerBacking::updateInternalHierarchy()
         lastClippingLayer = m_ancestorClippingStack->lastLayer();
     }
 
+#if USE(SYSTEM_PREVIEW) && ENABLE(MODEL_PROCESS)
+    constexpr size_t maxOrderedLayers = 8;
+#else
     constexpr size_t maxOrderedLayers = 6;
+#endif
     Vector<GraphicsLayer*, maxOrderedLayers> orderedLayers;
 
     if (lastClippingLayer)
@@ -1933,11 +1979,18 @@ void RenderLayerBacking::updateInternalHierarchy()
     if (m_viewportAnchorLayer)
         orderedLayers.append(m_viewportAnchorLayer.get());
 
+#if USE(SYSTEM_PREVIEW) && ENABLE(MODEL_PROCESS)
+    // Insert the system-preview wrapper above the contents containment so the badge layer (added
+    // as a sibling below) composites in front of the model's separated portal subtree.
+    if (m_systemPreviewWrapperLayer)
+        orderedLayers.append(m_systemPreviewWrapperLayer.get());
+#endif
+
     if (m_contentsContainmentLayer) {
         m_contentsContainmentLayer->removeAllChildren();
 
-        ASSERT(m_backgroundLayer);
-        m_contentsContainmentLayer->addChild(*m_backgroundLayer);
+        if (m_backgroundLayer)
+            m_contentsContainmentLayer->addChild(*m_backgroundLayer);
 
         // The loop below will add a second child to the m_contentsContainmentLayer.
         orderedLayers.append(m_contentsContainmentLayer.get());
@@ -1967,6 +2020,14 @@ void RenderLayerBacking::updateInternalHierarchy()
 
         previousLayer = layer;
     }
+
+#if USE(SYSTEM_PREVIEW) && ENABLE(MODEL_PROCESS)
+    // Add the badge as the topmost child of the wrapper, after the loop has already parented
+    // m_contentsContainmentLayer (or m_graphicsLayer) under the wrapper. The badge therefore
+    // composites in front of the model subtree.
+    if (m_systemPreviewWrapperLayer && m_systemPreviewBadgeLayer)
+        m_systemPreviewWrapperLayer->addChild(*m_systemPreviewBadgeLayer);
+#endif
 
     // The clip for child layers does not include space for overflow controls, so they exist as
     // siblings of the clipping layer if we have one. Normal children of this layer are set as
@@ -2099,10 +2160,12 @@ bool RenderLayerBacking::maintainsEventRegion() const
         return true;
 #endif
 #if ENABLE(TOUCH_EVENT_REGIONS)
-    if (renderer().document().hasTouchEventHandlers())
-        return true;
-    if (renderer().document().needsPointerEventHandlingForPopover())
-        return true;
+    if (renderer().document().shouldUseTouchEventRegions()) {
+        if (renderer().document().hasTouchEventHandlers())
+            return true;
+        if (renderer().document().needsPointerEventHandlingForPopoverOrDialog())
+            return true;
+    }
 #endif
 
     if (m_owningLayer.isRenderViewLayer())
@@ -2202,6 +2265,29 @@ void RenderLayerBacking::updateEventRegion()
     if (m_foregroundLayer)
         updateEventRegionForLayer(*m_foregroundLayer);
 
+#if USE(SYSTEM_PREVIEW) && ENABLE(MODEL_PROCESS) && ENABLE(INTERACTION_REGIONS_IN_EVENT_REGION)
+    // Give the system-preview badge its own interaction region so gaze hover lights it up
+    // the way it would for the (anchor-wrapped) model itself, AND make it click-through
+    // outside the actual badge rect so users can still click the model area for AR launch.
+    if (m_systemPreviewBadgeLayer) {
+        FloatRect layerBounds({ }, m_systemPreviewBadgeLayer->size());
+        // Match ARKitBadgeSystemImage::draw: top-right corner with size 35+8 (small) or 70+20 (large).
+        using BadgeMetrics = ARKitBadgeSystemImage::BadgeMetrics;
+        bool useSmallBadge = layerBounds.width() < BadgeMetrics::minimumSizeForLarge || layerBounds.height() < BadgeMetrics::minimumSizeForLarge;
+        int badgeOffset = useSmallBadge ? BadgeMetrics::smallOffset : BadgeMetrics::largeOffset;
+        int badgeDimension = useSmallBadge ? BadgeMetrics::smallDimension : BadgeMetrics::largeDimension;
+        FloatRect badgeRect(layerBounds.width() - badgeDimension - badgeOffset, badgeOffset, badgeDimension, badgeDimension);
+
+        EventRegion eventRegion;
+        auto eventRegionContext = eventRegion.makeContext();
+        if (visibleToHitTesting)
+            eventRegionContext.unite(FloatRoundedRect(badgeRect, CornerRadii(badgeDimension / 2.0f)), renderer(), renderer().style());
+        eventRegionContext.uniteInteractionRegions(renderer(), badgeRect, { }, std::nullopt);
+        eventRegionContext.copyInteractionRegionsToEventRegion(renderer().document().settings().interactionRegionMinimumCornerRadius());
+        m_systemPreviewBadgeLayer->setEventRegion(WTF::move(eventRegion));
+    }
+#endif
+
     setNeedsEventRegionUpdate(false);
 }
 #endif
@@ -2225,6 +2311,11 @@ void RenderLayerBacking::clearInteractionRegions()
 
     if (m_foregroundLayer)
         clearInteractionRegionsForLayer(*m_foregroundLayer);
+
+#if USE(SYSTEM_PREVIEW) && ENABLE(MODEL_PROCESS)
+    if (m_systemPreviewBadgeLayer)
+        clearInteractionRegionsForLayer(*m_systemPreviewBadgeLayer);
+#endif
 }
 #endif
 
@@ -2749,7 +2840,7 @@ bool RenderLayerBacking::updateBackgroundLayer(bool needsBackgroundLayer)
             m_backgroundLayer->setAnchorPoint(FloatPoint3D());
             layerChanged = true;
         }
-        
+#if !ENABLE(MODEL_PROCESS)
         if (!m_contentsContainmentLayer) {
             auto layerName = makeString(m_owningLayer.name(), " (contents containment)"_s);
             m_contentsContainmentLayer = createGraphicsLayer(layerName);
@@ -2757,22 +2848,139 @@ bool RenderLayerBacking::updateBackgroundLayer(bool needsBackgroundLayer)
             m_graphicsLayer->setAppliesPageScale(false);
             layerChanged = true;
         }
+#endif
     } else {
         if (m_backgroundLayer) {
             willDestroyLayer(m_backgroundLayer.get());
             GraphicsLayer::unparentAndClear(m_backgroundLayer);
             layerChanged = true;
         }
+#if !ENABLE(MODEL_PROCESS)
         if (m_contentsContainmentLayer) {
             willDestroyLayer(m_contentsContainmentLayer.get());
             GraphicsLayer::unparentAndClear(m_contentsContainmentLayer);
             layerChanged = true;
             m_graphicsLayer->setAppliesPageScale(true);
         }
+#endif
     }
+
+#if ENABLE(MODEL_PROCESS)
+    if (updateContentsContainmentLayer())
+        layerChanged = true;
+#endif
 
     return layerChanged;
 }
+
+#if ENABLE(MODEL_PROCESS)
+bool RenderLayerBacking::updateContentsContainmentLayer()
+{
+#if USE(SYSTEM_PREVIEW)
+    bool needsContainment = m_backgroundLayer || m_systemPreviewBadgeLayer;
+#else
+    bool needsContainment = m_backgroundLayer;
+#endif
+    bool layerChanged = false;
+    if (needsContainment) {
+        if (!m_contentsContainmentLayer) {
+            auto layerName = makeString(m_owningLayer.name(), " (contents containment)"_s);
+            m_contentsContainmentLayer = createGraphicsLayer(layerName);
+            m_contentsContainmentLayer->setAppliesPageScale(true);
+            m_graphicsLayer->setAppliesPageScale(false);
+            layerChanged = true;
+        }
+    } else if (m_contentsContainmentLayer) {
+        willDestroyLayer(m_contentsContainmentLayer.get());
+        GraphicsLayer::unparentAndClear(m_contentsContainmentLayer);
+        layerChanged = true;
+        m_graphicsLayer->setAppliesPageScale(true);
+    }
+    return layerChanged;
+}
+#endif
+
+#if USE(SYSTEM_PREVIEW) && ENABLE(MODEL_PROCESS)
+bool RenderLayerBacking::needsSystemPreviewBadgeLayer() const
+{
+#if PLATFORM(VISION)
+    if (!renderer().document().settings().systemPreviewEnabled())
+        return false;
+    CheckedPtr renderModel = dynamicDowncast<RenderModel>(renderer());
+    if (!renderModel)
+        return false;
+    RefPtr anchor = dynamicDowncast<HTMLAnchorElement>(renderModel->modelElement().parentElement());
+    return anchor && anchor->isSystemPreviewLink();
+#else
+    // On other platforms the inline paint in RenderModel::paintReplaced is sufficient.
+    return false;
+#endif
+}
+
+bool RenderLayerBacking::updateSystemPreviewBadgeLayer(bool needsLayer)
+{
+    bool layerChanged = false;
+    if (needsLayer) {
+        if (!m_systemPreviewBadgeLayer) {
+            auto layerName = makeString(m_owningLayer.name(), " (system preview badge)"_s);
+            m_systemPreviewBadgeLayer = createGraphicsLayer(layerName);
+            m_systemPreviewBadgeLayer->setDrawsContent(true);
+            m_systemPreviewBadgeLayer->setAnchorPoint({ });
+#if HAVE(CORE_ANIMATION_SEPARATED_LAYERS)
+            m_systemPreviewBadgeLayer->setIsSeparated(false);
+#endif
+            layerChanged = true;
+        }
+        if (!m_systemPreviewWrapperLayer) {
+            auto layerName = makeString(m_owningLayer.name(), " (system preview wrapper)"_s);
+            m_systemPreviewWrapperLayer = createGraphicsLayer(layerName);
+            m_systemPreviewWrapperLayer->setAnchorPoint({ });
+#if HAVE(CORE_ANIMATION_SEPARATED_LAYERS)
+            m_systemPreviewWrapperLayer->setIsSeparated(false);
+#endif
+            layerChanged = true;
+        }
+    } else {
+        if (m_systemPreviewBadgeLayer) {
+            willDestroyLayer(m_systemPreviewBadgeLayer.get());
+            GraphicsLayer::unparentAndClear(m_systemPreviewBadgeLayer);
+            layerChanged = true;
+        }
+        if (m_systemPreviewWrapperLayer) {
+            willDestroyLayer(m_systemPreviewWrapperLayer.get());
+            GraphicsLayer::unparentAndClear(m_systemPreviewWrapperLayer);
+            layerChanged = true;
+        }
+    }
+    return layerChanged;
+}
+
+void RenderLayerBacking::updateSystemPreviewBadgeLayerGeometry()
+{
+    if (!m_systemPreviewBadgeLayer)
+        return;
+    CheckedPtr renderModel = dynamicDowncast<RenderModel>(renderer());
+    if (!renderModel)
+        return;
+
+    auto contentRect = renderModel->replacedContentRect();
+    auto snapped = snapRectToDevicePixels(contentRect, renderModel->modelElement().document().deviceScaleFactor());
+    m_systemPreviewBadgeLayer->setPosition(snapped.location());
+    m_systemPreviewBadgeLayer->setSize(snapped.size());
+    m_systemPreviewBadgeLayer->setNeedsDisplay();
+}
+
+void RenderLayerBacking::paintSystemPreviewBadgeLayer(GraphicsContext& context, const FloatRect& clip)
+{
+    if (!m_systemPreviewBadgeLayer)
+        return;
+    auto rect = FloatRect({ }, m_systemPreviewBadgeLayer->size());
+    GraphicsContextStateSaver stateSaver(context);
+    context.clip(clip);
+    PaintInfo paintInfo(context, LayoutRect(rect), PaintPhase::Foreground, { });
+    renderer().theme().paintSystemPreviewBadge(paintInfo, rect);
+}
+#endif
 
 // Masking layer is used for masks or clip-path.
 bool RenderLayerBacking::updateMaskingLayer(bool hasMask, bool hasClipPath)
@@ -2782,12 +2990,31 @@ bool RenderLayerBacking::updateMaskingLayer(bool hasMask, bool hasClipPath)
         OptionSet<GraphicsLayerPaintingPhase> maskPhases;
         if (hasMask)
             maskPhases = GraphicsLayerPaintingPhase::Mask;
-        
-        if (hasClipPath) {
+
+        auto shouldAddClipPathPaintingPhase = [&] {
+            if (!hasClipPath)
+                return false;
+
             // If we have a mask, we need to paint the combined clip-path and mask into the mask layer.
-            if (hasMask || WTF::holdsAlternative<Style::ReferencePath>(renderer().style().clipPath()) || !GraphicsLayer::supportsLayerType(GraphicsLayer::Type::Shape))
-                maskPhases.add(GraphicsLayerPaintingPhase::ClipPath);
-        }
+            if (hasMask)
+                return true;
+
+            if (WTF::holdsAlternative<Style::ReferencePath>(renderer().style().clipPath()))
+                return true;
+
+            if (!GraphicsLayer::supportsLayerType(GraphicsLayer::Type::Shape))
+                return true;
+
+#if PLATFORM(GTK) || PLATFORM(WPE)
+            Ref settings = renderer().settings();
+            if (!settings->useSkiaForComposition())
+                return true;
+#endif
+
+            return false;
+        };
+        if (shouldAddClipPathPaintingPhase())
+            maskPhases.add(GraphicsLayerPaintingPhase::ClipPath);
 
         bool paintsContent = !maskPhases.isEmpty();
         GraphicsLayer::Type requiredLayerType = paintsContent ? GraphicsLayer::Type::Normal : GraphicsLayer::Type::Shape;
@@ -3235,6 +3462,11 @@ bool RenderLayerBacking::isSimpleContainerCompositingLayer(PaintedContentsInfo& 
     if (m_owningLayer.isRenderViewLayer())
         return false;
 
+    // Scroll containers intentionally use the bitmap path for their background
+    // in updateDrawsContent(), so they are not simple containers.
+    if (m_scrollContainerLayer)
+        return false;
+
     if (hasBackingSharingLayers())
         return false;
 
@@ -3271,7 +3503,7 @@ static LayerTraversal traverseVisibleNonCompositedDescendantLayers(RenderLayer& 
 #endif
 
     for (CheckedPtr childLayer : parent.normalFlowLayers()) {
-        if (compositedWithOwnBackingStore(*childLayer))
+        if (compositedWithOwnBackingStore(*childLayer) || childLayer->paintsIntoProvidedBacking())
             continue;
 
         if (layerFunc(*childLayer) == LayerTraversal::Stop)
@@ -3286,7 +3518,7 @@ static LayerTraversal traverseVisibleNonCompositedDescendantLayers(RenderLayer& 
 
     // Use the m_hasCompositingDescendant bit to optimize?
     for (CheckedPtr childLayer : parent.negativeZOrderLayers()) {
-        if (compositedWithOwnBackingStore(*childLayer))
+        if (compositedWithOwnBackingStore(*childLayer) || childLayer->paintsIntoProvidedBacking())
             continue;
 
         if (layerFunc(*childLayer) == LayerTraversal::Stop)
@@ -3297,7 +3529,7 @@ static LayerTraversal traverseVisibleNonCompositedDescendantLayers(RenderLayer& 
     }
 
     for (CheckedPtr childLayer : parent.positiveZOrderLayers()) {
-        if (compositedWithOwnBackingStore(*childLayer))
+        if (compositedWithOwnBackingStore(*childLayer) || childLayer->paintsIntoProvidedBacking())
             continue;
 
         if (layerFunc(*childLayer) == LayerTraversal::Stop)
@@ -3305,6 +3537,24 @@ static LayerTraversal traverseVisibleNonCompositedDescendantLayers(RenderLayer& 
 
         if (traverseVisibleNonCompositedDescendantLayers(*childLayer, layerFunc) == LayerTraversal::Stop)
             return LayerTraversal::Stop;
+    }
+
+    return LayerTraversal::Continue;
+}
+
+static LayerTraversal traverseLayersForPaintedContentDetection(RenderLayer& backingOwnerLayer, NOESCAPE const Function<LayerTraversal(const RenderLayer&)>& layerFunc)
+{
+    if (traverseVisibleNonCompositedDescendantLayers(backingOwnerLayer, layerFunc) == LayerTraversal::Stop)
+        return LayerTraversal::Stop;
+
+    if (backingOwnerLayer.isComposited() && backingOwnerLayer.backing()->hasBackingSharingLayers()) {
+        for (CheckedRef sharingLayer : backingOwnerLayer.backing()->backingSharingLayers() | dereferenceView) {
+            if (layerFunc(sharingLayer) == LayerTraversal::Stop)
+                return LayerTraversal::Stop;
+
+            if (traverseVisibleNonCompositedDescendantLayers(sharingLayer, layerFunc) == LayerTraversal::Stop)
+                return LayerTraversal::Stop;
+        }
     }
 
     return LayerTraversal::Continue;
@@ -3324,7 +3574,7 @@ static std::optional<bool> intersectsWithAncestor(const RenderLayer& child, cons
 void RenderLayerBacking::determineNonCompositedLayerDescendantsPaintedContent(RenderLayer::PaintedContentRequest& request) const
 {
     bool hasPaintingDescendant = false;
-    traverseVisibleNonCompositedDescendantLayers(m_owningLayer, [&hasPaintingDescendant, &request, this](const RenderLayer& layer) {
+    traverseLayersForPaintedContentDetection(m_owningLayer, [&hasPaintingDescendant, &request, this](const RenderLayer& layer) {
         auto localRequest = RenderLayer::PaintedContentRequest { };
 #if HAVE(SUPPORT_HDR_DISPLAY)
         localRequest.setHDRRequestState(request.hasHDRContent);
@@ -3521,10 +3771,6 @@ void RenderLayerBacking::contentChanged(ContentChangeType changeType, const std:
 
 #if ENABLE(MODEL_ELEMENT)
     if (changeType == ContentChangeType::Model) {
-#if ENABLE(GPU_PROCESS_MODEL)
-        if (m_graphicsLayer && m_graphicsLayer->drawsContent())
-            m_graphicsLayer->setNeedsDisplay();
-#endif
         compositor().scheduleCompositingLayerUpdate();
         return;
     }
@@ -3675,9 +3921,14 @@ GraphicsLayer* RenderLayerBacking::childForSuperlayersExcludingViewTransitions()
     if (RefPtr viewportConstrainedLayer = viewportClippingOrAnchorLayer())
         return viewportConstrainedLayer.unsafeGet();
 
+#if USE(SYSTEM_PREVIEW) && ENABLE(MODEL_PROCESS)
+    if (m_systemPreviewWrapperLayer)
+        return m_systemPreviewWrapperLayer.get();
+#endif
+
     if (m_contentsContainmentLayer)
         return m_contentsContainmentLayer.get();
-    
+
     return m_graphicsLayer.get();
 }
 
@@ -4273,6 +4524,10 @@ void RenderLayerBacking::paintContents(const GraphicsLayer& graphicsLayer, Graph
         if (visibleDebugOverlayRegions.containsAny({ DebugOverlayRegions::TouchActionRegion, DebugOverlayRegions::TouchEventRegion, DebugOverlayRegions::EditableElementRegion, DebugOverlayRegions::WheelEventHandlerRegion, DebugOverlayRegions::InteractionRegion }))
             paintDebugOverlays(&graphicsLayer, context);
 
+#if USE(SYSTEM_PREVIEW) && ENABLE(MODEL_PROCESS)
+    } else if (&graphicsLayer == m_systemPreviewBadgeLayer.get()) {
+        paintSystemPreviewBadgeLayer(context, clip);
+#endif
     } else if (&graphicsLayer == layerForHorizontalScrollbar()) {
         if (m_owningLayer.hasVisibleContent()) {
             auto* scrollableArea = m_owningLayer.scrollableArea();
@@ -4499,7 +4754,7 @@ bool RenderLayerBacking::startAnimation(double timeOffset, const GraphicsLayerAn
             transformVector.insert(makeUnique<GraphicsLayerTransformAnimationValue>(offset, Style::toPlatform(keyframeStyle->transform(), referenceBoxRect.size()), tf));
 
         if (currentKeyframe.animatesProperty(CSSPropertyOpacity))
-            opacityVector.insert(makeUnique<GraphicsLayerFloatAnimationValue>(offset, keyframeStyle->opacity().value.value, tf));
+            opacityVector.insert(makeUnique<GraphicsLayerFloatAnimationValue>(offset, Style::evaluate<float>(keyframeStyle->opacity()), tf));
 
         if (currentKeyframe.animatesProperty(CSSPropertyFilter))
             filterVector.insert(makeUnique<GraphicsLayerFilterAnimationValue>(offset, Style::toPlatform(keyframeStyle->filter(), renderer().style()), tf));
@@ -4561,8 +4816,9 @@ void RenderLayerBacking::updateAcceleratedEffectsAndBaseValues(HashSet<Ref<Accel
     bool hasEffectAffectingBackdropFilter = false;
     auto borderBoxRect = snappedIntRect(m_owningLayer.rendererBorderBoxRect());
 
+    auto* style = target->lastStyleChangeEventStyle();
     auto baseValues = [&]() -> AcceleratedEffectValues {
-        if (auto* style = target->lastStyleChangeEventStyle())
+        if (style)
             return { *style, borderBoxRect, &renderer };
         return { };
     }();
@@ -4584,17 +4840,30 @@ void RenderLayerBacking::updateAcceleratedEffectsAndBaseValues(HashSet<Ref<Accel
     AcceleratedEffects acceleratedEffects;
     HashSet<Ref<AcceleratedTimeline>> effectTimelines;
     if (auto* effectStack = target->keyframeEffectStack()) {
-        WeakListHashSet<AcceleratedEffect> weakAcceleratedEffects;
         if (effectStack->allowsAcceleration()) {
             auto animatesWidth = effectStack->containsProperty(CSSPropertyWidth);
             auto animatesHeight = effectStack->containsProperty(CSSPropertyHeight);
+            auto animatesOffsetPath = effectStack->containsProperty(CSSPropertyOffsetPath);
+
+            // If offset-distance is a percentage or is calculated, we won't have the necessary
+            // information in the remote layer tree to recompute it based on an animated offset-path.
+            if (animatesOffsetPath && style->offsetDistance().isPercentOrCalculated())
+                disallowedAcceleratedProperties.add(transformRelatedAcceleratedProperties);
+
             for (const auto& effect : effectStack->sortedEffects() | std::views::reverse) {
                 if (!effect || !effect->canHaveAcceleratedRepresentation() || !effect->canBeAccelerated())
                     continue;
-                if (animatesWidth || animatesHeight) {
-                    auto& blendingKeyframes = effect->blendingKeyframes();
-                    if ((animatesWidth && blendingKeyframes.hasWidthDependentTransform()) || (animatesHeight && blendingKeyframes.hasHeightDependentTransform()))
-                        disallowedAcceleratedProperties.add(transformRelatedAcceleratedProperties);
+                if (!disallowedAcceleratedProperties.containsAll(transformRelatedAcceleratedProperties)) {
+                    if (animatesWidth || animatesHeight) {
+                        auto& blendingKeyframes = effect->blendingKeyframes();
+                        if ((animatesWidth && blendingKeyframes.hasWidthDependentTransform()) || (animatesHeight && blendingKeyframes.hasHeightDependentTransform()))
+                            disallowedAcceleratedProperties.add(transformRelatedAcceleratedProperties);
+                    }
+                    if (animatesOffsetPath) {
+                        auto& blendingKeyframes = effect->blendingKeyframes();
+                        if (blendingKeyframes.animatesOffsetDistanceToPercentOrCalculated())
+                            disallowedAcceleratedProperties.add(transformRelatedAcceleratedProperties);
+                    }
                 }
                 Ref acceleratedEffect = effect->acceleratedRepresentation(borderBoxRect, baseValues, disallowedAcceleratedProperties);
                 // FIXME: it feels like we should be able to assert here, or perhaps we could just fold this into the logic
@@ -4611,23 +4880,30 @@ void RenderLayerBacking::updateAcceleratedEffectsAndBaseValues(HashSet<Ref<Accel
                 allAcceleratedProperties.add(acceleratedProperties);
                 if (effect->isRunningAccelerated())
                     interpolatingProperties.add(acceleratedProperties);
-                if (!hasEffectAffectingFilter && acceleratedProperties.contains(AcceleratedEffectProperty::Filter))
+                // We can only handle one effect in the stack targeting the filter and backdrop-filter properties
+                // because of the complexities involved with possibly blending across multiple filter types. Since
+                // this is bound to be rare, it's a lot easier to simply disallow acceleration in this case.
+                if (acceleratedProperties.contains(AcceleratedEffectProperty::Filter)) {
+                    if (hasEffectAffectingFilter && !replacedAcceleratedProperties.contains(AcceleratedEffectProperty::Filter))
+                        disallowedAcceleratedProperties.add(AcceleratedEffectProperty::Filter);
                     hasEffectAffectingFilter = true;
-                if (!hasEffectAffectingBackdropFilter && acceleratedProperties.contains(AcceleratedEffectProperty::BackdropFilter))
+                }
+                if (acceleratedProperties.contains(AcceleratedEffectProperty::BackdropFilter)) {
+                    if (hasEffectAffectingBackdropFilter && !replacedAcceleratedProperties.contains(AcceleratedEffectProperty::BackdropFilter))
+                        disallowedAcceleratedProperties.add(AcceleratedEffectProperty::BackdropFilter);
                     hasEffectAffectingBackdropFilter = true;
+                }
                 effectTimelines.add(Ref { *acceleratedEffect->timeline() });
-                weakAcceleratedEffects.add(acceleratedEffect.ptr());
                 acceleratedEffects.append(WTF::move(acceleratedEffect));
             }
         }
-        effectStack->setAcceleratedEffects(WTF::move(weakAcceleratedEffects));
     }
 
     // Effects were added in reverse, so we need to reverse the accelerated effects.
     acceleratedEffects.reverse();
 
     // Now let's prune any effect that only animates a non-interpolating property.
-    auto nonInterpolatingProperties = allAcceleratedProperties ^ interpolatingProperties;
+    auto nonInterpolatingProperties = allAcceleratedProperties ^ interpolatingProperties ^ disallowedAcceleratedProperties;
     if (!nonInterpolatingProperties.isEmpty()) {
         // Make a copy of our current list of effects and clear the the original list as well
         // as the set of timelines. We'll re-populate both without effects that are only animating
@@ -4665,6 +4941,31 @@ void RenderLayerBacking::updateAcceleratedEffectsAndBaseValues(HashSet<Ref<Accel
         for (auto& effect : acceleratedEffects)
             effect->clearProperty(AcceleratedEffectProperty::BackdropFilter);
         baseValues.backdropFilter = { };
+    }
+
+    // Accelerated effects remain in the remote layer tree as long as they are interpolating. Once their
+    // associated animation reaches its natural end, their target's accelerated effect stack will be update
+    // and a new remote layer tree transaction will be committed to remove that accelerated effect. However,
+    // in the case where that effect does not fill forwards, there could be a moment between the moment it
+    // finished naturally in the remote layer tree and the moment it is indeed removed where the associated
+    // layer is in an unwanted state for a frame (or more if the Web process is under heavy load). As such,
+    // we must make such effects forward-filling. It is important however not to do so for effects that will
+    // be used as input for other effects further up the stack.
+    OptionSet<AcceleratedEffectProperty> composedAcceleratedProperties;
+    for (auto& effect : acceleratedEffects | std::views::reverse) {
+        // Nothing to do if the effect is not associated with a monotonic timeline.
+        if (!effect->timeline()->isMonotonic())
+            continue;
+        // Nothing to do if the effect is forward-filling already.
+        const auto& fill = effect->timing().fill;
+        if (fill == FillMode::Forwards || fill == FillMode::Both)
+            continue;
+        // We only want to force the effect to be forward-filling if none of its
+        // animated properties affect other effects up the stack.
+        auto shouldBecomeForwardsFilling = !composedAcceleratedProperties.containsAny(effect->animatedProperties());
+        composedAcceleratedProperties.add(effect->composedProperties());
+        if (shouldBecomeForwardsFilling)
+            effect->makeForwardsFilling();
     }
 
     m_graphicsLayer->setAcceleratedEffectsAndBaseValues(WTF::move(acceleratedEffects), WTF::move(baseValues));

@@ -323,11 +323,11 @@ static std::optional<FixedVector<AtomString>> consumeCommaSeparatedCustomIdentLi
     Vector<AtomString> customIdents { };
 
     do {
-        auto ident = CSSPropertyParserHelpers::consumeCustomIdentRaw(range);
-        if (ident.isEmpty())
+        auto ident = CSSPropertyParserHelpers::consumeEagerlyResolvableCustomIdentRaw(range);
+        if (!ident)
             return std::nullopt;
 
-        customIdents.append(WTF::move(ident));
+        customIdents.append(ident.toAtomString());
     } while (CSSPropertyParserHelpers::consumeCommaIncludingWhitespace(range));
 
     if (!range.atEnd())
@@ -790,7 +790,7 @@ std::unique_ptr<MutableCSSSelector> CSSSelectorParser::consumeAttribute(CSSParse
     auto selector = makeUnique<MutableCSSSelector>();
 
     if (block.atEnd()) {
-        selector->setAttribute(qualifiedName, CSSSelector::CaseSensitive);
+        selector->setAttribute(qualifiedName, CSSSelector::AttributeMatchType::Default);
         selector->setMatch(CSSSelector::Match::Set);
         return selector;
     }
@@ -814,9 +814,9 @@ static AtomString consumePickerArgument(CSSParserTokenRange& block)
     auto& ident = block.consumeIncludingWhitespace();
     if (ident.type() != IdentToken || !block.atEnd())
         return nullAtom();
-    if (ident.value() != "select"_s)
+    if (!equalLettersIgnoringASCIICase(ident.value(), "select"_s))
         return nullAtom();
-    return ident.value().toAtomString();
+    return ident.value().convertToASCIILowercaseAtom();
 }
 
 std::unique_ptr<MutableCSSSelector> CSSSelectorParser::consumePseudo(CSSParserTokenRange& range)
@@ -1140,12 +1140,14 @@ CSSSelector::Match CSSSelectorParser::consumeAttributeMatch(CSSParserTokenRange&
 CSSSelector::AttributeMatchType CSSSelectorParser::consumeAttributeFlags(CSSParserTokenRange& range)
 {
     if (range.peek().type() != IdentToken)
-        return CSSSelector::CaseSensitive;
+        return CSSSelector::AttributeMatchType::Default;
     const CSSParserToken& flag = range.consumeIncludingWhitespace();
     if (equalLettersIgnoringASCIICase(flag.value(), "i"_s))
-        return CSSSelector::CaseInsensitive;
+        return CSSSelector::AttributeMatchType::CaseInsensitive;
+    if (equalLettersIgnoringASCIICase(flag.value(), "s"_s))
+        return CSSSelector::AttributeMatchType::CaseSensitive;
     m_failedParsing = true;
-    return CSSSelector::CaseSensitive;
+    return CSSSelector::AttributeMatchType::Default;
 }
 
 // <an+b> token sequences have special serialization rules: https://www.w3.org/TR/css-syntax-3/#serializing-anb
@@ -1365,8 +1367,8 @@ CSSSelectorList CSSSelectorParser::resolveNestingParent(const CSSSelectorList& n
 
     auto canInline = [](const CSSSelector& nestingSelector, const CSSSelectorList& list) {
         auto hasTagInCompound = [](const CSSSelector& simpleSelector) {
-            // A compound is organized so that any tag selector is always last.
-            return simpleSelector.lastInCompound()->match() == CSSSelector::Match::Tag;
+            // A compound is organized so that any tag selector is always leftmost.
+            return simpleSelector.leftmostInCompound()->match() == CSSSelector::Match::Tag;
         };
 
         if (list.size() != 1) {
@@ -1385,7 +1387,7 @@ CSSSelectorList CSSSelectorParser::resolveNestingParent(const CSSSelectorList& n
             // .foo .bar { & .baz {...} } -> .foo .bar .baz {...}
             return true;
         }
-        bool hasSingleCompound = !list.first().firstInCompound()->precedingInComplexSelector();
+        bool hasSingleCompound = !list.first().rightmostInCompound()->precedingInComplexSelector();
         if (hasSingleCompound) {
             // .foo.bar { .baz & {...} } -> .baz .foo.bar {...}
             return true;
@@ -1536,6 +1538,128 @@ std::optional<Style::PseudoElementIdentifier> CSSSelectorParser::parsePseudoElem
     default:
         return { };
     }
+}
+
+struct HasCompoundContext {
+    Vector<const CSSSelector*> compoundPeers;
+    CSSSelector::Relation compoundRelation;
+    const CSSSelector* leftStart { nullptr };
+};
+
+static std::optional<HasCompoundContext> collectHasCompoundContext(const CSSSelector& hasPseudoClass)
+{
+    HasCompoundContext context;
+    for (auto* selector = hasPseudoClass.leftmostInCompound(); selector; selector = selector->followingInCompound()) {
+        if (selector != &hasPseudoClass)
+            context.compoundPeers.append(selector);
+    }
+    if (context.compoundPeers.isEmpty())
+        return { };
+
+    auto* rightmostInCompound = hasPseudoClass.rightmostInCompound();
+    context.compoundRelation = rightmostInCompound->relation();
+    context.leftStart = rightmostInCompound->precedingInComplexSelector();
+    return context;
+}
+
+static void appendSelector(MutableCSSSelectorList& result, MutableCSSSelector*& leftmost, std::unique_ptr<MutableCSSSelector> selector)
+{
+    if (!leftmost) {
+        result.append(WTF::move(selector));
+        leftmost = result.last().get();
+    } else {
+        leftmost->setPrecedingInComplexSelector(WTF::move(selector));
+        leftmost = leftmost->precedingInComplexSelector();
+    }
+}
+
+static CSSSelectorList buildScopeSelector(const HasCompoundContext& context)
+{
+    MutableCSSSelector* leftmost = nullptr;
+    MutableCSSSelectorList result;
+
+    for (auto* peer : context.compoundPeers) {
+        auto mutableSelector = makeUnique<MutableCSSSelector>(*peer, MutableCSSSelector::SimpleSelector);
+        mutableSelector->setRelation(peer->relation());
+        appendSelector(result, leftmost, WTF::move(mutableSelector));
+    }
+
+    leftmost->setRelation(context.compoundRelation);
+
+    for (auto* selector = context.leftStart; selector; selector = selector->precedingInComplexSelector()) {
+        auto mutableSelector = makeUnique<MutableCSSSelector>(*selector, MutableCSSSelector::SimpleSelector);
+        mutableSelector->setRelation(selector->relation());
+        appendSelector(result, leftmost, WTF::move(mutableSelector));
+    }
+
+    return CSSSelectorList { WTF::move(result) };
+}
+
+// Returns a selector for the :has() scope element. Encodes two cases:
+//   - Specific selectors: strong scope (e.g. `.c1` for `.c1:has(> .trigger)`).
+//   - Universal `*`: weak scope. No compound peer at any level.
+// Scope-breaking is signalled by the caller passing an empty list.
+// `compoundSelectors` lists the compounds contributing to the scope, from outermost
+// (an enclosing :is()/:not()) to innermost (the :has() itself). For `.foo:is(.bar:has(.x))`
+// the outermost contributes `.foo` and the innermost contributes `.bar`, giving scope `.foo.bar`.
+// Only the outermost's left context (combinator + ancestor chain) is relevant; inner compounds
+// live inside :is()/:not() arguments. Inner compounds containing a type selector are skipped
+// to avoid synthesizing an invalid two-type compound.
+CSSSelectorList CSSSelectorParser::makeHasScopeSelector(const Vector<const CSSSelector*>& compoundSelectors)
+{
+    ASSERT(!compoundSelectors.isEmpty());
+
+    auto* outermost = compoundSelectors.first()->rightmostInCompound();
+
+    Vector<const CSSSelector*> mergedPeers;
+    for (size_t i = 0; i < compoundSelectors.size(); ++i) {
+        auto context = collectHasCompoundContext(*compoundSelectors[i]);
+        if (!context)
+            continue;
+
+        if (i > 0) {
+            auto containsTypeSelector = std::ranges::any_of(context->compoundPeers, [](auto* peer) {
+                return peer->match() == CSSSelector::Match::Tag;
+            });
+            if (containsTypeSelector)
+                continue;
+        }
+
+        mergedPeers.appendVector(context->compoundPeers);
+    }
+
+    if (mergedPeers.isEmpty()) {
+        MutableCSSSelectorList result;
+        result.append(makeUnique<MutableCSSSelector>(anyQName()));
+        return CSSSelectorList { WTF::move(result) };
+    }
+
+    HasCompoundContext merged { WTF::move(mergedPeers), outermost->relation(), outermost->precedingInComplexSelector() };
+    return buildScopeSelector(merged);
+}
+
+CSSSelectorList CSSSelectorParser::makeHasArgumentWithScope(const CSSSelector& hasArgument, const CSSSelector& scopeSelector)
+{
+    MutableCSSSelector* leftmost = nullptr;
+    MutableCSSSelectorList result;
+
+    // Copy :has() argument selectors, stopping at HasScope.
+    for (auto* selector = &hasArgument; selector; selector = selector->precedingInComplexSelector()) {
+        if (selector->match() == CSSSelector::Match::HasScope)
+            break;
+        auto mutableSelector = makeUnique<MutableCSSSelector>(*selector, MutableCSSSelector::SimpleSelector);
+        mutableSelector->setRelation(selector->relation());
+        appendSelector(result, leftmost, WTF::move(mutableSelector));
+    }
+
+    // Append scope selector.
+    for (auto* selector = &scopeSelector; selector; selector = selector->precedingInComplexSelector()) {
+        auto mutableSelector = makeUnique<MutableCSSSelector>(*selector, MutableCSSSelector::SimpleSelector);
+        mutableSelector->setRelation(selector->relation());
+        appendSelector(result, leftmost, WTF::move(mutableSelector));
+    }
+
+    return CSSSelectorList { WTF::move(result) };
 }
 
 } // namespace WebCore

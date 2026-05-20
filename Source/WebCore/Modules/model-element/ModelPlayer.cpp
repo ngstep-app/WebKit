@@ -113,11 +113,6 @@ void ModelPlayer::setInteractionEnabled(bool)
 {
 }
 
-String ModelPlayer::inlinePreviewUUIDForTesting() const
-{
-    return emptyString();
-}
-
 #if ENABLE(MODEL_ELEMENT_ANIMATIONS_CONTROL)
 
 void ModelPlayer::setAutoplay(bool)
@@ -224,5 +219,17 @@ void ModelPlayer::exitImmersivePresentation(CompletionHandler<void()>&& completi
 }
 
 #endif
+
+#if HAVE(SUPPORT_HDR_DISPLAY) && ENABLE(PIXEL_FORMAT_RGBA16F)
+void ModelPlayer::setDynamicRangeLimit(PlatformDynamicRangeLimit, float, bool)
+{
+}
+
+std::optional<double> ModelPlayer::getEffectiveDynamicRangeLimitValue() const
+{
+    return std::nullopt;
+}
+#endif
+
 
 } // namespace WebCore

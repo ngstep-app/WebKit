@@ -255,12 +255,17 @@ static String optionalArrayOfDataHelper(std::optional<Vector<CoreIPCData>>& toSe
 
 CoreIPCSecTrust::CoreIPCSecTrust(SecTrustRef trust)
 {
-    CFErrorRef error = nullptr;
-
     if (!trust)
         return;
 
-    RetainPtr cfDictionary = adoptCF(dynamic_cf_cast<CFDictionaryRef>(SecTrustCopyPropertyListRepresentation(trust, &error)));
+    RetainPtr<CFDictionaryRef> cfDictionary;
+    RetainPtr<CFErrorRef> error;
+    {
+        // FIXME: The Security framework API is missing the `CF_RETURNS_RETAINED` annotation (rdar://161546781).
+        CFErrorRef rawError = NULL;
+        cfDictionary = adoptCF(dynamic_cf_cast<CFDictionaryRef>(SecTrustCopyPropertyListRepresentation(trust, &rawError)));
+        SUPPRESS_RETAINPTR_CTOR_ADOPT error = adoptCF(rawError);
+    }
     if (!cfDictionary || error)
         return;
     RetainPtr dict = bridge_cast(cfDictionary.get());
@@ -487,6 +492,27 @@ ALLOW_DEPRECATED_DECLARATIONS_END
                 }
 
                 CoreIPCSecTrustData::InfoOption v = WTF::move(revocationInfo);
+                vector.append(std::make_pair(WTF::move(k), WTF::move(v)));
+            } else if ([value isKindOfClass:NSDictionary.class]) {
+                NSDictionary *subDict = value;
+                CoreIPCSecTrustData::InfoSubDict infoSubDict;
+                infoSubDict.reserveCapacity([subDict count]);
+                for (NSString *subKey in subDict) {
+                    if (![subKey isKindOfClass:NSString.class]) {
+                        RELEASE_LOG_ERROR(IPC, "CoreIPCSecTrust 'info' sub-dictionary key is not a string");
+                        ASSERT_NOT_REACHED();
+                        return;
+                    }
+                    id subValue = [subDict objectForKey:subKey];
+                    if (![subValue isKindOfClass:NSNumber.class]) {
+                        RELEASE_LOG_ERROR(IPC, "CoreIPCSecTrust 'info' sub-dictionary value has unexpected type");
+                        ASSERT_NOT_REACHED();
+                        return;
+                    }
+                    CoreIPCString subKeyString { subKey };
+                    infoSubDict.append(std::make_pair(WTF::move(subKeyString), [(NSNumber *)subValue boolValue]));
+                }
+                CoreIPCSecTrustData::InfoOption v = WTF::move(infoSubDict);
                 vector.append(std::make_pair(WTF::move(k), WTF::move(v)));
             } else {
                 RELEASE_LOG_ERROR(IPC, "CoreIPCSecTrust 'info' dictionary contains unexpected type");
@@ -855,6 +881,12 @@ ALLOW_DEPRECATED_DECLARATIONS_END
                         [array addObject:entryDict.get()];
                     }
                     value = array;
+                },
+                [&] (const CoreIPCSecTrustData::InfoSubDict& infoSubDict) {
+                    RetainPtr subDict = adoptNS([[NSMutableDictionary alloc] initWithCapacity:infoSubDict.size()]);
+                    for (const auto& subPair : infoSubDict)
+                        [subDict setObject:@(subPair.second) forKey:subPair.first.toID().get()];
+                    value = subDict;
                 }
             );
             [info setObject:value.get() forKey:key.get()];
@@ -892,8 +924,14 @@ ALLOW_DEPRECATED_DECLARATIONS_END
         [dict setObject:exceptions.get() forKey:@"exceptions"];
     }
 
-    CFErrorRef error = nullptr;
-    RetainPtr trust = adoptCF(SecTrustCreateFromPropertyListRepresentation(dict.get(), &error));
+    RetainPtr<SecTrustRef> trust;
+    RetainPtr<CFErrorRef> error;
+    {
+        // FIXME: The Security framework API is missing the `CF_RETURNS_RETAINED` annotation (rdar://161546781).
+        CFErrorRef rawError = NULL;
+        trust = adoptCF(SecTrustCreateFromPropertyListRepresentation(dict.get(), &rawError));
+        SUPPRESS_RETAINPTR_CTOR_ADOPT error = adoptCF(rawError);
+    }
     if (error) {
         RELEASE_LOG_ERROR(IPC, "CoreIPCSecTrust error creating trust object");
         return { nullptr };

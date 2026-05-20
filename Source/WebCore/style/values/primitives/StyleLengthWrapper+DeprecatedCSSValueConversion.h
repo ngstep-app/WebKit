@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Samuel Weinig <sam@webkit.org>
+ * Copyright (C) 2025-2026 Samuel Weinig <sam@webkit.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -24,103 +24,64 @@
 
 #pragma once
 
-#include "Element.h"
 #include "StyleLengthWrapper+CSSValueConversion.h"
+#include "StylePrimitiveNumericTypes+DeprecatedConversions.h"
 
 namespace WebCore {
 namespace Style {
 
 // MARK: - Deprecated Conversions
 
-std::optional<CSSToLengthConversionData> deprecatedLengthConversionCreateCSSToLengthConversionData(RefPtr<Element>);
+template<LengthWrapperBaseDerived StyleType, typename... Rest>
+auto deprecatedConvertLengthWrapperFromCSSValue(const CSSPrimitiveValue& value, Rest&&... rest) -> std::optional<StyleType>
+{
+    using CSSSpecified = typename StyleType::Specified::CSS;
+    using CSSRaw = typename CSSSpecified::Raw;
+    using CSSDimensionRaw = typename CSSRaw::Dimension;
+    using CSSPercentageRaw = typename CSSRaw::Percentage;
 
-template<LengthWrapperBaseDerived T> struct DeprecatedCSSValueConversion<T> {
-    auto operator()(const RefPtr<Element>& element, const CSSPrimitiveValue& primitiveValue) -> std::optional<T>
-    {
-        using namespace CSS::Literals;
-
-        auto convertLengthPercentage = [&] -> std::optional<T> {
-            auto conversionData = deprecatedLengthConversionCreateCSSToLengthConversionData(element);
-            if (!conversionData) {
-                if (primitiveValue.isCalculated())
-                    return std::nullopt;
-
-                if (primitiveValue.isPx()) {
-                    return T {
-                        typename T::Fixed {
-                            CSS::clampToRange<T::Fixed::range, float>(primitiveValue.resolveAsLengthNoConversionDataRequired(), minValueForCssLength, maxValueForCssLength),
-                        },
-                        primitiveValue.primitiveType() == CSSUnitType::CSS_QUIRKY_EM
-                    };
-                }
-
-                if (primitiveValue.isPercentage()) {
-                    return T {
-                        typename T::Percentage {
-                            CSS::clampToRange<T::Percentage::range, float>(primitiveValue.resolveAsPercentageNoConversionDataRequired()),
-                        }
-                    };
-                }
-
-                return std::nullopt;
-            }
-
-            if (primitiveValue.isLength()) {
-                return T {
-                    typename T::Fixed {
-                        CSS::clampToRange<T::Fixed::range, float>(primitiveValue.resolveAsLength(*conversionData), minValueForCssLength, maxValueForCssLength),
-                    },
-                    primitiveValue.primitiveType() == CSSUnitType::CSS_QUIRKY_EM
-                };
-            }
-
-            if (primitiveValue.isPercentage()) {
-                return T {
-                    typename T::Percentage {
-                        CSS::clampToRange<T::Percentage::range, float>(primitiveValue.resolveAsPercentage(*conversionData)),
-                    }
-                };
-            }
-
-            if (primitiveValue.isCalculatedPercentageWithLength()) {
-                return T {
-                    typename T::Calc {
-                        protect(primitiveValue.cssCalcValue())->createCalculationValue(*conversionData, CSSCalcSymbolTable { })
-                    }
-                };
-            }
+    return WTF::switchOn(value,
+        [&](const CSSPrimitiveValue::Calc&) -> std::optional<StyleType> {
+            return std::nullopt;
+        },
+        [&](const CSSPrimitiveValue::Raw& raw) -> std::optional<StyleType> {
+            if (auto unit = CSSPercentageRaw::UnitTraits::validate(raw.unit))
+                return StyleType { deprecatedToStyle(CSSPercentageRaw(*unit, raw.value), std::forward<Rest>(rest)...) };
+            if (raw.unit == CSSUnitType::CSS_PX)
+                return StyleType { deprecatedToStyle(CSSDimensionRaw(CSS::LengthUnit::Px, raw.value), std::forward<Rest>(rest)...) };
 
             return std::nullopt;
-        };
-
-        if constexpr (!T::Keywords::count)
-            return convertLengthPercentage();
-        else {
-            auto valueID = primitiveValue.valueID();
-            if (valueID == CSSValueInvalid)
-                return convertLengthPercentage();
-
-            constexpr auto keywordsTuple = T::Keywords::tuple;
-
-            auto result = std::apply([&](const auto& ...keyword) {
-                std::optional<T> result;
-                (CSSValueConversion<T>::processKeyword(keyword, valueID, result) || ...);
-                return result;
-            }, keywordsTuple);
-
-            return result;
         }
-    }
+    );
+}
 
-    auto operator()(const RefPtr<Element>& element, const CSSValue& value) -> std::optional<T>
-    {
-        using namespace CSS::Literals;
+template<LengthWrapperBaseDerived StyleType, typename... Rest>
+auto deprecatedConvertLengthWrapperFromCSSValue(const CSSValue& value, Rest&&... rest) -> std::optional<StyleType>
+{
+    using namespace CSS::Literals;
 
+    if constexpr (!StyleType::Keywords::count) {
         RefPtr primitiveValue = dynamicDowncast<CSSPrimitiveValue>(value);
         if (!primitiveValue)
             return std::nullopt;
+        return deprecatedConvertLengthWrapperFromCSSValue<StyleType>(*primitiveValue, std::forward<Rest>(rest)...);
+    } else {
+        if (RefPtr primitiveValue = dynamicDowncast<CSSPrimitiveValue>(value))
+            return deprecatedConvertLengthWrapperFromCSSValue<StyleType>(*primitiveValue, std::forward<Rest>(rest)...);
 
-        return this->operator()(element, *primitiveValue);
+        RefPtr keywordValue = dynamicDowncast<CSSKeywordValue>(value);
+        if (!keywordValue)
+            return std::nullopt;
+
+        // NOTE: The non-deprecated `convertLengthWrapperFromCSSValue` can be used for keywords, since they never require conversion data.
+        return convertLengthWrapperFromCSSValue<StyleType>(*keywordValue, std::forward<Rest>(rest)...);
+    }
+}
+
+template<LengthWrapperBaseDerived StyleType> struct DeprecatedCSSValueConversion<StyleType> {
+    template<typename... Rest> auto operator()(const CSSValue& value, Rest&&... rest) -> std::optional<StyleType>
+    {
+        return deprecatedConvertLengthWrapperFromCSSValue<StyleType>(value, std::forward<Rest>(rest)...);
     }
 };
 

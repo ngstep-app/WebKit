@@ -38,7 +38,9 @@
 #include "AXSearchManager.h"
 #include "AXTextRun.h"
 #include "AXUtilities.h"
+#include "AccessibilityNodeObject.h"
 #include "DocumentView.h"
+#include "HTMLTableElement.h"
 #include "LocalFrameView.h"
 #include "LogInitialization.h"
 #include "Logging.h"
@@ -238,6 +240,7 @@ void AXLogger::log(const String& collectionName, const AXObjectCache::DeferredCo
         [&size] (const ListHashSet<Node*>& typedCollection) { size = typedCollection.size(); },
         [&size] (const ListHashSet<Ref<AccessibilityObject>>& typedCollection) { size = typedCollection.size(); },
         [&size] (const Vector<AXObjectCache::AttributeChange>& typedCollection) { size = typedCollection.size(); },
+        [&size] (const Vector<AXObjectCache::CanvasFocusPathBoundsChange>& typedCollection) { size = typedCollection.size(); },
         [&size] (const Vector<std::pair<Node*, Node*>>& typedCollection) { size = typedCollection.size(); },
         [&size] (const WeakHashSet<Element, WeakPtrImplWithEventTargetData>& typedCollection) { size = typedCollection.computeSize(); },
         [&size] (const WeakHashSet<HTMLTableElement, WeakPtrImplWithEventTargetData>& typedCollection) { size = typedCollection.computeSize(); },
@@ -816,9 +819,6 @@ TextStream& operator<<(WTF::TextStream& stream, AXProperty property)
     case AXProperty::ExplicitOrientation:
         stream << "ExplicitOrientation";
         break;
-    case AXProperty::ExplicitPopupValue:
-        stream << "ExplicitPopupValue";
-        break;
     case AXProperty::ExtendedDescription:
         stream << "ExtendedDescription";
         break;
@@ -1127,9 +1127,6 @@ TextStream& operator<<(WTF::TextStream& stream, AXProperty property)
     case AXProperty::OuterHTML:
         stream << "OuterHTML";
         break;
-    case AXProperty::Path:
-        stream << "Path";
-        break;
     case AXProperty::PlaceholderValue:
         stream << "PlaceholderValue";
         break;
@@ -1138,6 +1135,9 @@ TextStream& operator<<(WTF::TextStream& stream, AXProperty property)
         stream << "PlatformWidget";
         break;
 #endif
+    case AXProperty::PopupValue:
+        stream << "PopupValue";
+        break;
     case AXProperty::PosInSet:
         stream << "PosInSet";
         break;

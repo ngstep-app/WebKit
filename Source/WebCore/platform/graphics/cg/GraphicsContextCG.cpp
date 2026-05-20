@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2003-2025 Apple Inc. All rights reserved.
+ * Copyright (C) 2003-2026 Apple Inc. All rights reserved.
  * Copyright (C) 2008 Eric Seidel <eric@webkit.org>
  *
  * Redistribution and use in source and binary forms, with or without
@@ -44,6 +44,7 @@
 #include "ShadowBlur.h"
 #include "Timer.h"
 #include <pal/spi/cg/CoreGraphicsSPI.h>
+#include <pal/spi/cg/ImageIOSPI.h>
 #include <wtf/MathExtras.h>
 #include <wtf/RetainPtr.h>
 #include <wtf/TZoneMallocInlines.h>
@@ -1332,11 +1333,16 @@ void GraphicsContextCG::strokeRect(const FloatRect& rect, float lineWidth)
 void GraphicsContextCG::strokeArc(const PathArc& arc)
 {
 #if HAVE(CGCONTEXT_STROKE_ARC)
-    CGContextRef context = platformContext();
-    CGContextStrokeArc(context, arc.center.x(), arc.center.y(), arc.radius, arc.startAngle, arc.endAngle, arc.direction == RotationDirection::Counterclockwise);
-#else
-    GraphicsContext::strokeArc(arc);
+    if (!strokeGradient()) {
+        if (strokePattern())
+            applyStrokePattern();
+
+        CGContextRef context = platformContext();
+        CGContextStrokeArc(context, arc.center.x(), arc.center.y(), arc.radius, arc.startAngle, arc.endAngle, arc.direction == RotationDirection::Counterclockwise);
+        return;
+    }
 #endif
+    GraphicsContext::strokeArc(arc);
 }
 
 void GraphicsContextCG::setLineCap(LineCap cap)
@@ -1360,6 +1366,9 @@ void GraphicsContextCG::setLineDash(const DashArray& dashes, float dashOffset)
         float length = 0;
         for (size_t i = 0; i < dashes.size(); ++i)
             length += static_cast<float>(dashes[i]);
+        // CGContextSetLineDash repeats odd-length arrays, so the effective cycle is twice the sum.
+        if (dashes.size() % 2)
+            length *= 2;
         if (length)
             dashOffset = fmod(dashOffset, length) + length;
     }

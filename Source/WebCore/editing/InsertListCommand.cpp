@@ -28,6 +28,7 @@
 #include "InsertListCommand.h"
 
 #include "BoundaryPointInlines.h"
+#include "ContainerNodeInlines.h"
 #include "Document.h"
 #include "Editing.h"
 #include "ElementTraversal.h"
@@ -37,6 +38,8 @@
 #include "HTMLUListElement.h"
 #include "PositionInlines.h"
 #include "Range.h"
+#include "RenderStyle+GettersInlines.h"
+#include "SimpleRange.h"
 #include "VisibleUnits.h"
 
 namespace WebCore {
@@ -348,14 +351,14 @@ void InsertListCommand::unlistifyParagraph(const VisiblePosition& originalStart,
     }
 
     if (nextListChild && previousListChild) {
-        // We want to pull listChildNode out of listNode, and place it before nextListChild 
+        // We want to pull listChildNode out of listNode, and place it before nextListChild
         // and after previousListChild, so we split listNode and insert it between the two lists.  
         // But to split listNode, we must first split ancestors of listChildNode between it and listNode,
         // if any exist.
         // FIXME: We appear to split at nextListChild as opposed to listChildNode so that when we remove
         // listChildNode below in moveParagraphs, previousListChild will be removed along with it if it is 
         // unrendered. But we ought to remove nextListChild too, if it is unrendered.
-        splitElement(listNode, *splitTreeToNode(*nextListChild, listNode));
+        splitListElement(listNode, *nextListChild);
         insertNodeBefore(WTF::move(nodeToInsert), listNode);
     } else if (nextListChild || listChildNode->parentNode() != &listNode) {
         // Just because listChildNode has no previousListChild doesn't mean there isn't any content
@@ -363,7 +366,7 @@ void InsertListCommand::unlistifyParagraph(const VisiblePosition& originalStart,
         // between it and listNode. So, we split up to listNode before inserting the placeholder
         // where we're about to move listChildNode to.
         if (RefPtr listChildNodeParentNode { listChildNode->parentNode() }; listChildNodeParentNode && listChildNodeParentNode != &listNode)
-            splitElement(listNode, *splitTreeToNode(*listChildNode, listNode).get());
+            splitListElement(listNode, *listChildNode);
         insertNodeBefore(WTF::move(nodeToInsert), listNode);
     } else
         insertNodeAfter(WTF::move(nodeToInsert), listNode);

@@ -146,6 +146,7 @@
 #if PLATFORM(IOS_FAMILY)
 #import "AccessibilityUtilitiesSPI.h"
 #import "UIKitSPI.h"
+#import <WebCore/RenderThemeIOS.h>
 #import <wtf/spi/darwin/MemoryStatusSPI.h>
 #endif
 
@@ -235,13 +236,15 @@ void WebProcess::bindAccessibilityFrameWithData(WebCore::FrameIdentifier frameID
 
 id WebProcess::accessibilityFocusedUIElement()
 {
-    auto retrieveFocusedUIElementFromMainThread = [] () {
-        return Accessibility::retrieveAutoreleasedValueFromMainThread<id>([] () -> RetainPtr<id> {
+    auto retrieveFocusedUIElementFromMainThread = [] () -> id {
+        auto result = Accessibility::retrieveValueFromMainThreadWithTimeout([] () -> RetainPtr<id> {
             RefPtr page = WebProcess::singleton().focusedWebPage();
             if (!page || !page->accessibilityRemoteObject())
                 return nil;
             return [protect(page->accessibilityRemoteObject()) accessibilityFocusedUIElement];
-        });
+        }, Accessibility::InteractiveTimeout);
+
+        return result.value ? (*result.value).autorelease() : nil;
     };
 
 #if ENABLE(ACCESSIBILITY_ISOLATED_TREE)
@@ -257,7 +260,7 @@ id WebProcess::accessibilityFocusedUIElement()
 #else
                     if (typedTree) {
 #endif
-                        OptionSet<ActivityState> state = typedTree->lockedPageActivityState();
+                        OptionSet<ActivityState> state = typedTree->pageActivityState();
                         if (state.containsAll({ ActivityState::IsVisible, ActivityState::IsFocused, ActivityState::WindowIsActive }))
                             foundValidTree = true;
                         else if (state.containsAll({ ActivityState::IsVisible, ActivityState::WindowIsActive })) {
@@ -403,7 +406,7 @@ void WebProcess::platformInitializeWebProcess(WebProcessCreationParameters& para
         setNotifyState(name, state);
 #endif
 
-    RELEASE_LOG_FORWARDABLE(Process, PLATFORM_INITIALIZE_WEBPROCESS);
+    RELEASE_LOG_FORWARDABLE(Process, PlatformInitializeWebProcess);
 
 #if USE(EXTENSIONKIT)
     // Workaround for crash seen when running tests. See rdar://118186487.
@@ -497,6 +500,7 @@ void WebProcess::platformInitializeWebProcess(WebProcessCreationParameters& para
     setCurrentUserInterfaceIdiom(parameters.currentUserInterfaceIdiom);
     setLocalizedDeviceModel(parameters.localizedDeviceModel);
     setContentSizeCategory(parameters.contentSizeCategory);
+    m_containerTemporaryDirectory = WTF::move(parameters.containerTemporaryDirectory);
 #if ENABLE(VIDEO_PRESENTATION_MODE)
     setSupportsPictureInPicture(parameters.supportsPictureInPicture);
 #endif
@@ -671,9 +675,6 @@ void WebProcess::platformSetWebsiteDataStoreParameters(WebProcessDataStoreParame
 #endif
     SandboxExtension::consumePermanently(parameters.mediaKeyStorageDirectoryExtensionHandle);
     SandboxExtension::consumePermanently(parameters.javaScriptConfigurationDirectoryExtensionHandle);
-#if ENABLE(ARKIT_INLINE_PREVIEW) && !PLATFORM(IOS_FAMILY)
-    SandboxExtension::consumePermanently(parameters.modelElementCacheDirectoryExtensionHandle);
-#endif
 #endif
 #if PLATFORM(IOS_FAMILY)
 #if !USE(EXTENSIONKIT)
@@ -1065,7 +1066,11 @@ void WebProcess::initializeSandbox(const AuxiliaryProcessInitializationParameter
 
     auto webKitBundle = [NSBundle bundleForClass:NSClassFromString(@"WKWebView")];
 
+#if CPU(ARM64)
     sandboxParameters.setOverrideSandboxProfilePath(makeString(String([webKitBundle resourcePath]), "/com.apple.WebProcess.sb"_s));
+#else
+    sandboxParameters.setOverrideSandboxProfilePath(makeString(String([webKitBundle resourcePath]), "/com.apple.WebProcess.x86.sb"_s));
+#endif
 
     AuxiliaryProcess::initializeSandbox(parameters, sandboxParameters);
 #elif ENABLE(SIMULATOR_SANDBOX)
@@ -1218,7 +1223,7 @@ void WebProcess::destroyRenderingResources()
 #if !RELEASE_LOG_DISABLED
     MonotonicTime endTime = MonotonicTime::now();
 #endif
-    WEBPROCESS_RELEASE_LOG_FORWARDABLE(ProcessSuspension, WEBPROCESS_DESTROY_RENDERING_RESOURCES, (endTime - startTime).milliseconds());
+    WEBPROCESS_RELEASE_LOG_FORWARDABLE(ProcessSuspension, WebProcessDestroyRenderingResources, (endTime - startTime).milliseconds());
 }
 
 void WebProcess::releaseSystemMallocMemory()
@@ -1500,6 +1505,7 @@ void WebProcess::disableURLSchemeCheckInDataDetectors() const
 #endif
 }
 
+#if !ENABLE(REMOVE_XPC_AND_MACH_SANDBOX_EXTENSIONS_IN_WEBCONTENT)
 void WebProcess::switchFromStaticFontRegistryToUserFontRegistry(Vector<WebKit::SandboxExtensionHandle>&& fontMachExtensionHandles)
 {
     SandboxExtension::consumePermanently(fontMachExtensionHandles);
@@ -1507,6 +1513,7 @@ void WebProcess::switchFromStaticFontRegistryToUserFontRegistry(Vector<WebKit::S
     CTFontManagerEnableAllUserFonts(true);
 #endif
 }
+#endif // !ENABLE(REMOVE_XPC_AND_MACH_SANDBOX_EXTENSIONS_IN_WEBCONTENT)
 
 void WebProcess::setScreenProperties(const WebCore::ScreenProperties& properties)
 {
@@ -1741,6 +1748,19 @@ void WebProcess::initializeAccessibility(Vector<SandboxExtension::Handle>&& hand
     });
 
     [NSApplication _accessibilityInitialize];
+
+    // This flag may have been false at process creation (set from
+    // WebProcessCreationParameters). Update it now so that any WebPages
+    // created later in this process will send their accessibility remote
+    // token immediately rather than deferring it. Without this,
+    // deferred tokens are permanently lost because this method is
+    // only called once per process.
+    m_shouldInitializeAccessibility = true;
+
+    // Now that the accessibility server is registered, send any deferred
+    // remote tokens so the UI process can resolve the remote elements.
+    for (auto& webPage : m_pageMap.values())
+        webPage->sendAccessibilityTokenIfNeeded();
 
     for (auto& extension : extensions)
         extension->revoke();

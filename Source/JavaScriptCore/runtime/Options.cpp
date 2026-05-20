@@ -40,7 +40,7 @@
 #include <wtf/BitSet.h>
 #include <wtf/Compiler.h>
 #include <wtf/DataLog.h>
-#include <wtf/Gigacage.h>
+#include <wtf/FastMalloc.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/NumberOfCores.h>
 #include <wtf/StdLibExtras.h>
@@ -1397,10 +1397,6 @@ void Options::assertOptionsAreCoherent()
     if (useWasm() && !(useWasmIPInt() || useBBQJIT())) {
         coherent = false;
         dataLog("INCOHERENT OPTIONS: at least one of useWasmIPInt, or useBBQJIT must be true\n");
-    }
-    if (useWasmIPIntSIMD() && useWasmRelaxedSIMD()) {
-        coherent = false;
-        dataLog("INCOHERENT OPTIONS: useWasmIPIntSIMD and useWasmRelaxedSIMD cannot both be enabled (relaxed SIMD opcodes 0x100-0x10c are not yet supported in IPInt)\n");
     }
     if (useProfiler() && useConcurrentJIT()) {
         coherent = false;

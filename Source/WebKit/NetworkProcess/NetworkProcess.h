@@ -112,6 +112,7 @@ struct ParentalControlsURLFilterParameters;
 namespace WebKit {
 
 class AuthenticationManager;
+class LaunchServicesDatabaseObserver;
 class NetworkConnectionToWebProcess;
 class NetworkProcessSupplement;
 class NetworkProximityManager;
@@ -241,6 +242,8 @@ public:
     void addWebsiteDataStore(WebsiteDataStoreParameters&&);
 
     void registrableDomainsWithLastAccessedTime(PAL::SessionID, CompletionHandler<void(std::optional<HashMap<RegistrableDomain, WallTime>>&&)>&&);
+    void diskCacheOriginAccessTimes(PAL::SessionID, CompletionHandler<void(HashMap<WebCore::RegistrableDomain, WallTime>&&)>&&);
+    void getAllPushSubscriptionOrigins(PAL::SessionID, CompletionHandler<void(Vector<WebCore::SecurityOriginData>&&)>&&);
     void registrableDomainsExemptFromWebsiteDataDeletion(PAL::SessionID, CompletionHandler<void(HashSet<RegistrableDomain>)>&&);
     void clearPrevalentResource(PAL::SessionID, RegistrableDomain&&, CompletionHandler<void()>&&);
     void clearUserInteraction(PAL::SessionID, RegistrableDomain&&, CompletionHandler<void()>&&);
@@ -401,6 +404,7 @@ public:
 
     void setServiceWorkerFetchTimeoutForTesting(Seconds, CompletionHandler<void()>&&);
     void resetServiceWorkerFetchTimeoutForTesting(CompletionHandler<void()>&&);
+    void clearCrossOriginPreflightResultCacheForTesting(CompletionHandler<void()>&&);
     Seconds serviceWorkerFetchTimeout() const { return m_serviceWorkerFetchTimeout; }
     void terminateIdleServiceWorkers(WebCore::ProcessIdentifier, CompletionHandler<void()>&&);
 
@@ -487,6 +491,7 @@ public:
 
 #if HAVE(WEBCONTENTRESTRICTIONS)
     void allowEvaluatedURL(const WebCore::ParentalControlsURLFilterParameters&, CompletionHandler<void(bool)>&&);
+    void installMockParentalControlsURLFilterForTesting(Vector<URL>&& blockedURLs, CompletionHandler<void()>&&);
 #endif
 
 #if HAVE(ENHANCED_SECURITY_LINKS)
@@ -641,6 +646,10 @@ private:
     // multiple requests to clear the cache can come in before previous requests complete, and we need to wait for all of them.
     // In the future using WorkQueue and a counting semaphore would work, as would WorkQueue supporting the libdispatch concept of "work groups".
     OSObjectPtr<dispatch_group_t> m_clearCacheDispatchGroup;
+#endif
+
+#if HAVE(LSDATABASECONTEXT)
+    const Ref<LaunchServicesDatabaseObserver> m_launchServicesDatabaseObserver;
 #endif
 
 #if ENABLE(CONTENT_EXTENSIONS)

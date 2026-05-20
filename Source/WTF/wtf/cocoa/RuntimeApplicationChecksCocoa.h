@@ -139,6 +139,10 @@ enum class SDKAlignedBehavior {
     SuppressKeypressForModifierShortcuts,
     ScrollColorExtensionGrowsDuringRubberBanding,
     ManagedRefreshControlAppearance,
+    EnableUserScriptAndUserStyleInterning,
+    AllBackForwardItemsWithoutUserGestureInvisibleToUI,
+    ExposePartitionFromWKHTTPCookieStoreAPI,
+    MediaSessionPauseOnInterruption,
 
     NumberOfBehaviors
 };
@@ -222,6 +226,8 @@ WTF_EXPORT_PRIVATE bool isMobileStore();
 WTF_EXPORT_PRIVATE bool isUNIQLOApp();
 WTF_EXPORT_PRIVATE bool isDOFUSTouch();
 WTF_EXPORT_PRIVATE bool isMyRideK12();
+WTF_EXPORT_PRIVATE bool isTableau();
+WTF_EXPORT_PRIVATE bool isTubular();
 
 } // IOSApplication
 

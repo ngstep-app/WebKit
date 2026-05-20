@@ -26,6 +26,7 @@
 #include "CounterDirectives.h"
 #include "CounterNode.h"
 #include "Document.h"
+#include "ContainerNodeInlines.h"
 #include "ElementInlines.h"
 #include "HTMLNames.h"
 #include "HTMLOListElement.h"
@@ -159,8 +160,9 @@ static CounterDirectives listItemCounterDirectives(RenderElement& renderer)
     }
     if (RefPtr element = renderer.element()) {
         if (RefPtr list = dynamicDowncast<HTMLOListElement>(*element)) {
+            auto resetValue = (list->isReversed() && !list->hasExplicitStart()) ? RenderListItem::startForReversedOrderedList(*list) : list->start();
             return {
-                .resetValue = list->start(),
+                .resetValue = resetValue,
                 .incrementValue = list->isReversed() ? 1 : -1,
                 .setValue = std::nullopt
             };
@@ -446,11 +448,11 @@ String RenderCounter::originalText() const
         return counterStyle()->text(value, writingMode());
     };
     auto text = counterText(value);
-    if (!m_counter.separator.isNull()) {
+    if (!m_counter.separator.value.isNull()) {
         if (!counterNode->actsAsReset())
             counterNode = counterNode->parent();
         while (RefPtr parent = counterNode->parent()) {
-            text = makeString(counterText(counterNode->countInParent()), m_counter.separator, text);
+            text = makeString(counterText(counterNode->countInParent()), m_counter.separator.value, text);
             counterNode = parent;
         }
     }
@@ -472,7 +474,7 @@ void RenderCounter::updateCounter()
                 break;
             container = container->parent();
         }
-        makeCounterNode(*container, m_counter.identifier, true)->addRenderer(const_cast<RenderCounter&>(*this));
+        makeCounterNode(*container, m_counter.identifier.value, true)->addRenderer(const_cast<RenderCounter&>(*this));
     }
 
     setText(originalText(), true);
@@ -562,7 +564,7 @@ void RenderCounter::rendererStyleChangedSlowCase(RenderElement& renderer, const 
     }
 }
 
-Ref<CSSCounterStyle> RenderCounter::counterStyle() const
+Ref<CSSRegisteredCounterStyle> RenderCounter::counterStyle() const
 {
     return document().counterStyleRegistry().resolvedCounterStyle(m_counter.style);
 }

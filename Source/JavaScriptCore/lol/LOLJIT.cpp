@@ -45,6 +45,7 @@
 #include "JITLeftShiftGenerator.h"
 #include "JITSizeStatistics.h"
 #include "JITThunks.h"
+#include "JumpTable.h"
 #include "LLIntEntrypoint.h"
 #include "LLIntThunks.h"
 #include "LOLJITOperations.h"
@@ -59,10 +60,6 @@
 #include "StackAlignment.h"
 #include "ThunkGenerators.h"
 #include "TypeProfilerLog.h"
-#include <wtf/BubbleSort.h>
-#include <wtf/GraphNodeWorklist.h>
-#include <wtf/SequesteredMalloc.h>
-#include <wtf/SimpleStats.h>
 #include <wtf/text/MakeString.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
@@ -351,6 +348,7 @@ void LOLJIT::privateCompileMainPass()
         DEFINE_SLOW_OP(create_generator)
         DEFINE_SLOW_OP(create_async_generator)
         DEFINE_SLOW_OP(new_generator)
+        DEFINE_SLOW_OP(new_async_function_generator)
 
         DEFINE_OP(op_add)
         DEFINE_OP(op_bitnot)
@@ -1784,7 +1782,7 @@ void LOLJIT::emit_op_new_reg_exp(const JSInstruction* currentInstruction)
     constexpr GPRReg globalObjectGPR = preferredArgumentGPR<Operation, 0>();
 
     loadGlobalObject(globalObjectGPR);
-    callOperation(operationNewRegExp, globalObjectGPR, TrustedImmPtr(jsCast<RegExp*>(m_unlinkedCodeBlock->getConstant(regexp))));
+    callOperation(operationNewRegExp, globalObjectGPR, TrustedImmPtr(uncheckedDowncast<RegExp>(m_unlinkedCodeBlock->getConstant(regexp))));
     boxCell(returnValueGPR, returnValueJSR);
     emitPutVirtualRegister(dst, returnValueJSR);
 

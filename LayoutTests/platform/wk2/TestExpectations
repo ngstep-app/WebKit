@@ -205,12 +205,6 @@ media/modern-media-controls/scrubber-support/scrubber-support-drag.html [ Timeou
 # webkit.org/b/221693
 media/encrypted-media/clearKey/clearKey-session-life-cycle.html [ Failure Crash ]
 
-# webkit.org/b/221790
-# webgl/1.0.x/conformance/textures/tex-image-and-sub-image-2d-with-video-rgb565.html [ Failure ]
-# webgl/1.0.x/conformance/textures/tex-image-and-sub-image-2d-with-video-rgba4444.html [ Failure ]
-# webgl/1.0.x/conformance/textures/tex-image-and-sub-image-2d-with-video-rgba5551.html [ Failure ]
-# webgl/1.0.x/conformance/textures/tex-image-and-sub-image-2d-with-video.html [ Failure ]
-
 # webkit.org/b/221806
 # webgl/2.0.y/conformance/textures/video/tex-2d-rgb-rgb-unsigned_byte.html [ Failure ]
 
@@ -420,7 +414,6 @@ fast/preloader/document-write-2.html [ Pass Failure ]
 
 # Internals.registerDefaultPortForProtocol() does not affect NetworkProcess. We should
 # look to remove it and write these test to make use of an HTTP server running on port 80.
-http/tests/security/contentSecurityPolicy/script-src-parsing-implicit-and-explicit-port-number.html
 http/tests/security/http-0.9/default-port-script-blocked.html
 http/tests/security/http-0.9/image-default-port-allowed.html
 http/tests/security/http-0.9/image-on-HTTP-0.9-default-port-page-allowed-ref-test.html
@@ -454,6 +447,7 @@ platform/mac/plugins/bindings-objc-method-name-conversion.html
 platform/mac/plugins/bindings-test-objc.html
 platform/mac/plugins/call-as-function-test.html
 platform/mac/plugins/root-object-premature-delete-crash.html
+platform/mac/plugins/runtime-object-prevent-gc-crash.html
 platform/mac/plugins/undefined-property-crash.html
 platform/mac/plugins/webScriptObject-exception-deadlock.html
 
@@ -767,8 +761,6 @@ webkit.org/b/253533 imported/w3c/web-platform-tests/xhr/status.h2.window.html [ 
 webkit.org/b/259482 fast/media/managed-media-source-open-crash.html [ Pass Failure ]
 
 webkit.org/b/260926 imported/w3c/web-platform-tests/html/browsers/browsing-the-web/navigating-across-documents/replace-before-load/form-submit-button-click.html [ Pass Failure ]
-
-webkit.org/b/262088 [ Debug ] imported/w3c/web-platform-tests/fetch/private-network-access/iframe.tentative.https.window.html [ Pass Failure ]
 
 imported/w3c/web-platform-tests/css/css-contain/content-visibility/content-visibility-video.html [ Pass ImageOnlyFailure ]
 

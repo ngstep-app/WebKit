@@ -39,6 +39,7 @@
 #include <WebKit/WKHTTPCookieStoreRef.h>
 #include <WebKit/WKInspector.h>
 #include <WebKit/WKPagePrivate.h>
+#include <WebKit/WKPreferencesRefPrivate.h>
 #include <WebKit/WKRetainPtr.h>
 #include <WebKit/WKWebsiteDataStoreRef.h>
 #include <climits>
@@ -145,6 +146,8 @@ WKRetainPtr<WKMutableDictionaryRef> TestInvocation::createTestSettingsDictionary
     setValue(beginTestMessageBody, "AllowedHosts", allowedHostsValue);
 #if ENABLE(VIDEO)
     setValue(beginTestMessageBody, "CaptionDisplayMode", options().captionDisplayMode().c_str());
+
+    setValue(beginTestMessageBody, "JSCOptions", options().jscOptions().c_str());
 #endif
     return beginTestMessageBody;
 }
@@ -582,7 +585,7 @@ WKRetainPtr<WKTypeRef> TestInvocation::didReceiveSynchronousMessageFromInjectedB
         return nullptr;
     }
     if (WKStringIsEqualToUTF8CString(messageName, "GetWaitUntilDone"))
-        return adoptWK(WKBooleanCreate(m_waitUntilDone));
+        return adoptWK(WKBooleanCreate(m_waitUntilDone || m_notifyDoneMessageSent));
 
     if (WKStringIsEqualToUTF8CString(messageName, "SetDumpFrameLoadCallbacks")) {
         m_dumpFrameLoadCallbacks = booleanValue(messageBody);
@@ -702,6 +705,8 @@ WKRetainPtr<WKTypeRef> TestInvocation::didReceiveSynchronousMessageFromInjectedB
         return TestController::singleton().lastAddedBackgroundFetchIdentifier();
     if (WKStringIsEqualToUTF8CString(messageName, "LastRemovedBackgroundFetchIdentifier"))
         return TestController::singleton().lastRemovedBackgroundFetchIdentifier();
+    if (WKStringIsEqualToUTF8CString(messageName, "LastProvisionalNavigationFailureURL"))
+        return TestController::singleton().lastProvisionalNavigationFailureURL();
     if (WKStringIsEqualToUTF8CString(messageName, "LastUpdatedBackgroundFetchIdentifier"))
         return TestController::singleton().lastUpdatedBackgroundFetchIdentifier();
     if (WKStringIsEqualToUTF8CString(messageName, "BackgroundFetchState"))
@@ -1319,6 +1324,16 @@ WKRetainPtr<WKTypeRef> TestInvocation::didReceiveSynchronousMessageFromInjectedB
         return nullptr;
     }
 
+    if (WKStringIsEqualToUTF8CString(messageName, "GetGlobalPrivacyControl")) {
+        bool value = WKPreferencesGetBoolValueForKeyForTesting(TestController::singleton().platformPreferences(), toWK("GlobalPrivacyControlEnabled").get());
+        return adoptWK(WKBooleanCreate(value)).leakRef();
+    }
+
+    if (WKStringIsEqualToUTF8CString(messageName, "SetGlobalPrivacyControl")) {
+        WKPreferencesSetBoolValueForKeyForTesting(TestController::singleton().platformPreferences(), booleanValue(messageBody), toWK("GlobalPrivacyControlEnabled").get());
+        return nullptr;
+    }
+
 #if ENABLE(MODEL_ELEMENT_IMMERSIVE)
     if (WKStringIsEqualToUTF8CString(messageName, "ExitImmersive")) {
         TestController::singleton().exitImmersive();
@@ -1428,6 +1443,7 @@ bool TestInvocation::resolveNotifyDone()
         return false;
     m_waitUntilDone = false;
     if (m_options.siteIsolationEnabled()) {
+        m_notifyDoneMessageSent = true;
         postPageMessage("NotifyDone");
         return false;
     }
@@ -1440,6 +1456,7 @@ bool TestInvocation::resolveForceImmediateCompletion()
         return false;
     m_waitUntilDone = false;
     if (m_options.siteIsolationEnabled()) {
+        m_notifyDoneMessageSent = true;
         postPageMessage("ForceImmediateCompletion");
         return false;
     }

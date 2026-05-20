@@ -28,6 +28,7 @@
 
 #include "config.h"
 #include "RenderSVGPath.h"
+#include "RenderObjectNode.h"
 
 #include "Gradient.h"
 #include "ReferencedSVGResources.h"
@@ -239,7 +240,7 @@ void RenderSVGPath::drawMarkers(PaintInfo& paintInfo)
 
             context.setLineDash(DashArray(), 0);
             auto contentTransform = marker->markerTransformation(markerPosition.origin, markerPosition.angle, strokeWidth);
-            protect(marker->layer())->paintSVGResourceLayer(context, contentTransform);
+            protect(marker->layer())->paintResourceLayerForSVG(context, contentTransform);
         }
     }
 }
@@ -282,7 +283,7 @@ void RenderSVGPath::updateMarkerPositions()
     ASSERT(hasPath());
     auto* markerStart = svgMarkerStartResourceFromStyle();
 
-    SVGMarkerData markerData(m_markerPositions, markerStart ? markerStart->hasReverseStart() : false);
+    SVGMarkerData markerData(m_markerPositions, markerStart && markerStart->hasReverseStart());
     path().applyElements([&markerData](const PathElement& pathElement) {
         SVGMarkerData::updateFromPathElement(markerData, pathElement);
     });

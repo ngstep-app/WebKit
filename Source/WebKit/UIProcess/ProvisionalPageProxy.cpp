@@ -60,6 +60,8 @@
 #include "WebProcessMessages.h"
 #include "WebProcessPool.h"
 #include "WebProcessProxy.h"
+#include <WebCore/DocumentSyncData.h>
+#include <WebCore/SecurityOrigin.h>
 #include <WebCore/ShouldTreatAsContinuingLoad.h>
 #include <wtf/TZoneMallocInlines.h>
 
@@ -124,10 +126,10 @@ ProvisionalPageProxy::ProvisionalPageProxy(WebPageProxy& page, Ref<FrameProcess>
     // already exists and already has a main frame.
     if (suspendedPage) {
         ASSERT(&suspendedPage->process() == process.ptr());
-        suspendedPage->unsuspend();
+        ASSERT(navigation.targetItem());
+        suspendedPage->unsuspend(navigation.targetItem()->mainFrameItem().identifier());
         m_mainFrame = suspendedPage->mainFrame();
         m_mainFrame->updateReferrerPolicy(ReferrerPolicy::EmptyString);
-        m_needsMainFrameObserver = true;
     } else if (m_shouldReuseMainFrame) {
         m_mainFrame = page.mainFrame();
         m_mainFrame->updateReferrerPolicy(ReferrerPolicy::EmptyString);
@@ -136,7 +138,6 @@ ProvisionalPageProxy::ProvisionalPageProxy(WebPageProxy& page, Ref<FrameProcess>
         // as some clients may rely on it until the next load is committed.
         Ref mainFrame = WebFrameProxy::create(page, m_frameProcess, generateFrameIdentifier(), previousMainFrame->effectiveSandboxFlags(), ReferrerPolicy::EmptyString, previousMainFrame->scrollingMode(), nullptr, nullptr, IsMainFrame::Yes, previousMainFrame->url());
         m_mainFrame = mainFrame.copyRef();
-        m_needsMainFrameObserver = true;
         previousMainFrame->transferNavigationCallbackToFrame(mainFrame);
     }
 
@@ -157,7 +158,7 @@ ProvisionalPageProxy::ProvisionalPageProxy(WebPageProxy& page, Ref<FrameProcess>
         protect(mainFrame())->didStartProvisionalLoad(URL { previousMainFrame->provisionalURL() });
     }
 
-    initializeWebPage(websitePolicies);
+    initializeWebPage(websitePolicies, suspendedPage);
 }
 
 ProvisionalPageProxy::~ProvisionalPageProxy()
@@ -173,7 +174,7 @@ ProvisionalPageProxy::~ProvisionalPageProxy()
 
     if (!m_wasCommitted && m_page) {
         Ref page = *m_page;
-        page->inspectorController().willDestroyProvisionalPage(*this);
+        page->inspectorController().willDestroyProvisionalPage(*this, m_mainFrame->frameID(), protect(m_frameProcess->process())->coreProcessIdentifier());
 
         RefPtr dataStore = process->websiteDataStore();
         if (dataStore && dataStore!= &page->websiteDataStore())
@@ -189,9 +190,14 @@ ProvisionalPageProxy::~ProvisionalPageProxy()
         takenRemotePage->disconnect();
 }
 
-WebProcessProxy& ProvisionalPageProxy::process()
+WebProcessProxy& ProvisionalPageProxy::process() const
 {
     return m_frameProcess->process();
+}
+
+bool ProvisionalPageProxy::hasActiveLoadForNavigation(const API::Navigation& navigation) const
+{
+    return !m_didFailProvisionalLoad && m_navigationID == navigation.navigationID();
 }
 
 void ProvisionalPageProxy::processDidTerminate()
@@ -247,7 +253,7 @@ void ProvisionalPageProxy::cancel()
     didFailProvisionalLoadForFrame(WTF::move(frameInfo), ResourceRequest { m_request }, m_navigationID, String { m_provisionalLoadURL.string() }, WTF::move(error), WebCore::WillContinueLoading::No, UserData { }, WebCore::WillInternallyHandleFailure::No); // Will delete |this|.
 }
 
-void ProvisionalPageProxy::initializeWebPage(RefPtr<API::WebsitePolicies>&& websitePolicies)
+void ProvisionalPageProxy::initializeWebPage(RefPtr<API::WebsitePolicies>&& websitePolicies, bool isRestoringFromBFCache)
 {
     Ref page = *m_page;
     Ref process = this->process();
@@ -260,12 +266,11 @@ void ProvisionalPageProxy::initializeWebPage(RefPtr<API::WebsitePolicies>&& webs
     if (websitePolicies)
         m_mainFrameWebsitePolicies = websitePolicies->copy();
 
-    if (preferences->siteIsolationEnabled()) {
+    if (preferences->siteIsolationEnabled() && !isRestoringFromBFCache) {
         if (RefPtr existingRemotePageProxy = m_browsingContextGroup->takeRemotePageInProcessForProvisionalPage(page, process)) {
             if (m_shouldReuseMainFrame) {
                 m_webPageID = existingRemotePageProxy->pageID();
                 m_mainFrame = existingRemotePageProxy->page()->mainFrame();
-                m_needsMainFrameObserver = false;
                 m_messageReceiverRegistration.stopReceivingMessages();
                 m_messageReceiverRegistration.transferMessageReceivingFrom(existingRemotePageProxy->messageReceiverRegistration(), *this, *this);
                 existingRemotePageProxy->setDrawingArea(nullptr);
@@ -282,7 +287,7 @@ void ProvisionalPageProxy::initializeWebPage(RefPtr<API::WebsitePolicies>&& webs
 
     RefPtr mainFrame = m_mainFrame;
     auto creationParameters = page->creationParametersForProvisionalPage(process, *drawingArea, mainFrame->frameID());
-    if (preferences->siteIsolationEnabled()) {
+    if (preferences->siteIsolationEnabled() && !isRestoringFromBFCache) {
         creationParameters.remotePageParameters = RemotePageParameters {
             m_request.url(),
             mainFrame->frameTreeCreationParameters(),
@@ -301,7 +306,7 @@ void ProvisionalPageProxy::initializeWebPage(RefPtr<API::WebsitePolicies>&& webs
     if (page->isLayerTreeFrozenDueToSwipeAnimation())
         send(Messages::WebPage::SwipeAnimationDidStart());
 
-    page->inspectorController().didCreateProvisionalPage(*this);
+    page->inspectorController().didCreateProvisionalPage(*this, m_mainFrame->frameID(), protect(m_frameProcess->process()));
 }
 
 void ProvisionalPageProxy::loadData(API::Navigation& navigation, Ref<WebCore::SharedBuffer>&& data, const String& mimeType, const String& encoding, const String& baseURL, API::Object* userData, WebCore::ShouldTreatAsContinuingLoad shouldTreatAsContinuingLoad, std::optional<NavigatingToAppBoundDomain> isNavigatingToAppBoundDomain, RefPtr<API::WebsitePolicies>&& websitePolicies, SubstituteData::SessionHistoryVisibility sessionHistoryVisibility)
@@ -485,21 +490,19 @@ void ProvisionalPageProxy::didCommitLoadForFrame(IPC::Connection& connection, Fr
     PROVISIONALPAGEPROXY_RELEASE_LOG(ProcessSwapping, "didCommitLoadForFrame: frameID=%" PRIu64, frameID.toUInt64());
     RefPtr page = m_page.get();
     RefPtr pageMainFrame = page ? page->mainFrame() : nullptr;
-    if (page && protect(page->preferences())->siteIsolationEnabled() && pageMainFrame) {
+    if (page && protect(page->preferences())->siteIsolationEnabled() && pageMainFrame && pageMainFrame == m_mainFrame) {
         Ref pageMainFrameProcess = pageMainFrame->frameProcess();
-        Site pageMainFrameSite { pageMainFrame->url() };
 
         bool frameProcessChanged = m_frameProcess.ptr() != pageMainFrameProcess.ptr();
         if (frameProcessChanged)
             pageMainFrame->setProcess(m_frameProcess);
 
-        // If the originating FrameProcess still has local frames and is still in the same
-        // BrowsingContext group, pages in that process still need access to this page.
-        // So transition the WebPageProxy in that process to a RemotePageProxy.
-        if (frameProcessChanged && pageMainFrame == m_mainFrame && pageMainFrameProcess->frameCount() && pageMainFrameProcess->browsingContextGroup() == m_browsingContextGroup.ptr()) {
-            protect(page->legacyMainFrameProcess())->send(Messages::WebPage::LoadDidCommitInAnotherProcess(page->mainFrame()->frameID(), std::nullopt), page->webPageIDInMainFrameProcess());
-            m_browsingContextGroup->transitionPageToRemotePage(*page, pageMainFrameSite);
-        }
+        // Record that this page needs a remote-page transition. The actual
+        // IPC + transitionPageToRemotePage() call is deferred to
+        // commitProvisionalPage() so it can be skipped when the previous
+        // page is BFCache-suspended (a suspended page is frozen, not remote).
+        if (frameProcessChanged && pageMainFrameProcess->frameCount() && pageMainFrameProcess->browsingContextGroup() == m_browsingContextGroup.ptr())
+            m_deferredRemoteTransitionSite = Site { pageMainFrame->url() };
     }
     m_provisionalLoadURL = { };
     m_messageReceiverRegistration.stopReceivingMessages();
@@ -720,6 +723,10 @@ void ProvisionalPageProxy::didReceiveMessage(IPC::Connection& connection, IPC::D
 #if ENABLE(CONTENT_EXTENSIONS)
         || decoder.messageName() == Messages::WebPageProxy::ContentRuleListNotification::name()
 #endif
+        || decoder.messageName() == Messages::WebPageProxy::AddMessageToConsoleForTesting::name()
+        || decoder.messageName() == Messages::WebPageProxy::HandleMessage::name()
+        || decoder.messageName() == Messages::WebPageProxy::BroadcastDocumentSyncData::name()
+        || decoder.messageName() == Messages::WebPageProxy::BroadcastAllDocumentSyncData::name()
         )
     {
         if (RefPtr page = m_page.get())

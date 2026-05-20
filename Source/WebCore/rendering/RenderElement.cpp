@@ -58,6 +58,7 @@
 #include "PathUtilities.h"
 #include "ReferencedSVGResources.h"
 #include "RenderBlock.h"
+#include "RenderBlockFlowInlines.h"
 #include "RenderBoxModelObjectInlines.h"
 #include "RenderChildIterator.h"
 #include "RenderCounter.h"
@@ -75,6 +76,8 @@
 #include "RenderLayer.h"
 #include "RenderLayerCompositor.h"
 #include "RenderLayerInlines.h"
+#include "RenderLayerSVGAdditionsInlines.h"
+#include "RenderLayerScrollableArea.h"
 #include "RenderLineBreak.h"
 #include "RenderListItem.h"
 #include "RenderMultiColumnSpannerPlaceholder.h"
@@ -240,6 +243,8 @@ RenderPtr<RenderElement> RenderElement::createFor(Element& element, RenderStyle&
         return createRenderer<RenderGrid>(element, WTF::move(style));
     case Style::DisplayType::BlockDeprecatedFlex:
     case Style::DisplayType::InlineDeprecatedFlex:
+        if (rendererTypeOverride.contains(ConstructBlockLevelRendererFor::DeprecatedFlexBox))
+            return createRenderer<RenderBlockFlow>(RenderObject::Type::BlockFlow, element, WTF::move(style));
         return createRenderer<RenderDeprecatedFlexibleBox>(element, WTF::move(style));
     case Style::DisplayType::RubyBase:
         return createRenderer<RenderInline>(RenderObject::Type::Inline, element, WTF::move(style));
@@ -526,7 +531,7 @@ bool RenderElement::repaintBeforeStyleChange(Style::Difference diff, const Rende
         }
 
         if (diff > Style::DifferenceResult::RepaintLayer && oldStyle.usedVisibility() != newStyle.usedVisibility()) {
-            if (CheckedPtr enclosingLayer = this->enclosingLayer()) {
+            if (auto* enclosingLayer = this->enclosingLayer()) {
                 bool rendererWillBeHidden = newStyle.usedVisibility() != Visibility::Visible;
                 if (rendererWillBeHidden && enclosingLayer->hasVisibleContent() && (this == &enclosingLayer->renderer() || enclosingLayer->renderer().style().usedVisibility() != Visibility::Visible))
                     return RequiredRepaint::RendererOnly;
@@ -951,12 +956,12 @@ void RenderElement::styleWillChange(Style::Difference diff, const RenderStyle& n
 
         // Keep layer hierarchy visibility bits up to date if visibility or skipped content state changes.
         if (m_style.usedVisibility() != newStyle.usedVisibility()) {
-            if (CheckedPtr layer = enclosingLayer())
+            if (auto* layer = enclosingLayer())
                 layer->dirtyVisibleContentStatus();
         }
 
         if (m_style.usedContentVisibility() != newStyle.usedContentVisibility()) {
-            if (CheckedPtr layer = enclosingLayer())
+            if (auto* layer = enclosingLayer())
                 layer->dirtyVisibleContentStatus();
         }
 
@@ -1095,7 +1100,12 @@ void RenderElement::styleDidChange(Style::Difference diff, const RenderStyle* ol
 
     if (!m_parent)
         return;
-    
+
+    // When style containment changes, quote depth scoping boundaries change,
+    // so all quotes need to be recalculated.
+    if (oldStyle && oldStyle->usedContain().contains(Style::ContainValue::Style) != m_style.usedContain().contains(Style::ContainValue::Style))
+        view().setHasQuotesNeedingUpdate(true);
+
     if (diff == Style::DifferenceResult::Layout || diff == Style::DifferenceResult::Overflow) {
         RenderCounter::rendererStyleChanged(*this, oldStyle, m_style);
 
@@ -1132,7 +1142,26 @@ void RenderElement::styleDidChange(Style::Difference diff, const RenderStyle* ol
         issueRepaintForOutlineAuto(hasOutlineAuto ? outlineStyleForRepaint().usedOutlineSize() : oldStyle->usedOutlineSize());
     }
 
-    if (settings().cssScrollAnchoringEnabled() && (diff >= Style::DifferenceResult::Layout) && style().scrollAnchoringSuppressionStyleDidChange(oldStyle)) {
+    auto isLayoutDiff = [](Style::Difference diff) {
+        switch (diff.result) {
+        case Style::DifferenceResult::Equal:
+        case Style::DifferenceResult::Repaint:
+        case Style::DifferenceResult::RepaintIfText:
+        case Style::DifferenceResult::RepaintLayer:
+        case Style::DifferenceResult::NewStyle:
+            return false;
+        case Style::DifferenceResult::Overflow:
+        case Style::DifferenceResult::RecompositeLayer:
+            return diff.contextSensitiveProperties.contains(Style::DifferenceContextSensitiveProperty::Transform);
+        case Style::DifferenceResult::LayoutOutOfFlowMovementOnly:
+        case Style::DifferenceResult::OverflowAndOutOfFlowMovement:
+        case Style::DifferenceResult::Layout:
+            return true;
+        }
+        return false;
+    };
+
+    if (settings().cssScrollAnchoringEnabled() && isLayoutDiff(diff) && style().scrollAnchoringSuppressionStyleDidChange(oldStyle)) {
         auto findNearestScrollAnchoringController = [](const RenderElement& renderer) -> CheckedPtr<ScrollAnchoringController> {
             // At this point we can't find the appropriate enclosing ScrollAnchoringController, because we haven't done layout.
             // We will, however, have created a ScrollAnchoringController for potentially scrollable ancestors, so store
@@ -1166,6 +1195,15 @@ void RenderElement::styleDidChange(Style::Difference diff, const RenderStyle* ol
         LayoutIntegration::LineLayout::updateStyle(*this);
 }
 
+void RenderElement::dirtyEnclosingLayerSVGChildrenIfNeeded()
+{
+    ASSERT(isSVGLayerAwareRenderer());
+    if (!hasLayer() && document().settings().layerBasedSVGEngineEnabled()) {
+        if (CheckedPtr layer = enclosingLayer())
+            layer->dirtyChildrenInDOMOrderForSVG();
+    }
+}
+
 void RenderElement::insertedIntoTree()
 {
     // Keep our layer hierarchy updated. Optimize for the common case where we don't have any children
@@ -1182,17 +1220,33 @@ void RenderElement::insertedIntoTree()
             parentLayer->dirtyVisibleContentStatus();
     }
 
+    // Dirty the enclosing layer's SVG children list when a non-layer SVG renderer is inserted.
+    // Layer children are handled by RenderLayer::addChild -> dirtyPaintOrderListsOnChildChange.
+    if (isSVGLayerAwareRenderer())
+        dirtyEnclosingLayerSVGChildrenIfNeeded();
+
     RenderObject::insertedIntoTree();
 }
 
 void RenderElement::willBeRemovedFromTree()
 {
+    if (isLegend()) {
+        if (CheckedPtr fieldset = dynamicDowncast<RenderBlock>(parent()); fieldset && fieldset->isFieldset())
+            fieldset->setIntrinsicBorderForFieldset({ });
+    }
+
     // If we remove a visible child from an invisible parent, we don't know the layer visibility any more.
     if (parent()->style().usedVisibility() != Visibility::Visible && style().usedVisibility() == Visibility::Visible && !hasLayer()) {
         // FIXME: should get parent layer. Necessary?
         if (CheckedPtr enclosingLayer = parent()->enclosingLayer())
             enclosingLayer->dirtyVisibleContentStatus();
     }
+
+    // Dirty the enclosing layer's SVG children list when a non-layer SVG renderer is removed.
+    // Layer children are handled by RenderLayer::removeChild -> dirtyPaintOrderListsOnChildChange.
+    if (isSVGLayerAwareRenderer())
+        dirtyEnclosingLayerSVGChildrenIfNeeded();
+
     // Keep our layer hierarchy updated.
     if (firstChild() || hasLayer())
         removeLayers();
@@ -1680,7 +1734,7 @@ bool RenderElement::isVisibleInDocumentRect(const IntRect& documentRect) const
 
 bool RenderElement::isInsideEntirelyHiddenLayer() const
 {
-    if (isSVGLayerAwareRenderer() && document().settings().layerBasedSVGEngineEnabled() && enclosingLayer()->enclosingSVGHiddenOrResourceContainer())
+    if (isSVGLayerAwareRenderer() && document().settings().layerBasedSVGEngineEnabled() && enclosingLayer()->enclosingHiddenOrResourceContainerForSVG())
         return true;
     return style().usedVisibility() != Visibility::Visible && !enclosingLayer()->hasVisibleContent();
 }
@@ -1996,12 +2050,12 @@ const RenderStyle* RenderElement::targetTextPseudoStyle() const
 bool RenderElement::getLeadingCorner(FloatPoint& point, bool& insideFixed) const
 {
     if (isSVGRenderer()) {
-        point = localToAbsoluteQuad(strokeBoundingBox(), UseTransforms).boundingBox().minXMinYCorner();
+        point = localToAbsoluteQuad(strokeBoundingBox(), MapCoordinatesMode::UseTransforms).boundingBox().minXMinYCorner();
         return true;
     }
 
     if (!isInline() || isBlockLevelReplacedOrAtomicInline()) {
-        point = localToAbsolute(FloatPoint(), UseTransforms, &insideFixed);
+        point = localToAbsolute(FloatPoint(), MapCoordinatesMode::UseTransforms, &insideFixed);
         return true;
     }
 
@@ -2027,7 +2081,7 @@ bool RenderElement::getLeadingCorner(FloatPoint& point, bool& insideFixed) const
         ASSERT(o);
 
         if (!o->isInline() || o->isBlockLevelReplacedOrAtomicInline()) {
-            point = o->localToAbsolute(FloatPoint(), UseTransforms, &insideFixed);
+            point = o->localToAbsolute(FloatPoint(), MapCoordinatesMode::UseTransforms, &insideFixed);
             return true;
         }
 
@@ -2040,11 +2094,11 @@ bool RenderElement::getLeadingCorner(FloatPoint& point, bool& insideFixed) const
                     point.move(textRenderer->linesBoundingBox().x(), run->lineBox()->contentLogicalTop());
             } else if (auto* box = dynamicDowncast<RenderBox>(*o))
                 point.moveBy(box->location());
-            point = o->container()->localToAbsolute(point, UseTransforms, &insideFixed);
+            point = o->container()->localToAbsolute(point, MapCoordinatesMode::UseTransforms, &insideFixed);
             return true;
         }
     }
-    
+
     // If the target doesn't have any children or siblings that could be used to calculate the scroll position, we must be
     // at the end of the document. Scroll to the bottom. FIXME: who said anything about scrolling?
     if (!o && document().view()) {
@@ -2057,12 +2111,12 @@ bool RenderElement::getLeadingCorner(FloatPoint& point, bool& insideFixed) const
 bool RenderElement::getTrailingCorner(FloatPoint& point, bool& insideFixed) const
 {
     if (isSVGRenderer()) {
-        point = localToAbsoluteQuad(strokeBoundingBox(), UseTransforms).boundingBox().maxXMaxYCorner();
+        point = localToAbsoluteQuad(strokeBoundingBox(), MapCoordinatesMode::UseTransforms).boundingBox().maxXMaxYCorner();
         return true;
     }
 
     if (!isInline() || isBlockLevelReplacedOrAtomicInline()) {
-        point = localToAbsolute(LayoutPoint(downcast<RenderBox>(*this).size()), UseTransforms, &insideFixed);
+        point = localToAbsolute(LayoutPoint(downcast<RenderBox>(*this).size()), MapCoordinatesMode::UseTransforms, &insideFixed);
         return true;
     }
 
@@ -2093,7 +2147,7 @@ bool RenderElement::getTrailingCorner(FloatPoint& point, bool& insideFixed) cons
                 point.moveBy(linesBox.maxXMaxYCorner());
             } else
                 point.moveBy(downcast<RenderBox>(*o).frameRect().maxXMaxYCorner());
-            point = o->container()->localToAbsolute(point, UseTransforms, &insideFixed);
+            point = o->container()->localToAbsolute(point, MapCoordinatesMode::UseTransforms, &insideFixed);
             return true;
         }
     }
@@ -2212,7 +2266,7 @@ void RenderElement::pushOntoGeometryMap(RenderGeometryMap& geometryMap, const Re
     LayoutSize containerOffset = offsetFromContainer(*container, LayoutPoint(), &offsetDependsOnPoint);
 
     bool preserve3D = participatesInPreserve3D();
-    if (shouldUseTransformFromContainer(container) && (geometryMap.mapCoordinatesFlags() & UseTransforms)) {
+    if (shouldUseTransformFromContainer(container) && (geometryMap.mapCoordinatesFlags() & MapCoordinatesMode::UseTransforms)) {
         TransformationMatrix t;
         getTransformFromContainer(containerOffset, t);
         t.translateRight(adjustmentForSkippedAncestor.width(), adjustmentForSkippedAncestor.height());
@@ -2280,7 +2334,7 @@ RenderBoxModelObject* RenderElement::offsetParent() const
         current = current->parent();
     }
 
-    return dynamicDowncast<RenderBoxModelObject>(current.get());
+    return dynamicDowncast<RenderBoxModelObject>(current.unsafeGet());
 }
 
 bool RenderElement::hasViewTransitionName() const
@@ -2315,12 +2369,26 @@ bool RenderElement::isViewTransitionRoot() const
 
 bool RenderElement::checkForRepaintDuringLayout() const
 {
-    return everHadLayout() && !hasSelfPaintingLayer() && !document().view()->layoutContext().needsFullRepaint();
+    if (!everHadLayout() || hasSelfPaintingLayer() || document().view()->layoutContext().needsFullRepaint())
+        return false;
+
+    // Descendants of SVG hidden/resource containers (<defs>, <clipPath>, <mask>, <pattern>)
+    // are never painted directly under LBSE, and anonymous SVG containers delegate repaints
+    // to their children's self-painting layers. Tracking repaints during layout for either
+    // case is wasted work.
+    if (isSVGLayerAwareRenderer() && document().settings().layerBasedSVGEngineEnabled()) {
+        if (isRenderSVGContainer() && isAnonymous())
+            return false;
+        if (ancestorsOfType<RenderSVGHiddenContainer>(*this).first())
+            return false;
+    }
+
+    return true;
 }
 
 ImageOrientation RenderElement::imageOrientation() const
 {
-    RefPtr imageElement = dynamicDowncast<HTMLImageElement>(element());
+    auto* imageElement = dynamicDowncast<HTMLImageElement>(element());
     return (imageElement && !imageElement->allowsOrientationOverride())
         ? ImageOrientation(ImageOrientation::Orientation::FromImage)
         : Style::toPlatform(style().imageOrientation());
@@ -2531,8 +2599,8 @@ void RenderElement::adjustComputedFontSizesOnBlocks(float size, float visibleWid
     // (nesting depth is greater than some const) inside of a parent block
     // which has fixed height but its content overflows intentionally.
     for (CheckedPtr descendant = traverseNext(this, includeNonFixedHeight, currentDepth, newFixedDepth); descendant; descendant = descendant->traverseNext(this, includeNonFixedHeight, currentDepth, newFixedDepth)) {
-        while (depthStack.size() > 0 && currentDepth <= depthStack[depthStack.size() - 1])
-            depthStack.removeAt(depthStack.size() - 1);
+        while (!depthStack.isEmpty() && currentDepth <= depthStack.last())
+            depthStack.removeLast();
         if (newFixedDepth)
             depthStack.append(newFixedDepth);
 
@@ -2561,13 +2629,13 @@ void RenderElement::resetTextAutosizing()
     int newFixedDepth = 0;
 
     for (CheckedPtr descendant = traverseNext(this, includeNonFixedHeight, currentDepth, newFixedDepth); descendant; descendant = descendant->traverseNext(this, includeNonFixedHeight, currentDepth, newFixedDepth)) {
-        while (depthStack.size() > 0 && currentDepth <= depthStack[depthStack.size() - 1])
-            depthStack.removeAt(depthStack.size() - 1);
+        while (!depthStack.isEmpty() && currentDepth <= depthStack.last())
+            depthStack.removeLast();
         if (newFixedDepth)
             depthStack.append(newFixedDepth);
 
         int stackSize = depthStack.size();
-        if (CheckedPtr blockFlow = dynamicDowncast<RenderBlockFlow>(*descendant); blockFlow && !blockFlow->isRenderListItem() && (!stackSize || currentDepth - depthStack[stackSize - 1] > TextAutoSizingFixedHeightDepth))
+        if (auto* blockFlow = dynamicDowncast<RenderBlockFlow>(*descendant); blockFlow && !blockFlow->isRenderListItem() && (!stackSize || currentDepth - depthStack[stackSize - 1] > TextAutoSizingFixedHeightDepth))
             blockFlow->resetComputedFontSize();
         newFixedDepth = 0;
     }

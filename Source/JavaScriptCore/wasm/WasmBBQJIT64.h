@@ -113,10 +113,13 @@ auto BBQJIT::emitCheckAndPrepareAndMaterializePointerApply(Value pointer, uint64
     case MemoryMode::BoundsChecking: {
         // We're not using signal handling only when the memory is not shared.
         // Regardless of signaling, we must check that no memory access exceeds the current memory size.
-        if (m_info.memory(memoryIndex).isMemory64() && boundary) {
-            m_jit.move(TrustedImmPtr(boundary), wasmScratchGPR);
-            Jump overflow = m_jit.branchAddPtr(ResultCondition::Carry, pointerLocation.asGPR(), wasmScratchGPR);
-            recordJumpToThrowException(ExceptionType::OutOfBoundsMemoryAccess, overflow);
+        if (m_info.memory(memoryIndex).isMemory64()) {
+            if (boundary) {
+                m_jit.move(TrustedImmPtr(boundary), wasmScratchGPR);
+                Jump overflow = m_jit.branchAddPtr(ResultCondition::Carry, pointerLocation.asGPR(), wasmScratchGPR);
+                recordJumpToThrowException(ExceptionType::OutOfBoundsMemoryAccess, overflow);
+            } else
+                m_jit.move(pointerLocation.asGPR(), wasmScratchGPR);
         } else {
             m_jit.zeroExtend32ToWord(pointerLocation.asGPR(), wasmScratchGPR);
             if (boundary)
@@ -538,25 +541,26 @@ void BBQJIT::emitShuffleMove(Vector<Value, N, OverflowHandler>& srcVector, Vecto
     statusVector[index] = ShuffleStatus::Moved;
 }
 
-template<typename Func, size_t N>
-void BBQJIT::emitCCall(Func function, const Vector<Value, N>& arguments)
+template<typename Func>
+void BBQJIT::emitCCall(Func function, std::span<const Value> arguments)
 {
     // Currently, we assume the Wasm calling convention is the same as the C calling convention
     Vector<Type, 16> resultTypes;
     auto argumentTypes = WTF::map<16>(arguments, [](auto& value) {
         return Type { value.type(), 0u };
     });
-    RefPtr<TypeDefinition> functionType = TypeInformation::typeDefinitionForFunction(resultTypes, argumentTypes);
-    CallInformation callInfo = wasmCallingConvention().callInformationFor(*functionType, CallRole::Caller);
+    Ref<const RTT> functionRTT = TypeInformation::rttForFunction(resultTypes, argumentTypes);
+    CallInformation callInfo = wasmCallingConvention().callInformationFor(functionRTT.get(), CallRole::Caller);
     Checked<int32_t> calleeStackSize = WTF::roundUpToMultipleOf<stackAlignmentBytes()>(callInfo.headerAndArgumentStackSizeInBytes);
-    m_maxCalleeStackSize = std::max<int>(calleeStackSize, m_maxCalleeStackSize);
+    m_maxCalleeStackSizeForValidation = std::max<uint32_t>(calleeStackSize, m_maxCalleeStackSizeForValidation);
+    ASSERT(static_cast<uint32_t>(alignedFrameSize(m_maxCalleeStackSizeForValidation + m_frameSizeForValidation)) <= m_frameSize);
 
     // Prepare wasm operation calls.
     m_jit.prepareWasmCallOperation(GPRInfo::wasmContextInstancePointer);
 
     // Preserve caller-saved registers and other info
     prepareForExceptions();
-    saveValuesAcrossCallAndPassArguments(arguments, callInfo, *functionType);
+    saveValuesAcrossCallAndPassArguments(arguments, callInfo, functionRTT.get());
 
     // Materialize address of native function and call register
     void* taggedFunctionPtr = tagCFunctionPtr<void*, OperationPtrTag>(function);
@@ -564,8 +568,8 @@ void BBQJIT::emitCCall(Func function, const Vector<Value, N>& arguments)
     m_jit.call(wasmScratchGPR, OperationPtrTag);
 }
 
-template<typename Func, size_t N>
-void BBQJIT::emitCCall(Func function, const Vector<Value, N>& arguments, Value& result)
+template<typename Func>
+void BBQJIT::emitCCall(Func function, std::span<const Value> arguments, Value& result)
 {
     ASSERT(result.isTemp());
 
@@ -575,17 +579,18 @@ void BBQJIT::emitCCall(Func function, const Vector<Value, N>& arguments, Value& 
         return Type { value.type(), 0u };
     });
 
-    RefPtr<TypeDefinition> functionType = TypeInformation::typeDefinitionForFunction(resultTypes, argumentTypes);
-    CallInformation callInfo = wasmCallingConvention().callInformationFor(*functionType, CallRole::Caller);
+    Ref<const RTT> functionRTT = TypeInformation::rttForFunction(resultTypes, argumentTypes);
+    CallInformation callInfo = wasmCallingConvention().callInformationFor(functionRTT.get(), CallRole::Caller);
     Checked<int32_t> calleeStackSize = WTF::roundUpToMultipleOf<stackAlignmentBytes()>(callInfo.headerAndArgumentStackSizeInBytes);
-    m_maxCalleeStackSize = std::max<int>(calleeStackSize, m_maxCalleeStackSize);
+    m_maxCalleeStackSizeForValidation = std::max<uint32_t>(calleeStackSize, m_maxCalleeStackSizeForValidation);
+    ASSERT(static_cast<uint32_t>(alignedFrameSize(m_maxCalleeStackSizeForValidation + m_frameSizeForValidation)) <= m_frameSize);
 
     // Prepare wasm operation calls.
     m_jit.prepareWasmCallOperation(GPRInfo::wasmContextInstancePointer);
 
     // Preserve caller-saved registers and other info
     prepareForExceptions();
-    saveValuesAcrossCallAndPassArguments(arguments, callInfo, *functionType);
+    saveValuesAcrossCallAndPassArguments(arguments, callInfo, functionRTT.get());
 
     // Materialize address of native function and call register
     void* taggedFunctionPtr = tagCFunctionPtr<void*, OperationPtrTag>(function);

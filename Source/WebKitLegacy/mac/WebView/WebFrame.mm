@@ -122,6 +122,7 @@
 #import <WebCore/ReportingScope.h>
 #import <WebCore/ScriptController.h>
 #import <WebCore/SecurityOrigin.h>
+#import <WebCore/SimpleRange.h>
 #import <WebCore/SmartReplace.h>
 #import <WebCore/SubframeLoader.h>
 #import <WebCore/TextIterator.h>
@@ -2107,13 +2108,13 @@ static WebFrameLoadType NODELETE toWebFrameLoadType(WebCore::FrameLoadType frame
     // The global object is probably a proxy object? - if so, we know how to use this!
     JSC::JSObject* globalObjectObj = toJS(globalObjectRef);
     if (!strcmp(globalObjectObj->classInfo()->className, "JSWindowProxy"))
-        anyWorldGlobalObject = JSC::jsDynamicCast<WebCore::JSDOMWindow*>(static_cast<WebCore::JSWindowProxy*>(globalObjectObj)->window());
+        anyWorldGlobalObject = dynamicDowncast<WebCore::JSDOMWindow>(static_cast<WebCore::JSWindowProxy*>(globalObjectObj)->window());
 
     if (!anyWorldGlobalObject)
         return @"";
 
     // Get the frame frome the global object we've settled on.
-    auto* frame = dynamicDowncast<WebCore::LocalFrame>(JSC::jsCast<WebCore::JSDOMWindow*>(anyWorldGlobalObject)->wrapped().frame());
+    auto* frame = dynamicDowncast<WebCore::LocalFrame>(uncheckedDowncast<WebCore::JSDOMWindow>(anyWorldGlobalObject)->wrapped().frame());
     ASSERT(frame->document());
     RetainPtr<WebFrame> webFrame(kit(frame)); // Running arbitrary JavaScript can destroy the frame.
 
@@ -2373,6 +2374,23 @@ ALLOW_DEPRECATED_DECLARATIONS_END
 
     if (RefPtr document = coreFrame->document())
         document->reportingScope().generateTestReport(message, group);
+}
+
+- (NSString *)_plainTextForTesting
+{
+    auto coreFrame = _private->coreFrame;
+    if (!coreFrame)
+        return @"";
+
+    RefPtr document = coreFrame->document();
+    if (!document || !document->documentElement())
+        return @"";
+
+    Ref documentElement = *document->documentElement();
+    document->updateLayoutIgnorePendingStylesheets();
+    if (!documentElement->renderer())
+        return documentElement->textContent(true).createNSString().autorelease();
+    return plainText(makeRangeSelectingNodeContents(documentElement)).createNSString().autorelease();
 }
 
 @end

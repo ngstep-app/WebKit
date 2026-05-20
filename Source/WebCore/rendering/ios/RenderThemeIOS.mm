@@ -30,6 +30,7 @@
 #if PLATFORM(IOS_FAMILY)
 
 #import "ARKitBadgeSystemImage.h"
+#import "AttachmentLayout.h"
 #import "BitmapImage.h"
 #import "BorderShape.h"
 #import "CSSToLengthConversionData.h"
@@ -65,7 +66,7 @@
 #import "LocalCurrentTraitCollection.h"
 #import "LocalFrame.h"
 #import "LocalFrameView.h"
-#import "NodeInlines.h"
+#import "LocalizedDateCache.h"
 #import "NodeRenderStyle.h"
 #import "PaintInfo.h"
 #import "PathUtilities.h"
@@ -76,6 +77,7 @@
 #import "RenderMenuList.h"
 #import "RenderMeter.h"
 #import "RenderObject.h"
+#import "RenderProgress.h"
 #import "RenderSlider.h"
 #import "RenderStyle+SettersInlines.h"
 #import "RenderView.h"
@@ -220,6 +222,15 @@ void RenderThemeIOS::adjustMinimumIntrinsicSizeForAppearance(StyleAppearance app
             style.setMinHeight(Style::MinimumSize(minimumControlSize.height()));
         }
     }
+}
+
+Style::PreferredSizePair RenderThemeIOS::controlSize(StyleAppearance appearance, const FontCascade& fontCascade, const Style::PreferredSizePair& zoomedSize, float) const
+{
+    if (appearance != StyleAppearance::Checkbox && appearance != StyleAppearance::Radio)
+        return zoomedSize;
+
+    auto size = Style::PreferredSize::Fixed { std::max(fontCascade.size(), 16.f) };
+    return { size, size };
 }
 
 void RenderThemeIOS::adjustRadioStyle(RenderStyle& style, const Element*) const
@@ -379,7 +390,7 @@ static Style::PaddingEdge toTruncatedPaddingEdge(auto value)
     return Style::PaddingEdge::Fixed { static_cast<float>(std::trunc(value)) };
 }
 
-Style::PaddingBox RenderThemeIOS::popupInternalPaddingBox(const RenderStyle& style) const
+Style::PaddingBox RenderThemeIOS::platformPopupInternalPaddingBox(const RenderStyle& style) const
 {
     const auto padding = Style::emToPx<float>(1, style);
 
@@ -387,17 +398,8 @@ Style::PaddingBox RenderThemeIOS::popupInternalPaddingBox(const RenderStyle& sty
         // FIXME: Reduce code duplication with toTruncatedPaddingEdge.
         auto value = Style::PaddingEdge::Fixed { static_cast<float>(std::trunc(padding + Style::evaluate<float>(style.usedBorderTopWidth(),  Style::ZoomNeeded { }))) / style.usedZoom() };
 
-        bool padLeft = [&] {
-            auto textAlign = style.textAlign();
-            if (textAlign == Style::TextAlign::Start)
-                return style.writingMode().isBidiRTL();
-            if (textAlign == Style::TextAlign::End)
-                return style.writingMode().isBidiLTR();
-            return textAlign == Style::TextAlign::Right;
-        }();
-
-        if (padLeft)
-            return { 0_css_px, 0_css_px, 0_css_px, value };
+        // Return in horizontal-tb LTR; popupInternalPaddingBox() handles conversion.
+        // The chevron is always on the logical end, so pad the end to prevent text from overlapping with it.
         return { 0_css_px, value, 0_css_px, 0_css_px };
     }
     return { 0_css_px };
@@ -620,10 +622,13 @@ void RenderThemeIOS::paintMenuListButtonDecorations(const RenderBox& box, const 
     bool isHorizontalWritingMode = style.writingMode().isHorizontal();
     auto logicalRect = isHorizontalWritingMode ? rect : rect.transposedRect();
 
+    auto glyphInlineSize = isHorizontalWritingMode ? glyphSize.width() : glyphSize.height();
+    auto glyphBlockSize = isHorizontalWritingMode ? glyphSize.height() : glyphSize.width();
+
     FloatPoint glyphOrigin;
-    glyphOrigin.setY(logicalRect.center().y() - glyphSize.height() / 2.0f);
+    glyphOrigin.setY(logicalRect.center().y() - glyphBlockSize / 2.0f);
     if (!style.writingMode().isInlineFlipped())
-        glyphOrigin.setX(logicalRect.maxX() - glyphSize.width() - Style::evaluate<float>(box.style().usedBorderWidthEnd(), Style::ZoomNeeded { }) - Style::evaluate<float>(box.style().paddingEnd(), logicalRect.width(), box.style().usedZoomForLength()));
+        glyphOrigin.setX(logicalRect.maxX() - glyphInlineSize - Style::evaluate<float>(box.style().usedBorderWidthEnd(), Style::ZoomNeeded { }) - Style::evaluate<float>(box.style().paddingEnd(), logicalRect.width(), box.style().usedZoomForLength()));
     else
         glyphOrigin.setX(logicalRect.x() + Style::evaluate<float>(box.style().usedBorderWidthEnd(), Style::ZoomNeeded { }) + Style::evaluate<float>(box.style().paddingEnd(), logicalRect.width(), box.style().usedZoomForLength()));
 
@@ -1426,6 +1431,11 @@ String RenderThemeIOS::extraDefaultStyleSheet()
 void RenderThemeIOS::paintSystemPreviewBadge(Image& image, const PaintInfo& paintInfo, const FloatRect& rect)
 {
     paintInfo.context().drawSystemImage(ARKitBadgeSystemImage::create(image), rect);
+}
+
+void RenderThemeIOS::paintSystemPreviewBadge(const PaintInfo& paintInfo, const FloatRect& rect)
+{
+    paintInfo.context().drawSystemImage(ARKitBadgeSystemImage::createWithoutImage(), rect);
 }
 #endif
 

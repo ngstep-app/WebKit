@@ -76,6 +76,14 @@ void RenderSVGModelObject::updateFromStyle()
     updateHasSVGTransformFlags();
 }
 
+void RenderSVGModelObject::updateLocalTransform()
+{
+    TransformationMatrix transform;
+    auto referenceBoxRect = transformReferenceBoxRect(style());
+    applyTransform(transform, style(), referenceBoxRect, Style::TransformResolver::allTransformOperations);
+    m_localTransform = transform.toAffineTransform();
+}
+
 LayoutRect RenderSVGModelObject::overflowClipRect(const LayoutPoint&, OverlayScrollbarSizeRelevancy, PaintPhase) const
 {
     ASSERT_NOT_REACHED();
@@ -144,7 +152,7 @@ void RenderSVGModelObject::boundingRects(Vector<LayoutRect>& rects, const Layout
 
 void RenderSVGModelObject::absoluteQuads(Vector<FloatQuad>& quads, bool* wasFixed) const
 {
-    quads.append(localToAbsoluteQuad(FloatRect { { }, m_layoutRect.size() }, UseTransforms, wasFixed));
+    quads.append(localToAbsoluteQuad(FloatRect { { }, m_layoutRect.size() }, MapCoordinatesMode::UseTransforms, wasFixed));
 }
 
 void RenderSVGModelObject::styleDidChange(Style::Difference diff, const RenderStyle* oldStyle)
@@ -199,7 +207,7 @@ void RenderSVGModelObject::mapAbsoluteToLocalPoint(OptionSet<MapCoordinatesMode>
     ASSERT(style().position() == PositionType::Static);
 
     if (isTransformed())
-        mode.remove(IsFixed);
+        mode.remove(MapCoordinatesMode::IsFixed);
 
     CheckedPtr container = parent();
     if (!container)
@@ -283,8 +291,9 @@ bool RenderSVGModelObject::checkEnclosure(RenderElement* renderer, const FloatRe
 LayoutSize RenderSVGModelObject::cachedSizeForOverflowClip() const
 {
     ASSERT(hasNonVisibleOverflow());
-    ASSERT(hasLayer());
-    return layer()->size();
+    if (hasLayer())
+        return layer()->size();
+    return currentSVGLayoutRect().size();
 }
 
 bool RenderSVGModelObject::applyCachedClipAndScrollPosition(RepaintRects& rects, const RenderLayerModelObject* container, VisibleRectContext context) const
@@ -310,12 +319,15 @@ bool RenderSVGModelObject::applyCachedClipAndScrollPosition(RepaintRects& rects,
 
 Path RenderSVGModelObject::computeClipPath(AffineTransform& transform) const
 {
-    if (layer()->isTransformed())
-        transform.multiply(layer()->currentTransform(Style::TransformResolver::individualTransformOperations).toAffineTransform());
+    if (isTransformed())
+        transform.multiply(computeRendererTransform());
 
     if (RefPtr useElement = dynamicDowncast<SVGUseElement>(protect(element()))) {
-        if (CheckedPtr clipChildRenderer = useElement->rendererClipChild())
-            transform.multiply(protect(downcast<RenderLayerModelObject>(*clipChildRenderer).layer())->currentTransform(Style::TransformResolver::individualTransformOperations).toAffineTransform());
+        if (CheckedPtr clipChildRenderer = useElement->rendererClipChild()) {
+            CheckedRef layerModelObject = downcast<RenderLayerModelObject>(*clipChildRenderer);
+            if (layerModelObject->isTransformed())
+                transform.multiply(layerModelObject->computeRendererTransform());
+        }
         if (RefPtr clipChild = useElement->clipChild())
             return pathFromGraphicsElement(*clipChild);
     }
@@ -326,6 +338,21 @@ Path RenderSVGModelObject::computeClipPath(AffineTransform& transform) const
 void RenderSVGModelObject::paintSVGOutline(PaintInfo& paintInfo, const LayoutPoint& adjustedPaintOffset)
 {
     paintOutline(paintInfo, LayoutRect(adjustedPaintOffset, borderBoxRectEquivalent().size()));
+}
+
+void RenderSVGModelObject::updateLayerTransform()
+{
+    // Transform-origin depends on box size, so we need to update the layer transform after layout.
+    if (hasLayer()) {
+        RenderLayerModelObject::updateLayerTransform();
+        return;
+    }
+    // Non-layered SVG renderers cache their transform in m_localTransform (via applyTransform()).
+    // Subclasses like RenderSVGViewportContainer compute supplemental transforms (viewBox, zoom, pan)
+    // in their updateLayerTransform() override before calling the base. We must refresh the cached
+    // local transform so that coordinate mapping (e.g. for scalingFactor computation) picks up
+    // the supplemental transform.
+    updateLocalTransform();
 }
 
 } // namespace WebCore

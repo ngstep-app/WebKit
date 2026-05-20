@@ -309,7 +309,7 @@ angle::Result GenTriFanFromClientElements(ContextMtl *contextMtl,
     ASSERT(indicesGenerated != nullptr);
     constexpr T kSrcPrimitiveRestartIndex = std::numeric_limits<T>::max();
     GLsizei dstTriangle                   = 0;
-    uint32_t *dstPtr = reinterpret_cast<uint32_t *>(dstBuffer->map(contextMtl) + dstOffset);
+    uint32_t *dstPtr = reinterpret_cast<uint32_t *>(dstBuffer->map(contextMtl, dstOffset).data());
     T triFirstIdx;
     memcpy(&triFirstIdx, indices, sizeof(triFirstIdx));
 
@@ -533,6 +533,27 @@ RenderPipelineDesc GetComputingVertexShaderOnlyRenderPipelineDesc(RenderCommandE
     return pipelineDesc;
 }
 
+// Find the largest power-of-two threadgroup width that won't overflow uint32_t after rounding.
+// Metal's thread_position_in_grid is uint32_t, so numGroups * width must not exceed UINT32_MAX.
+
+// FIXME: For optimal GPU efficiency, large dispatches should be broken into multiple smaller
+// dispatches rather than reducing threadgroup width.
+NSUInteger SafeThreadgroupWidth(size_t numThreads, NSUInteger maxWidth)
+{
+    NSUInteger threadgroupWidth = std::clamp<NSUInteger>(numThreads, 1u, maxWidth);
+    while (threadgroupWidth > 1)
+    {
+        size_t numGroups      = (numThreads + threadgroupWidth - 1) / threadgroupWidth;
+        size_t roundedThreads = numGroups * threadgroupWidth;
+        if (roundedThreads <= std::numeric_limits<uint32_t>::max())
+        {
+            break;
+        }
+        threadgroupWidth >>= 1;
+    }
+    return threadgroupWidth;
+}
+
 // Dispatch compute using 3D grid
 void DispatchCompute(ContextMtl *contextMtl,
                      ComputeCommandEncoder *encoder,
@@ -561,8 +582,12 @@ void DispatchCompute(ContextMtl *contextMtl,
                      size_t numThreads)
 {
     ASSERT(numThreads != 0);
-    NSUInteger w = std::clamp<NSUInteger>(numThreads, 1u, pipelineState.threadExecutionWidth);
-    MTLSize threadsPerThreadgroup = MTLSizeMake(w, 1, 1);
+
+    // Use safe threadgroup width to prevent overflow after rounding. Metal validates that
+    // the rounded grid size (numGroups * threadgroupWidth) fits in uint32_t, even for
+    // non-uniform dispatch which internally rounds up to threadgroup boundaries.
+    NSUInteger safeWidth = SafeThreadgroupWidth(numThreads, pipelineState.threadExecutionWidth);
+    MTLSize threadsPerThreadgroup = MTLSizeMake(safeWidth, 1, 1);
 
     if (contextMtl->getDisplay()->getFeatures().hasNonUniformDispatch.enabled)
     {
@@ -571,7 +596,7 @@ void DispatchCompute(ContextMtl *contextMtl,
     }
     else
     {
-        MTLSize groups = MTLSizeMake((numThreads + w - 1) / w, 1, 1);
+        MTLSize groups = MTLSizeMake((numThreads + safeWidth - 1) / safeWidth, 1, 1);
         cmdEncoder->dispatch(groups, threadsPerThreadgroup);
     }
 }
@@ -846,9 +871,14 @@ angle::Result RenderUtils::blitStencilViaCopyBuffer(const gl::Context *context,
 }
 
 angle::Result RenderUtils::convertIndexBufferGPU(ContextMtl *contextMtl,
-                                                 const IndexConversionParams &params)
+                                                 gl::DrawElementsType srcType,
+                                                 uint32_t indexCount,
+                                                 const BufferSlice &srcBuffer,
+                                                 const BufferSlice &dstBuffer,
+                                                 bool primitiveRestartEnabled)
 {
-    return mIndexUtils.convertIndexBufferGPU(contextMtl, params);
+    return mIndexUtils.convertIndexBufferGPU(contextMtl, srcType, indexCount, srcBuffer, dstBuffer,
+                                             primitiveRestartEnabled);
 }
 angle::Result RenderUtils::generateTriFanBufferFromArrays(
     ContextMtl *contextMtl,
@@ -1567,7 +1597,7 @@ angle::Result DepthStencilBlitUtils::blitStencilViaCopyBuffer(
         bufferRequiredRowPitch * static_cast<uint32_t>(params.dstRect.height);
     if (!mStencilCopyBuffer || mStencilCopyBuffer->size() < bufferRequiredSize)
     {
-        ANGLE_TRY(Buffer::MakeBuffer(contextMtl, bufferRequiredSize, nullptr, &mStencilCopyBuffer));
+        ANGLE_TRY(Buffer::MakeBuffer(contextMtl, bufferRequiredSize, &mStencilCopyBuffer));
     }
 
     // Copy stencil data to buffer via compute shader. We cannot use blit command since blit command
@@ -1775,31 +1805,37 @@ angle::Result IndexGeneratorUtils::getLineLoopFromArrayGeneratorPipeline(
 }
 
 angle::Result IndexGeneratorUtils::convertIndexBufferGPU(ContextMtl *contextMtl,
-                                                         const IndexConversionParams &params)
+                                                         gl::DrawElementsType srcType,
+                                                         uint32_t indexCount,
+                                                         const BufferSlice &srcBuffer,
+                                                         const BufferSlice &dstBuffer,
+                                                         bool primitiveRestartEnabled)
 {
     ComputeCommandEncoder *cmdEncoder = contextMtl->getIndexPreprocessingCommandEncoder();
     ASSERT(cmdEncoder);
 
+    uint32_t srcOffset = static_cast<uint32_t>(srcBuffer.offset());
+    uint32_t dstOffset = static_cast<uint32_t>(dstBuffer.offset());
+
     angle::ObjCPtr<id<MTLComputePipelineState>> pipelineState;
-    ANGLE_TRY(
-        getIndexConversionPipeline(contextMtl, params.srcType, params.srcOffset, &pipelineState));
+    ANGLE_TRY(getIndexConversionPipeline(contextMtl, srcType, srcOffset, &pipelineState));
 
     ASSERT(pipelineState);
 
     cmdEncoder->setComputePipelineState(pipelineState);
 
-    ASSERT((params.dstOffset % kIndexBufferOffsetAlignment) == 0);
+    ASSERT((dstOffset % kIndexBufferOffsetAlignment) == 0);
 
     IndexConversionUniform uniform;
-    uniform.srcOffset               = params.srcOffset;
-    uniform.indexCount              = params.indexCount;
-    uniform.primitiveRestartEnabled = params.primitiveRestartEnabled;
+    uniform.srcOffset               = srcOffset;
+    uniform.indexCount              = indexCount;
+    uniform.primitiveRestartEnabled = primitiveRestartEnabled;
 
     cmdEncoder->setData(uniform, 0);
-    cmdEncoder->setBuffer(params.srcBuffer, 0, 1);
-    cmdEncoder->setBufferForWrite(params.dstBuffer, params.dstOffset, 2);
+    cmdEncoder->setBuffer(srcBuffer.buffer(), 0, 1);
+    cmdEncoder->setBufferForWrite(dstBuffer.buffer(), dstBuffer.offset(), 2);
 
-    DispatchCompute(contextMtl, cmdEncoder, pipelineState, params.indexCount);
+    DispatchCompute(contextMtl, cmdEncoder, pipelineState, indexCount);
 
     return angle::Result::Continue;
 }
@@ -1851,7 +1887,8 @@ angle::Result IndexGeneratorUtils::generateTriFanBufferFromElementsArray(
              contextMtl->getRenderCommandEncoder()))
         {
             IndexGenerationParams cpuPathParams = params;
-            cpuPathParams.indices = elementBufferMtl->getBufferDataReadOnly(contextMtl) + srcOffset;
+            cpuPathParams.indices =
+                elementBufferMtl->getBufferDataReadOnly(contextMtl, srcOffset).data();
             return generateTriFanBufferFromElementsArrayCPU(contextMtl, cpuPathParams,
                                                             indicesGenerated);
         }
@@ -1980,7 +2017,8 @@ angle::Result IndexGeneratorUtils::generateLineLoopBufferFromElementsArray(
              contextMtl->getRenderCommandEncoder()))
         {
             IndexGenerationParams cpuPathParams = params;
-            cpuPathParams.indices = elementBufferMtl->getBufferDataReadOnly(contextMtl) + srcOffset;
+            cpuPathParams.indices =
+                elementBufferMtl->getBufferDataReadOnly(contextMtl, srcOffset).data();
             return generateLineLoopBufferFromElementsArrayCPU(contextMtl, cpuPathParams,
                                                               indicesGenerated);
         }
@@ -2039,8 +2077,9 @@ angle::Result IndexGeneratorUtils::generateLineLoopBufferFromElementsArrayCPU(
     const IndexGenerationParams &params,
     uint32_t *indicesGenerated)
 {
-    uint8_t *dstIndices = params.dstBuffer->map(contextMtl, params.dstOffset);
-    if (dstIndices == nullptr)
+    angle::Span<uint8_t> dstSpan = params.dstBuffer->map(contextMtl, params.dstOffset);
+    uint8_t *dstIndices          = dstSpan.data();
+    if (dstSpan.empty())
     {
         return angle::Result::Stop;
     }
@@ -2075,7 +2114,7 @@ angle::Result IndexGeneratorUtils::generateLineLoopLastSegment(ContextMtl *conte
                                                                const BufferRef &dstBuffer,
                                                                uint32_t dstOffset)
 {
-    uint8_t *ptr = dstBuffer->map(contextMtl) + dstOffset;
+    uint8_t *ptr = dstBuffer->map(contextMtl, dstOffset).data();
 
     uint32_t indices[2] = {lastVertex, firstVertex};
     memcpy(ptr, indices, sizeof(indices));

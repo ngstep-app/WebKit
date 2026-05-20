@@ -30,11 +30,13 @@
 #include "JSDOMConvertSequences.h"
 #include "JSReadableStream.h"
 #include "JSTransformStream.h"
+#include "JSValueInWrappedObjectInlines.h"
 #include "JSWritableStream.h"
 #include "MessagePort.h"
 #include "StreamTransferUtilities.h"
 #include "WebCoreJSClientData.h"
 #include <JavaScriptCore/JSObjectInlines.h>
+#include <JavaScriptCore/TopExceptionScope.h>
 
 namespace WebCore {
 
@@ -60,12 +62,12 @@ ExceptionOr<Ref<TransformStream>> TransformStream::create(JSC::JSGlobalObject& g
     if (readableStrategy)
         readableStrategyValue = readableStrategy.get();
 
-    auto result = createInternalTransformStream(*JSC::jsCast<JSDOMGlobalObject*>(&globalObject), transformerValue, writableStrategyValue, readableStrategyValue);
+    auto result = createInternalTransformStream(downcast<JSDOMGlobalObject>(globalObject), transformerValue, writableStrategyValue, readableStrategyValue);
     if (result.hasException())
         return result.releaseException();
 
     auto transformResult = result.releaseReturnValue();
-    return adoptRef(*new TransformStream(*JSC::jsCast<JSDOMGlobalObject*>(&globalObject), transformResult.transform, WTF::move(transformResult.readable), WTF::move(transformResult.writable)));
+    return adoptRef(*new TransformStream(downcast<JSDOMGlobalObject>(globalObject), transformResult.transform, WTF::move(transformResult.readable), WTF::move(transformResult.writable)));
 }
 
 Ref<TransformStream> TransformStream::create(Ref<ReadableStream>&& readable, Ref<WritableStream>&& writable)
@@ -166,7 +168,7 @@ ExceptionOr<CreateInternalTransformStreamResult> createInternalTransformStream(J
     auto results = resultsConversionResult.releaseReturnValue();
     ASSERT(results.size() == 3);
 
-    return CreateInternalTransformStreamResult { results[0].get(), JSC::jsDynamicCast<JSReadableStream*>(results[1].get())->wrapped(), JSC::jsDynamicCast<JSWritableStream*>(results[2].get())->wrapped() };
+    return CreateInternalTransformStreamResult { results[0].get(), dynamicDowncast<JSReadableStream>(results[1].get())->wrapped(), dynamicDowncast<JSWritableStream>(results[2].get())->wrapped() };
 }
 
 template<typename Visitor>

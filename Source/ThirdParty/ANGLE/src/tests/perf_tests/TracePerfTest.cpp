@@ -889,6 +889,7 @@ void TracePerfTest::initializeConfigParams(GPUTestConfig::API api)
     configParams.robustResourceInit    = mParams->traceInfo.isRobustResourceInitEnabled;
     configParams.bindGeneratesResource = mParams->traceInfo.isBindGeneratesResourcesEnabled;
     configParams.clientArraysEnabled   = mParams->traceInfo.areClientArraysEnabled;
+    configParams.extensionsEnabled     = mParams->traceInfo.areExtensionsEnabled;
 }
 
 TracePerfTest::TracePerfTest(std::unique_ptr<const TracePerfParams> params)
@@ -1378,8 +1379,17 @@ TracePerfTest::TracePerfTest(std::unique_ptr<const TracePerfParams> params)
 
 void TracePerfTest::startTest()
 {
-    // runTrial() must align to frameCount()
-    ASSERT(mCurrentFrame == mStartFrame);
+    // If the previous run didn't align with the frame count (e.g., due to gRunToKeyFrame
+    // or unaligned warmup iterations), reset the replay state to ensure a clean start.
+    if (mCurrentFrame != mStartFrame)
+    {
+        mTraceReplay->resetReplay();
+        mCurrentFrame = mStartFrame;
+
+        // Flush to avoid potential GPU time tracking issues on some platforms if the previous
+        // unaligned run left pending work.
+        glFlush();
+    }
 
     ANGLERenderTest::startTest();
 }
@@ -1654,14 +1664,18 @@ void TracePerfTest::drawBenchmark()
     snprintf(frameName, sizeof(frameName), "Frame %u", mCurrentFrame);
     beginInternalTraceEvent(frameName);
 
-    startGpuTimer();
+    // Only insert gpu-timer calls for when requested
+    if (mParams->trackGpuTime)
+    {
+        startGpuTimer();
+    }
     atraceCounter("TraceFrameIndex", mCurrentFrame);
 
     const double beginReplayFrameTimeSec = mTrialTimer.getElapsedWallClockTime();
     mTraceReplay->replayFrame(mCurrentFrame);
     mFrameWallTimeSec += mTrialTimer.getElapsedWallClockTime() - beginReplayFrameTimeSec;
 
-    if (!gAddSwapIntoGPUTime)
+    if (!gAddSwapIntoGPUTime && mParams->trackGpuTime)
     {
         stopGpuTimer();
     }
@@ -1674,7 +1688,7 @@ void TracePerfTest::drawBenchmark()
 
     if (mParams->surfaceType == SurfaceType::Offscreen)
     {
-        if (gMinimizeGPUWork)
+        if (gMinimizeGPUWork || gSkipBlitInOffscreen)
         {
             // To keep GPU work minimum, we skip the blit.
             glFlush();
@@ -1780,8 +1794,12 @@ void TracePerfTest::drawBenchmark()
     }
     else
     {
-        bindFramebuffer(GL_FRAMEBUFFER, 0);
-        saveScreenshotIfEnabled(ScreenshotType::kFrame);
+        // Skip setup and screenshot if upgrading trace
+        if (!gRetraceMode)
+        {
+            bindFramebuffer(GL_FRAMEBUFFER, 0);
+            saveScreenshotIfEnabled(ScreenshotType::kFrame);
+        }
         getGLWindow()->swap();
     }
 
@@ -1791,7 +1809,7 @@ void TracePerfTest::drawBenchmark()
         mFrameWallTimeSec += endSwapTimeSec - beginSwapTimeSec;
     }
 
-    if (gAddSwapIntoGPUTime)
+    if (gAddSwapIntoGPUTime && mParams->trackGpuTime)
     {
         // No need flush here since swap already performs it implicitly and we already call flush
         // in case of the offscreen test.

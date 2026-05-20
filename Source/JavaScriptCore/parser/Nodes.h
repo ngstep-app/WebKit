@@ -333,7 +333,7 @@ namespace JSC {
 
     private:
         bool isNumber() const final { return true; }
-        JSValue jsValue(BytecodeGenerator&) const override { return jsNumber(m_value); }
+        JSValue jsValue(BytecodeGenerator&) const override;
 
         double m_value;
     };
@@ -634,7 +634,7 @@ namespace JSC {
 
     class ImportNode final : public ExpressionNode, public ThrowableExpressionData {
     public:
-        ImportNode(const JSTokenLocation&, ExpressionNode*, ExpressionNode*);
+        ImportNode(const JSTokenLocation&, ExpressionNode*, ExpressionNode*, bool deferred);
 
     private:
         bool isImportNode() const final { return true; }
@@ -642,6 +642,7 @@ namespace JSC {
 
         ExpressionNode* m_expr;
         ExpressionNode* m_option;
+        bool m_deferred;
     };
 
     class MetaPropertyNode : public ExpressionNode {
@@ -1482,6 +1483,7 @@ namespace JSC {
 
     private:
         RegisterID* emitBytecode(BytecodeGenerator&, RegisterID* = nullptr) final;
+        void emitBytecodeInConditionContext(BytecodeGenerator&, Label& trueTarget, Label& falseTarget, FallThroughMode) final;
 
         bool isOptionalChain() const final { return true; }
 
@@ -1644,6 +1646,7 @@ namespace JSC {
     private:
         bool isCommaNode() const final { return true; }
         RegisterID* emitBytecode(BytecodeGenerator&, RegisterID* = nullptr) final;
+        void emitBytecodeInConditionContext(BytecodeGenerator&, Label& trueTarget, Label& falseTarget, FallThroughMode) final;
 
         ExpressionNode* m_expr;
         CommaNode* m_next { nullptr };
@@ -2001,6 +2004,8 @@ namespace JSC {
         }
 
         StatementNode* singleStatement() const;
+
+        bool isEmptyBody() const { return !m_statements; }
 
         bool hasCompletionValue() const override;
         bool hasEarlyBreakOrContinue() const override;

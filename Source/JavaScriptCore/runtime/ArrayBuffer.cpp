@@ -27,15 +27,15 @@
 #include "ArrayBuffer.h"
 
 #include "JSArrayBufferView.h"
+#include "JSArrayBufferViewInlines.h"
 #include "JSCellInlines.h"
 #include "JSWebAssemblyInstance.h"
 #include "WaiterListManager.h"
 #include "WeakInlines.h"
-#include <wtf/Gigacage.h>
+#include <wtf/FastMalloc.h>
 #include <wtf/MathExtras.h>
 #include <wtf/OSAllocator.h>
 #include <wtf/PageBlock.h>
-#include <wtf/SafeStrerror.h>
 
 #if ENABLE(WEBASSEMBLY)
 #include "WasmMemory.h"
@@ -138,6 +138,50 @@ static RefPtr<BufferMemoryHandle> tryAllocateResizableMemory(VM* vm, size_t size
     constexpr bool writable = false;
     OSAllocator::protect(slowMemory + initialBytes, maximumBytes - initialBytes, readable, writable);
     return adoptRef(*new BufferMemoryHandle(slowMemory, initialBytes, maximumBytes, PageCount::fromBytes(initialBytes), PageCount::fromBytes(maximumBytes), MemorySharingMode::Shared, MemoryMode::BoundsChecking));
+}
+
+ArrayBufferContents::ArrayBufferContents(void* data, size_t sizeInBytes, std::optional<size_t> maxByteLength, ArrayBufferDestructorFunction&& destructor)
+    : m_data(data)
+    , m_destructor(WTF::move(destructor))
+    , m_sizeInBytes(sizeInBytes)
+    , m_maxByteLength(maxByteLength.value_or(sizeInBytes))
+    , m_hasMaxByteLength(!!maxByteLength)
+{
+    RELEASE_ASSERT(m_sizeInBytes <= MAX_ARRAY_BUFFER_SIZE);
+}
+
+ArrayBufferContents::ArrayBufferContents(std::span<const uint8_t> data, std::optional<size_t> maxByteLength, ArrayBufferDestructorFunction&& destructor)
+    : ArrayBufferContents(const_cast<uint8_t*>(data.data()), data.size(), maxByteLength, WTF::move(destructor))
+{
+}
+
+ArrayBufferContents::ArrayBufferContents(Ref<SharedArrayBufferContents>&& shared, bool forceFixedLengthIfWasm)
+    : m_shared(WTF::move(shared))
+    , m_memoryHandle(m_shared->memoryHandle())
+    , m_sizeInBytes(m_shared->sizeInBytes(std::memory_order_seq_cst))
+{
+    RELEASE_ASSERT(m_sizeInBytes <= MAX_ARRAY_BUFFER_SIZE);
+    bool adjustedForceFixedLengthIfWasm = forceFixedLengthIfWasm || !Options::useWasmMemoryToBufferAPIs();
+    if (m_shared->mode() == SharedArrayBufferContents::Mode::WebAssembly && adjustedForceFixedLengthIfWasm) {
+        m_hasMaxByteLength = false;
+        m_maxByteLength = m_sizeInBytes;
+    } else {
+        m_hasMaxByteLength = !!m_shared->maxByteLength();
+        m_maxByteLength = m_shared->maxByteLength().value_or(m_sizeInBytes);
+    }
+    // data() cannot destroy m_shared here so the code is safe as is so avoid
+    // refing for performance reasons.
+    SUPPRESS_UNCOUNTED_ARG m_data = DataType { m_shared->data() };
+}
+
+ArrayBufferContents::ArrayBufferContents(void* data, size_t sizeInBytes, size_t maxByteLength, Ref<BufferMemoryHandle>&& memoryHandle)
+    : m_data(data)
+    , m_memoryHandle(WTF::move(memoryHandle))
+    , m_sizeInBytes(sizeInBytes)
+    , m_maxByteLength(maxByteLength)
+    , m_hasMaxByteLength(true)
+{
+    RELEASE_ASSERT(m_sizeInBytes <= MAX_ARRAY_BUFFER_SIZE);
 }
 
 void ArrayBufferContents::tryAllocate(size_t numElements, unsigned elementByteSize, InitializationPolicy policy)
@@ -415,7 +459,20 @@ void ArrayBuffer::setAssociatedWasmMemory(Wasm::Memory* memory)
 void ArrayBuffer::refreshAfterWasmMemoryGrow(Wasm::Memory* memory)
 {
     ASSERT(isWasmMemory());
+
+    void* oldData = m_contents.data();
     m_contents.refreshAfterWasmMemoryGrow(memory);
+    void* newData = m_contents.data();
+    if (newData == oldData)
+        return;
+
+    // JSArrayBufferViews (typed arrays) effectively cache their buffer's data pointer.
+    for (size_t i = numberOfIncomingReferences(); i--;) {
+        JSCell* cell = incomingReferenceAt(i);
+        auto* view = dynamicDowncast<JSArrayBufferView>(cell);
+        if (view)
+            view->refreshVector(newData);
+    }
 }
 
 void ArrayBuffer::setSharingMode(ArrayBufferSharingMode newSharingMode)
@@ -476,7 +533,7 @@ void ArrayBuffer::notifyDetaching(VM& vm)
 {
     for (size_t i = numberOfIncomingReferences(); i--;) {
         JSCell* cell = incomingReferenceAt(i);
-        if (JSArrayBufferView* view = jsDynamicCast<JSArrayBufferView*>(cell))
+        if (JSArrayBufferView* view = dynamicDowncast<JSArrayBufferView>(cell))
             view->detachFromArrayBuffer();
     }
     m_detachingWatchpointSet.fireAll(vm, "Array buffer was detached");
@@ -720,6 +777,7 @@ void ArrayBufferContents::refreshAfterWasmMemoryGrow(Wasm::Memory* memory)
     ASSERT(isResizableNonShared());
     // If the memory is BoundChecking, the memory's handle is replaced with a different one when it grows.
     m_memoryHandle = memory->handle();
+    m_data = memory->basePointer();
     m_sizeInBytes = m_memoryHandle->size();
 #else
     UNUSED_PARAM(memory);

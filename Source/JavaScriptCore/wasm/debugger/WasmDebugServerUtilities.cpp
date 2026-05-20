@@ -176,15 +176,6 @@ bool getWasmReturnPC(CallFrame* currentFrame, uint8_t*& returnPC, VirtualAddress
     return true;
 }
 
-// This is the C++ equivalent of the "# Recompute PL" block in InPlaceInterpreter.asm.
-IPInt::IPIntLocal* localsFromFrame(CallFrame* callFrame, const IPIntCallee* callee)
-{
-    // IPIntCalleeSaveSpaceStackAligned is defined in InPlaceInterpreter.asm.
-    static constexpr size_t ipintCalleeSaveSpaceStackAligned = WTF::roundUpToMultipleOf<stackAlignmentBytes()>((Wasm::numberOfIPIntCalleeSaveRegisters + Wasm::numberOfIPIntInternalRegisters) * sizeof(Register));
-    size_t localsAndRethrowSize = (callee->localSizeToAlloc() + callee->rethrowSlots()) * IPInt::LOCAL_SIZE;
-    auto pl = reinterpret_cast<uintptr_t>(callFrame) - ipintCalleeSaveSpaceStackAligned - localsAndRethrowSize;
-    return reinterpret_cast<IPInt::IPIntLocal*>(pl);
-}
 
 // Walk the full CallFrame chain from a WASM breakpoint, collecting virtual addresses for
 // every WASM and JS frame. The result is consumed by qWasmCallStack to give LLDB a
@@ -339,23 +330,19 @@ Vector<FrameInfo> collectCallStack(VirtualAddress stopAddress, CallFrame* startF
     return frames;
 }
 
-StopData::StopData(IPIntCallee* callee, JSWebAssemblyInstance* instance)
-    : code(Code::Stop)
-    , location(Location::Prologue)
-    , address(VirtualAddress::toVirtual(instance, callee->functionIndex(), callee->bytecode()))
+StopData::StopData(IPIntCallee* callee, JSWebAssemblyInstance* instance, CallFrame* callFrame)
+    : address(VirtualAddress::toVirtual(instance, callee->functionIndex(), callee->bytecode()))
     , callee(callee)
     , instance(instance)
+    , callFrame(callFrame)
 {
 }
 
-StopData::StopData(Location location, Code code, VirtualAddress address, uint8_t originalBytecode, uint8_t* pc, uint8_t* mc, IPInt::IPIntLocal* locals, IPInt::IPIntStackEntry* stack, IPIntCallee* callee, JSWebAssemblyInstance* instance, CallFrame* callFrame)
-    : code(code)
-    , location(location)
-    , address(address)
+StopData::StopData(VirtualAddress address, uint8_t originalBytecode, uint8_t* pc, uint8_t* mc, IPInt::IPIntStackEntry* stack, IPIntCallee* callee, JSWebAssemblyInstance* instance, CallFrame* callFrame)
+    : address(address)
     , originalBytecode(originalBytecode)
     , pc(pc)
     , mc(mc)
-    , locals(locals)
     , stack(stack)
     , callee(callee)
     , instance(instance)
@@ -363,41 +350,20 @@ StopData::StopData(Location location, Code code, VirtualAddress address, uint8_t
 {
 }
 
-static StopData::Code codeForBreakpointType(Breakpoint::Type type)
+StopData::StopData(IPIntCallee* callee, JSWebAssemblyInstance* instance, CallFrame* callFrame, uint8_t* pc, uint8_t* mc, IPInt::IPIntStackEntry* stack, Wasm::ExceptionType type)
+    : StopData(VirtualAddress::toVirtual(instance, callee->functionIndex(), pc), 0, pc, mc, stack, callee, instance, callFrame)
 {
-    switch (type) {
-    case Breakpoint::Type::Interrupt:
-        return StopData::Code::Stop;
-    case Breakpoint::Type::Step:
-        return StopData::Code::Trace;
-    case Breakpoint::Type::Regular:
-        return StopData::Code::Breakpoint;
-    default:
-        return StopData::Code::Unknown;
-    }
-}
-
-StopData::StopData(Breakpoint::Type type, VirtualAddress address, uint8_t originalBytecode, uint8_t* pc, uint8_t* mc, IPInt::IPIntLocal* locals, IPInt::IPIntStackEntry* stack, IPIntCallee* callee, JSWebAssemblyInstance* instance, CallFrame* callFrame)
-    : StopData(Location::Breakpoint, codeForBreakpointType(type), address, originalBytecode, pc, mc, locals, stack, callee, instance, callFrame)
-{
-}
-
-StopData::StopData(IPIntCallee* callee, JSWebAssemblyInstance* instance, CallFrame* callFrame, uint8_t* pc, uint8_t* mc, IPInt::IPIntLocal* locals, IPInt::IPIntStackEntry* stack)
-    : StopData(Location::Trap, Code::Trap, VirtualAddress::toVirtual(instance, callee->functionIndex(), pc), 0, pc, mc, locals, stack, callee, instance, callFrame)
-{
+    wasmTrapType = type;
 }
 
 StopData::~StopData() = default;
 
 void StopData::dump(PrintStream& out) const
 {
-    out.print("StopData(Code:", code);
-    out.print(", location:", location);
-    out.print(", address:", address);
+    out.print("StopData(address:", address);
     out.print(", originalBytecode:", originalBytecode);
     out.print(", pc:", RawPointer(pc));
     out.print(", mc:", RawPointer(mc));
-    out.print(", locals:", RawPointer(locals));
     out.print(", stack:", RawPointer(stack));
     out.print(", callee:", RawPointer(callee.get()));
     out.print(", instance:", RawPointer(instance));

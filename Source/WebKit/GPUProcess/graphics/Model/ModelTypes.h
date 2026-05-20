@@ -36,6 +36,7 @@
 #include <WebKit/Float4x4.h>
 #include <wtf/ExportMacros.h>
 #include <wtf/RetainPtr.h>
+#include <wtf/UUID.h>
 #include <wtf/UniqueRef.h>
 #include <wtf/Vector.h>
 #include <wtf/text/WTFString.h>
@@ -207,9 +208,9 @@ typedef NS_ENUM(NSInteger, WKBridgeDataType) {
     WKBridgeDataTypeInt3,
     WKBridgeDataTypeInt4,
     WKBridgeDataTypeFloat,
-    WKBridgeDataTypeColor3f,
+    WKBridgeDataTypeCgColor3,
+    WKBridgeDataTypeCgColor4,
     WKBridgeDataTypeColor3h,
-    WKBridgeDataTypeColor4f,
     WKBridgeDataTypeColor4h,
     WKBridgeDataTypeFloat2,
     WKBridgeDataTypeFloat3,
@@ -239,12 +240,11 @@ typedef NS_ENUM(NSInteger, WKBridgeDataType) {
 
 @property (nonatomic, readonly) WKBridgeDataType type;
 @property (nonatomic, readonly) NSString *name;
-@property (nonatomic, readonly) WKBridgeDataType semanticType;
-@property (nonatomic, readonly) BOOL hasSemanticType;
+@property (nonatomic, readonly, nullable) NSString *semanticTypeName;
 @property (nonatomic, readonly, nullable) WKBridgeConstantContainer *defaultValue;
 
 - (instancetype)init NS_UNAVAILABLE;
-- (instancetype)initWithType:(WKBridgeDataType)dataType name:(NSString *)name semanticType:(WKBridgeDataType)semanticType hasSemanticType:(BOOL)hasSemanticType defaultValue:(nullable WKBridgeConstantContainer *)defaultValue NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithType:(WKBridgeDataType)dataType name:(NSString *)name semanticTypeName:(nullable NSString *)semanticTypeName defaultValue:(nullable WKBridgeConstantContainer *)defaultValue NS_DESIGNATED_INITIALIZER;
 
 @end
 
@@ -281,14 +281,19 @@ typedef NS_ENUM(NSInteger, WKBridgeConstant) {
     WKBridgeConstantNormal3h,
     WKBridgeConstantVector3f,
     WKBridgeConstantVector3h,
-    WKBridgeConstantColor3f,
-    WKBridgeConstantColor3h,
-    WKBridgeConstantColor4f,
-    WKBridgeConstantColor4h,
+    WKBridgeConstantCgColor3,
+    WKBridgeConstantCgColor4,
     WKBridgeConstantTexCoord2h,
     WKBridgeConstantTexCoord2f,
     WKBridgeConstantTexCoord3h,
-    WKBridgeConstantTexCoord3f
+    WKBridgeConstantTexCoord3f,
+
+    // USD/MaterialX native color types encoded as float components (not through CGColor).
+    // color4f/color4h both encode as 4 floats; color3f/color3h both encode as 3 floats.
+    WKBridgeConstantColor4f,
+    WKBridgeConstantColor4h,
+    WKBridgeConstantColor3f,
+    WKBridgeConstantColor3h,
 };
 
 typedef NS_ENUM(NSInteger, WKBridgeNodeType) {
@@ -345,22 +350,52 @@ typedef NS_ENUM(NSInteger, WKBridgeNodeType) {
 NS_SWIFT_SENDABLE
 @interface WKBridgeMaterialGraph : NSObject
 
+@property (nonatomic, strong, readonly) NSString *graphName;
 @property (nonatomic, strong, readonly) NSArray<WKBridgeNode *> *nodes;
 @property (nonatomic, strong, readonly) NSArray<WKBridgeEdge *> *edges;
 @property (nonatomic, strong, readonly) WKBridgeNode *arguments;
 @property (nonatomic, strong, readonly) WKBridgeNode *results;
 @property (nonatomic, strong, readonly) NSArray<WKBridgeInputOutput *> *inputs;
 @property (nonatomic, strong, readonly) NSArray<WKBridgeInputOutput *> *outputs;
+@property (nonatomic, strong, readonly) NSArray<NSString *> *primvarMappingPrimvarNames;
+@property (nonatomic, strong, readonly) NSArray<NSString *> *primvarMappingTexcoordNames;
+@property (nonatomic, strong, readonly) NSArray<NSString *> *functionConstantInputNames;
 
 - (instancetype)init NS_UNAVAILABLE;
-- (instancetype)initWithNodes:(NSArray<WKBridgeNode *> *)nodes edges:(NSArray<WKBridgeEdge *> *)edges arguments:(WKBridgeNode *)arguments results:(WKBridgeNode *)results inputs:(NSArray<WKBridgeInputOutput *> *)inputs outputs:(NSArray<WKBridgeInputOutput *> *)outputs NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithGraphName:(NSString *)graphName nodes:(NSArray<WKBridgeNode *> *)nodes edges:(NSArray<WKBridgeEdge *> *)edges arguments:(WKBridgeNode *)arguments results:(WKBridgeNode *)results inputs:(NSArray<WKBridgeInputOutput *> *)inputs outputs:(NSArray<WKBridgeInputOutput *> *)outputs primvarMappingPrimvarNames:(NSArray<NSString *> *)primvarMappingPrimvarNames primvarMappingTexcoordNames:(NSArray<NSString *> *)primvarMappingTexcoordNames functionConstantInputNames:(NSArray<NSString *> *)functionConstantInputNames NS_DESIGNATED_INITIALIZER;
+
+@end
+
+NS_SWIFT_SENDABLE
+@interface WKBridgeTypedResourceId : NSObject
+
+@property (nonatomic, readonly) NSString *value;
+@property (nonatomic, readonly) NSString *path;
+@property (nonatomic, readonly) NSInteger cachedHashValue;
+
+- (instancetype)init NS_UNAVAILABLE;
+- (instancetype)initWithValue:(NSUUID *)value path:(NSString *)path hashValue:(NSInteger)hashValue NS_DESIGNATED_INITIALIZER;
+
+@end
+
+NS_SWIFT_SENDABLE
+@interface WKBridgeRemovals : NSObject
+
+@property (nonatomic, readonly) NSArray<WKBridgeTypedResourceId *> *meshRemovals;
+@property (nonatomic, readonly) NSArray<WKBridgeTypedResourceId *> *materialRemovals;
+@property (nonatomic, readonly) NSArray<WKBridgeTypedResourceId *> *textureRemovals;
+
+- (instancetype)init NS_UNAVAILABLE;
+- (instancetype)initWithMeshRemovals:(NSArray<WKBridgeTypedResourceId *> *)meshRemovals materialRemovals:(NSArray<WKBridgeTypedResourceId *> *)materialRemovals textureRemovals:(NSArray<WKBridgeTypedResourceId *> *)textureRemovals NS_DESIGNATED_INITIALIZER;
+
+- (BOOL)isEmpty;
 
 @end
 
 NS_SWIFT_SENDABLE
 @interface WKBridgeUpdateMesh : NSObject
 
-@property (nonatomic, readonly) NSString *identifier;
+@property (nonatomic, readonly) WKBridgeTypedResourceId *identifier;
 @property (nonatomic, readonly) WKBridgeDataUpdateType updateType;
 @property (nonatomic, strong, readonly, nullable) WKBridgeMeshDescriptor *descriptor;
 @property (nonatomic, strong, readonly) NSArray<WKBridgeMeshPart*> *parts;
@@ -368,11 +403,11 @@ NS_SWIFT_SENDABLE
 @property (nonatomic, strong, readonly) NSArray<NSData *> *vertexData;
 @property (nonatomic, strong, readonly, nullable) NSData *instanceTransformsData;
 @property (nonatomic, readonly) long instanceTransformsCount;
-@property (nonatomic, strong, readonly) NSArray<NSString *> *materialPrims;
+@property (nonatomic, strong, readonly) NSArray<WKBridgeTypedResourceId *> *assignedMaterials;
 @property (nonatomic, strong, readonly, nullable) WKBridgeDeformationData *deformationData;
 
 - (instancetype)init NS_UNAVAILABLE;
-- (instancetype)initWithIdentifier:(NSString *)identifier
+- (instancetype)initWithIdentifier:(WKBridgeTypedResourceId *)identifier
     updateType:(WKBridgeDataUpdateType)updateType
     descriptor:(nullable WKBridgeMeshDescriptor *)descriptor
     parts:(NSArray<WKBridgeMeshPart*> *)parts
@@ -380,7 +415,7 @@ NS_SWIFT_SENDABLE
     vertexData:(NSArray<NSData *> *)vertexData
     instanceTransforms:(nullable NSData *)instanceTransforms
     instanceTransformsCount:(long)instanceTransformsCount
-    materialPrims:(NSArray<NSString *> *)materialPrims
+    assignedMaterials:(NSArray<WKBridgeTypedResourceId *> *)assignedMaterials
     deformationData:(nullable WKBridgeDeformationData *)deformationData NS_DESIGNATED_INITIALIZER;
 
 @end
@@ -389,10 +424,10 @@ NS_SWIFT_SENDABLE
 @interface WKBridgeUpdateMaterial : NSObject
 
 @property (nonatomic, strong, readonly, nullable) WKBridgeMaterialGraph *materialGraph;
-@property (nonatomic, strong, readonly) NSString *identifier;
+@property (nonatomic, strong, readonly) WKBridgeTypedResourceId *identifier;
 
 - (instancetype)init NS_UNAVAILABLE;
-- (instancetype)initWithMaterialGraph:(nullable WKBridgeMaterialGraph *)materialGraph identifier:(NSString *)identifier NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithMaterialGraph:(nullable WKBridgeMaterialGraph *)materialGraph identifier:(WKBridgeTypedResourceId *)identifier NS_DESIGNATED_INITIALIZER;
 
 @end
 
@@ -402,7 +437,6 @@ NS_SWIFT_SENDABLE
 @property (nonatomic, readonly) long width;
 @property (nonatomic, readonly) long height;
 @property (nonatomic, readonly) long depth;
-@property (nonatomic, readonly) long bytesPerPixel;
 @property (nonatomic, readonly) MTLTextureType textureType;
 @property (nonatomic, readonly) MTLPixelFormat pixelFormat;
 @property (nonatomic, readonly) long mipmapLevelCount;
@@ -411,18 +445,30 @@ NS_SWIFT_SENDABLE
 @property (nonatomic, readonly) MTLTextureSwizzleChannels swizzle;
 
 - (instancetype)init NS_UNAVAILABLE;
-- (instancetype)initWithData:(nullable NSData *)data width:(long)width height:(long)height depth:(long)depth bytesPerPixel:(long)bytesPerPixel textureType:(MTLTextureType)textureType pixelFormat:(MTLPixelFormat)pixelFormat mipmapLevelCount:(long)mipmapLevelCount arrayLength:(long)arrayLength textureUsage:(MTLTextureUsage)textureUsage swizzle:(MTLTextureSwizzleChannels)swizzle NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithData:(nullable NSData *)data width:(long)width height:(long)height depth:(long)depth textureType:(MTLTextureType)textureType pixelFormat:(MTLPixelFormat)pixelFormat mipmapLevelCount:(long)mipmapLevelCount arrayLength:(long)arrayLength textureUsage:(MTLTextureUsage)textureUsage swizzle:(MTLTextureSwizzleChannels)swizzle NS_DESIGNATED_INITIALIZER;
+
+@end
+
+@interface WKBridgeTextureLevelInfo : NSObject
+
+@property (nonatomic, readonly) long dataOffset;
+@property (nonatomic, readonly) long byteCountPerRow;
+@property (nonatomic, readonly) long byteCountPerImage;
+
+- (instancetype)init NS_UNAVAILABLE;
+- (instancetype)initWithDataOffset:(long)dataOffset byteCountPerRow:(long)byteCountPerRow byteCountPerImage:(long)byteCountPerImage NS_DESIGNATED_INITIALIZER;
 
 @end
 
 @interface WKBridgeUpdateTexture : NSObject
 
-@property (nonatomic, readonly, strong, nullable) WKBridgeImageAsset *imageAsset;
-@property (nonatomic, readonly, strong) NSString *identifier;
+@property (nonatomic, readonly, strong) WKBridgeImageAsset *imageAsset;
+@property (nonatomic, readonly, strong) WKBridgeTypedResourceId *identifier;
 @property (nonatomic, readonly, strong) NSString *hashString;
+@property (nonatomic, readonly, strong) NSArray<WKBridgeTextureLevelInfo *> *layout;
 
 - (instancetype)init NS_UNAVAILABLE;
-- (instancetype)initWithImageAsset:(nullable WKBridgeImageAsset *)imageAsset identifier:(NSString *)identifier hashString:(NSString *)hashString NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithImageAsset:(WKBridgeImageAsset *)imageAsset identifier:(WKBridgeTypedResourceId *)identifier hashString:(NSString *)hashString layout:(NSArray<WKBridgeTextureLevelInfo *> *)layout NS_DESIGNATED_INITIALIZER;
 
 @end
 
@@ -437,15 +483,17 @@ NS_SWIFT_SENDABLE
 
 @interface WKBridgeReceiver : NSObject
 
-- (void)renderWithTexture:(id<MTLTexture>)texture;
-- (void)updateMesh:(WKBridgeUpdateMesh *)descriptor completionHandler:(void (^)(void))completionHandler;
-- (void)updateTexture:(WKBridgeUpdateTexture *)descriptor;
-- (void)updateMaterial:(WKBridgeUpdateMaterial *)descriptor completionHandler:(void (^)(void))completionHandler;
+- (nullable id<MTLCommandBuffer>)commandBuffer;
+- (void)renderWithTexture:(id<MTLTexture>)texture commandBuffer:(id<MTLCommandBuffer>)commandBuffer;
+- (void)updateMesh:(NSArray<WKBridgeUpdateMesh *> *)descriptor completionHandler:(void (^)(void))completionHandler;
+- (void)updateTexture:(NSArray<WKBridgeUpdateTexture *> *)descriptor;
+- (void)updateMaterial:(NSArray<WKBridgeUpdateMaterial *> *)descriptor completionHandler:(void (^)(void))completionHandler;
+- (BOOL)processRemovals:(NSArray<WKBridgeTypedResourceId *> *)meshRemovals materialRemovals:(NSArray<WKBridgeTypedResourceId *> *)materialRemovals  textureRemovals:(NSArray<WKBridgeTypedResourceId *> *)textureRemovals;
 - (void)setTransform:(simd_float4x4)transform;
 - (void)setFOV:(float)fovY;
 - (void)setBackgroundColor:(simd_float3)color;
 - (void)setPlaying:(BOOL)play;
-- (void)setEnvironmentMap:(WKBridgeImageAsset *)imageAsset;
+- (void)setEnvironmentMap:(WKBridgeUpdateTexture *)imageAsset;
 
 - (instancetype)init NS_UNAVAILABLE;
 - (nullable instancetype)initWithConfiguration:(WKBridgeUSDConfiguration *)configuration diffuseAsset:(WKBridgeImageAsset *)diffuseAsset specularAsset:(WKBridgeImageAsset *)specularAsset error:(NSError **)error NS_DESIGNATED_INITIALIZER;
@@ -454,17 +502,19 @@ NS_SWIFT_SENDABLE
 
 @interface WKBridgeModelLoader : NSObject
 
-- (instancetype)init NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+- (instancetype)initWithGPUFamily:(MTLGPUFamily)family NS_DESIGNATED_INITIALIZER;
 
 - (double)currentTime;
 - (void)setCurrentTime:(double)newTime;
 - (double)duration;
 - (void)loadModelFrom:(NSURL *)url;
 - (void)loadModel:(NSData *)data;
+- (nullable WKBridgeUpdateTexture *)loadEnvironmentMap:(NSData *)data;
 - (void)update:(double)deltaTime;
 - (void)setLoop:(BOOL)loop;
 - (void)requestCompleted:(NSObject *)request;
-- (void)setCallbacksWithModelUpdatedCallback:(void (^)(WKBridgeUpdateMesh *))modelUpdatedCallback textureUpdatedCallback:(void (^)(WKBridgeUpdateTexture *))textureUpdatedCallback materialUpdatedCallback:(void (^)(WKBridgeUpdateMaterial *))materialUpdatedCallback;
+- (void)setCallbacksWithModelUpdatedCallback:(void (^)(NSArray<WKBridgeUpdateMesh *> *))modelUpdatedCallback textureUpdatedCallback:(void (^)(NSArray<WKBridgeUpdateTexture *> *))textureUpdatedCallback materialUpdatedCallback:(void (^)(NSArray<WKBridgeUpdateMaterial *> *))materialUpdatedCallback processRemovalsCallback:(void (^)(WKBridgeRemovals *))processRemovalsCallback;
 
 @end
 
@@ -495,7 +545,6 @@ struct ImageAsset {
     long width { 0 };
     long height { 0 };
     long depth { 0 };
-    long bytesPerPixel { 0 };
     WebCore::WebGPU::TextureViewDimension textureType { WebCore::WebGPU::TextureViewDimension::_2d };
     WebCore::WebGPU::TextureFormat pixelFormat { WebCore::WebGPU::TextureFormat::R8unorm };
     long mipmapLevelCount { 0 };
@@ -662,7 +711,7 @@ struct ConstantContainer {
 struct InputOutput {
     DataType type;
     String name;
-    std::optional<DataType> semanticType;
+    std::optional<String> semanticTypeName;
     std::optional<ConstantContainer> defaultValue;
 };
 
@@ -678,23 +727,40 @@ struct Node {
 };
 
 struct MaterialGraph {
+    String graphName;
     Vector<Node> nodes;
     Vector<Edge> edges;
     Node arguments;
     Node results;
     Vector<InputOutput> inputs;
     Vector<InputOutput> outputs;
+    Vector<String> primvarMappingPrimvarNames;
+    Vector<String> primvarMappingTexcoordNames;
+    Vector<String> functionConstantInputNames;
+};
+
+struct TypedResourceId {
+    String value;
+    String path;
+    int64_t hashValue;
 };
 
 struct UpdateMaterialDescriptor {
     MaterialGraph materialGraph;
-    String identifier;
+    TypedResourceId identifier;
+};
+
+struct TextureLevelInfo {
+    long dataOffset;
+    long byteCountPerRow;
+    long byteCountPerImage;
 };
 
 struct UpdateTextureDescriptor {
     ImageAsset imageAsset;
-    String identifier;
+    TypedResourceId identifier;
     String hashString;
+    Vector<TextureLevelInfo> layout;
 };
 
 struct SkinningData {
@@ -725,7 +791,7 @@ struct DeformationData {
 };
 
 struct UpdateMeshDescriptor {
-    String identifier;
+    TypedResourceId identifier;
     uint8_t updateType;
     MeshDescriptor descriptor;
     Vector<MeshPart> parts;
@@ -733,7 +799,7 @@ struct UpdateMeshDescriptor {
     Vector<Vector<uint8_t>> vertexData;
     Float4x4 transform;
     Vector<Float4x4> instanceTransforms;
-    Vector<String> materialPrims;
+    Vector<TypedResourceId> assignedMaterials;
     std::optional<DeformationData> deformationData;
 };
 

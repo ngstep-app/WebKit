@@ -39,6 +39,7 @@
 #include "LocalizedStrings.h"
 #include "MouseEvent.h"
 #include "NodeDocument.h"
+#include "PlatformRenderTheme.h"
 #include "Quirks.h"
 #include "RenderSearchField.h"
 #include "RenderStyle+SettersInlines.h"
@@ -91,14 +92,6 @@ static inline bool NODELETE isStrongPasswordTextField(const Element* element)
     return inputElement && inputElement->hasAutofillStrongPasswordButton();
 }
 
-#if ENABLE(FORM_CONTROL_REFRESH)
-static inline bool isNumberInput(const Element* element)
-{
-    RefPtr inputElement = dynamicDowncast<HTMLInputElement>(element);
-    return inputElement && inputElement->isNumberField();
-}
-#endif
-
 std::optional<Style::UnadjustedStyle> TextControlInnerContainer::resolveCustomStyle(const Style::ResolutionContext& resolutionContext, const RenderStyle* shadowHostStyle)
 {
     RefPtr shadowHost = this->shadowHost();
@@ -140,7 +133,7 @@ std::optional<Style::UnadjustedStyle> TextControlInnerElement::resolveCustomStyl
     // We don't want the shadow DOM to be editable, so we set this block to read-only in case the input itself is editable.
     newStyle->setUserModify(UserModify::ReadOnly);
 
-    if (isStrongPasswordTextField(protect(shadowHost()))) {
+    if (isStrongPasswordTextField(shadowHost())) {
         newStyle->setFlexShrink(0);
         newStyle->setTextOverflow(TextOverflow::Clip);
         newStyle->setOverflowX(Overflow::Hidden);

@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 1999 Antti Koivisto (koivisto@kde.org)
- * Copyright (C) 2004-2025 Apple Inc. All rights reserved.
+ * Copyright (C) 2004-2026 Apple Inc. All rights reserved.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -25,7 +25,7 @@
 #include "CSSAnimation.h"
 #include "CSSCustomPropertyValue.h"
 #include "CSSKeyframeRule.h"
-#include "CSSPrimitiveValue.h"
+#include "CSSKeywordValue.h"
 #include "CSSPropertyNames.h"
 #include "CSSValue.h"
 #include "CompositeOperation.h"
@@ -290,6 +290,15 @@ bool BlendingKeyframes::usesViewportUnits() const
     return false;
 }
 
+bool BlendingKeyframes::usesTreeCountingFunctions() const
+{
+    for (auto& keyframe : m_keyframes) {
+        if (keyframe.style()->useTreeCountingFunctions())
+            return true;
+    }
+    return false;
+}
+
 void BlendingKeyframes::addProperty(const AnimatableCSSProperty& property)
 {
     ASSERT(!std::holds_alternative<CSSPropertyID>(property) || std::get<CSSPropertyID>(property) != CSSPropertyCustom);
@@ -326,9 +335,9 @@ void BlendingKeyframes::updatePropertiesMetadata(const StyleProperties& properti
         if (!m_containsSubstitutionFunctions && cssValue->hasSubstitutionFunctions())
             m_containsSubstitutionFunctions = true;
 
-        if (RefPtr primitiveValue = dynamicDowncast<CSSPrimitiveValue>(cssValue)) {
+        if (RefPtr keywordValue = dynamicDowncast<CSSKeywordValue>(cssValue)) {
             auto propertyID = propertyReference.id();
-            auto valueId = primitiveValue->valueID();
+            auto valueId = keywordValue->valueID();
 
             // FIXME: All these should search inside complex values or be set during style resolution
             if (valueId == CSSValueInherit)
@@ -337,6 +346,8 @@ void BlendingKeyframes::updatePropertiesMetadata(const StyleProperties& properti
                 m_propertiesSetToCurrentColor.add(propertyID);
             else if (!m_usesRelativeFontWeight && propertyID == CSSPropertyFontWeight && (valueId == CSSValueBolder || valueId == CSSValueLighter))
                 m_usesRelativeFontWeight = true;
+        } else if (RefPtr primitiveValue = dynamicDowncast<CSSPrimitiveValue>(cssValue)) {
+            auto propertyID = propertyReference.id();
 
             if (Style::AnchorPositionEvaluator::propertyAllowsAnchorFunction(propertyID) || Style::AnchorPositionEvaluator::propertyAllowsAnchorSizeFunction(propertyID)) {
                 auto dependencies = cssValue->computedStyleDependencies();
@@ -403,12 +414,18 @@ void BlendingKeyframes::analyzeKeyframe(const BlendingKeyframe& keyframe)
             m_hasPropertiesWithRevertRuleOrLayer = true;
     };
 
+    auto analyzeOffsetDistance = [&] {
+        if (!m_animatesOffsetDistanceToPercentOrCalculated && keyframe.animatesProperty(CSSPropertyOffsetDistance))
+            m_animatesOffsetDistanceToPercentOrCalculated = style->offsetDistance().isPercentOrCalculated();
+    };
+
     analyzeSizeDependentTransform();
     analyzeDiscreteTransformInterval();
     analyzeExplicitlyInheritedKeyframeProperty();
     analyzeKeyframeForExplicitProperties();
     analyzeKeyframeRangeOffset();
     analyzeCSSWideKeywords();
+    analyzeOffsetDistance();
 }
 
 void BlendingKeyframes::updatedComputedOffsets(NOESCAPE const Function<double(const BlendingKeyframe::Offset&)>& callback)

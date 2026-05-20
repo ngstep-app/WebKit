@@ -45,7 +45,7 @@ public:
     virtual ~OpenXRLayer();
 
     virtual std::optional<PlatformXR::FrameData::LayerData> startFrame() = 0;
-    virtual XrCompositionLayerBaseHeader* endFrame(const PlatformXR::DeviceLayer&, XrSpace, const Vector<XrView>&) = 0;
+    virtual Vector<XrCompositionLayerBaseHeader*> endFrame(const PlatformXR::DeviceLayer&, XrSpace, const Vector<XrView>&) = 0;
 
 #if USE(GBM)
     void setGBMDevice(RefPtr<WebCore::GBMDevice>);
@@ -91,12 +91,78 @@ public:
 private:
     explicit OpenXRLayerProjection(UniqueRef<OpenXRSwapchain>&&);
 
-    std::optional<PlatformXR::FrameData::LayerData> startFrame() final;
-    XrCompositionLayerBaseHeader* endFrame(const PlatformXR::DeviceLayer&, XrSpace, const Vector<XrView>&) final;
+    std::optional<PlatformXR::FrameData::LayerData> startFrame() override;
+    Vector<XrCompositionLayerBaseHeader*> endFrame(const PlatformXR::DeviceLayer&, XrSpace, const Vector<XrView>&) override;
 
     XrCompositionLayerProjection m_layerProjection;
     Vector<XrCompositionLayerProjectionView> m_projectionViews;
 };
+
+#if ENABLE(WEBXR_LAYERS)
+
+class OpenXRCompositionLayer : public OpenXRLayer {
+    WTF_MAKE_TZONE_ALLOCATED(OpenXRCompositionLayer);
+    WTF_MAKE_NONCOPYABLE(OpenXRCompositionLayer);
+public:
+    std::optional<PlatformXR::FrameData::LayerData> startFrame() = 0;
+    Vector<XrCompositionLayerBaseHeader*> endFrame(const PlatformXR::DeviceLayer&, XrSpace, const Vector<XrView>&) = 0;
+
+protected:
+    OpenXRCompositionLayer(UniqueRef<OpenXRSwapchain>&&, PlatformXR::LayerLayout);
+
+    PlatformXR::LayerLayout m_layout;
+};
+
+class OpenXRQuadLayer final : public OpenXRCompositionLayer {
+    WTF_MAKE_TZONE_ALLOCATED(OpenXRQuadLayer);
+    WTF_MAKE_NONCOPYABLE(OpenXRQuadLayer);
+public:
+    static std::unique_ptr<OpenXRQuadLayer> create(std::unique_ptr<OpenXRSwapchain>&&, PlatformXR::LayerLayout);
+
+    std::optional<PlatformXR::FrameData::LayerData> startFrame() override;
+    Vector<XrCompositionLayerBaseHeader*> endFrame(const PlatformXR::DeviceLayer&, XrSpace, const Vector<XrView>&) override;
+
+private:
+    explicit OpenXRQuadLayer(UniqueRef<OpenXRSwapchain>&&, PlatformXR::LayerLayout);
+
+    Vector<XrCompositionLayerQuad> m_layers;
+};
+
+#if defined(XR_KHR_composition_layer_equirect2)
+class OpenXREquirectLayer final : public OpenXRCompositionLayer {
+    WTF_MAKE_TZONE_ALLOCATED(OpenXREquirectLayer);
+    WTF_MAKE_NONCOPYABLE(OpenXREquirectLayer);
+public:
+    static std::unique_ptr<OpenXREquirectLayer> create(std::unique_ptr<OpenXRSwapchain>&&, PlatformXR::LayerLayout);
+
+    std::optional<PlatformXR::FrameData::LayerData> startFrame() override;
+    Vector<XrCompositionLayerBaseHeader*> endFrame(const PlatformXR::DeviceLayer&, XrSpace, const Vector<XrView>&) override;
+
+private:
+    explicit OpenXREquirectLayer(UniqueRef<OpenXRSwapchain>&&, PlatformXR::LayerLayout);
+
+    Vector<XrCompositionLayerEquirect2KHR> m_layers;
+};
+#endif
+
+#if defined(XR_KHR_composition_layer_cylinder)
+class OpenXRCylinderLayer final : public OpenXRCompositionLayer {
+    WTF_MAKE_TZONE_ALLOCATED(OpenXRCylinderLayer);
+    WTF_MAKE_NONCOPYABLE(OpenXRCylinderLayer);
+public:
+    static std::unique_ptr<OpenXRCylinderLayer> create(std::unique_ptr<OpenXRSwapchain>&&, PlatformXR::LayerLayout);
+
+    std::optional<PlatformXR::FrameData::LayerData> startFrame() override;
+    Vector<XrCompositionLayerBaseHeader*> endFrame(const PlatformXR::DeviceLayer&, XrSpace, const Vector<XrView>&) override;
+
+private:
+    explicit OpenXRCylinderLayer(UniqueRef<OpenXRSwapchain>&&, PlatformXR::LayerLayout);
+
+    Vector<XrCompositionLayerCylinderKHR> m_layers;
+};
+#endif
+
+#endif
 
 } // namespace WebKit
 

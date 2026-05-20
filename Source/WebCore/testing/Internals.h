@@ -148,6 +148,7 @@ class TypeConversions;
 class VoidCallback;
 class WebAnimation;
 class WebGLRenderingContext;
+class WebGLRenderingContextBase;
 class WindowProxy;
 class WritableStream;
 class XMLHttpRequest;
@@ -183,7 +184,7 @@ class MockMediaSessionCoordinator;
 #endif
 #endif
 
-#if ENABLE(ARKIT_INLINE_PREVIEW_MAC) || ENABLE(MODEL_ELEMENT)
+#if ENABLE(MODEL_ELEMENT)
 class HTMLModelElement;
 #endif
 
@@ -257,6 +258,7 @@ public:
     enum class ResourceLoadPriority { ResourceLoadPriorityVeryLow, ResourceLoadPriorityLow, ResourceLoadPriorityMedium, ResourceLoadPriorityHigh, ResourceLoadPriorityVeryHigh };
     void NODELETE setOverrideResourceLoadPriority(ResourceLoadPriority);
     void NODELETE setStrictRawResourceValidationPolicyDisabled(bool);
+    void setImmediateRendererDestructionEnabled(bool);
     std::optional<ResourceLoadPriority> getResourcePriority(const String& url);
 
     using FetchObject = Variant<Ref<FetchRequest>, Ref<FetchResponse>>;
@@ -358,6 +360,7 @@ public:
     Node* NODELETE parentTreeScope(Node&);
 
     String visiblePlaceholder(Element&);
+    String anchorPrefetchEagerness(Element&);
     void setCanShowPlaceholder(Element&, bool);
 
     RefPtr<Element> insertTextPlaceholder(int width, int height);
@@ -483,6 +486,8 @@ public:
 
     ExceptionOr<RefPtr<NodeList>> nodesFromRect(Document&, int x, int y, unsigned topPadding, unsigned rightPadding, unsigned bottomPadding, unsigned leftPadding, bool ignoreClipping, bool allowUserAgentShadowContent, bool allowChildFrameContent) const;
 
+    ExceptionOr<RefPtr<Node>> nodeFromPointIncludingChildFrames(Document&, int x, int y) const;
+
     String parserMetaData(JSC::JSValue = JSC::JSValue::JSUndefined);
 
     void updateEditorUINowIfScheduled();
@@ -497,6 +502,8 @@ public:
     }
     bool hasSpellingMarker(int from, int length);
     bool hasGrammarMarker(int from, int length);
+    unsigned appliedGrammarTextEffectCount() const;
+    bool isAlternativeTextUIActive() const;
     bool hasAutocorrectedMarker(int from, int length);
     bool hasDictationAlternativesMarker(int from, int length);
     bool hasCorrectionIndicatorMarker(int from, int length);
@@ -556,6 +563,7 @@ public:
         LAYER_TREE_INCLUDES_EVENT_REGION = 512,
         LAYER_TREE_INCLUDES_EXTENDED_COLOR = 1024,
         LAYER_TREE_INCLUDES_DEVICE_SCALE = 2048,
+        LAYER_TREE_INCLUDES_ROOT_LAYERS = 4096,
     };
     ExceptionOr<String> layerTreeAsText(Document&, unsigned short flags) const;
     ExceptionOr<uint64_t> layerIDForElement(Element&);
@@ -627,6 +635,7 @@ public:
     unsigned NODELETE numberOfLiveDocuments() const;
     unsigned NODELETE referencingNodeCount(const Document&) const;
     ExceptionOr<void> executeOpportunisticallyScheduledTasks() const;
+    ExceptionOr<void> releaseMemoryNow() const;
 
 #if ENABLE(WEB_AUDIO)
     // BaseAudioContext lifetime testing.
@@ -734,6 +743,8 @@ public:
     ExceptionOr<void> startTrackingStyleRecalcs();
     ExceptionOr<unsigned> styleRecalcCount();
     unsigned NODELETE lastStyleUpdateSize() const;
+    unsigned styleInvalidationTraversalCount() const;
+    void resetStyleInvalidationTraversalCount();
 
     ExceptionOr<void> startTrackingLayoutUpdates();
     ExceptionOr<unsigned> layoutUpdateCount();
@@ -814,12 +825,14 @@ public:
     void NODELETE setEnumeratingAllNetworkInterfacesEnabled(bool);
     void stopPeerConnection(RTCPeerConnection&);
     void clearPeerConnectionFactory();
+    void clearWebRTCCodecsConnection();
     void applyRotationForOutgoingVideoSources(RTCPeerConnection&);
     void setWebRTCH265Support(bool);
     void setWebRTCVP9Support(bool supportVP9Profile0, bool supportVP9Profile2);
     void disableWebRTCHardwareVP9();
     bool isSupportingVP9HardwareDecoder() const;
     void isVP9HardwareDecoderUsed(RTCPeerConnection&, DOMPromiseDeferred<IDLBoolean>&&);
+    bool isSupportingAV1HardwareDecoder() const;
 
     void setSFrameCounter(RTCRtpSFrameTransform&, const String&);
     uint64_t NODELETE sframeCounter(const RTCRtpSFrameTransform&);
@@ -867,6 +880,7 @@ public:
     ExceptionOr<void> setIsPlayingToBluetoothOverride(std::optional<bool>);
 
     bool isSelectPopupVisible(HTMLSelectElement&);
+    RefPtr<DOMPointReadOnly> lastSelectPopupLocation(const HTMLSelectElement&);
 
     ExceptionOr<String> captionsStyleSheetOverride();
     ExceptionOr<void> setCaptionsStyleSheetOverride(const String&);
@@ -1002,6 +1016,7 @@ public:
     JSC::JSValue cloneArrayBuffer(JSC::JSGlobalObject&, JSC::JSValue, JSC::JSValue, JSC::JSValue);
 
     String composedTreeAsText(Node&);
+    String composedTreeAsTextFromNode(Node& root, Node& startNode);
 
     bool isProcessingUserGesture();
     double NODELETE lastHandledUserGestureTimestamp();
@@ -1414,8 +1429,8 @@ public:
     void setCookie(CookieData&&);
     Vector<CookieData> getCookies() const;
 
-    // This attempts to implement https://w3c.github.io/webdriver/#cookies but that specification
-    // is not the clearest.
+    // In combination with createWebDriverCookieData() this attempts to implement
+    // https://w3c.github.io/webdriver/#cookies but that specification is not the clearest.
     struct WebDriverCookieData {
         String name;
         String value;
@@ -1425,36 +1440,6 @@ public:
         bool httpOnly { false };
         std::optional<double> expiry { std::nullopt }; // Cookie's expires field in seconds.
         String sameSite { "None"_s };
-
-        WebDriverCookieData(Cookie cookie)
-            : name(cookie.name)
-            , value(cookie.value)
-            , path(cookie.path)
-            , domain(cookie.domain)
-            , secure(cookie.secure)
-            , httpOnly(cookie.httpOnly)
-            , expiry(cookie.expires ? std::make_optional(*cookie.expires / 1000) : std::nullopt)
-        {
-            // Due to how CFNetwork handles host-only cookies, we may need to prepend a '.' to the domain when
-            // setting a cookie (see CookieStore::set). So we must strip this '.' when returning the cookie.
-            if (domain.startsWith('.'))
-                domain = domain.substring(1, domain.length() - 1);
-
-            switch (cookie.sameSite) {
-            case Cookie::SameSitePolicy::Strict:
-                sameSite = "Strict"_s;
-                break;
-            case Cookie::SameSitePolicy::Lax:
-                sameSite = "Lax"_s;
-                break;
-            case Cookie::SameSitePolicy::None:
-                sameSite = "None"_s;
-                break;
-            }
-        }
-
-        WebDriverCookieData()
-        { }
     };
 
     Vector<WebDriverCookieData> webDriverGetCookies(Document&) const;
@@ -1473,10 +1458,6 @@ public:
     struct TextIndicatorInfo {
         RefPtr<DOMRectReadOnly> textBoundingRectInRootViewCoordinates;
         RefPtr<DOMRectList> textRectsInBoundingRectCoordinates;
-        
-        TextIndicatorInfo();
-        TextIndicatorInfo(const WebCore::TextIndicatorData&);
-        ~TextIndicatorInfo();
     };
         
     struct TextIndicatorOptions {
@@ -1549,6 +1530,8 @@ public:
 
     String focusRingColor();
 
+    double switchAnimationVisuallyOnDuration() const;
+
     bool isRemoteUIAppForAccessibility();
 
     ExceptionOr<unsigned> createSleepDisabler(const String& reason, bool display);
@@ -1599,7 +1582,7 @@ public:
 
 #endif // ENABLE(MEDIA_SESSION)
 
-    enum TreeType : uint8_t { Tree, ShadowIncludingTree, ComposedTree };
+    enum TreeType : uint8_t { Tree, ShadowIncludingTree, ComposedTree, ComposedTreeIncludingPseudoElements };
     String treeOrder(Node&, Node&, TreeType);
     String treeOrderBoundaryPoints(Node& containerA, unsigned offsetA, Node& containerB, unsigned offsetB, TreeType);
     bool rangeContainsNode(const AbstractRange&, Node&, TreeType);
@@ -1624,12 +1607,6 @@ public:
 
     RefPtr<PushSubscription> createPushSubscription(const String& endpoint, std::optional<EpochTimeStamp> expirationTime, const ArrayBuffer& serverVAPIDPublicKey, const ArrayBuffer& clientECDHPublicKey, const ArrayBuffer& auth);
 
-#if ENABLE(ARKIT_INLINE_PREVIEW_MAC)
-    using ModelInlinePreviewUUIDsPromise = DOMPromiseDeferred<IDLSequence<IDLDOMString>>;
-    void modelInlinePreviewUUIDs(ModelInlinePreviewUUIDsPromise&&) const;
-    String modelInlinePreviewUUIDForModelElement(const HTMLModelElement&) const;
-#endif
-
     bool NODELETE hasSleepDisabler() const;
 
     void NODELETE acceptTypedArrays(Int32Array&);
@@ -1642,14 +1619,14 @@ public:
     };
     SelectorFilterHashCounts selectorFilterHashCounts(const String& selector);
 
+    JSC::JSValue dumpJSNodeStatistics();
+
     bool NODELETE isVisuallyNonEmpty() const;
         
     bool isUsingUISideCompositing() const;
 
     String getComputedLabel(Element&) const;
     String getComputedRole(Element&) const;
-
-    bool hasScopeBreakingHasSelectors() const;
 
 
     struct PDFAnnotationRect {

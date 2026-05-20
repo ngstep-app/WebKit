@@ -41,6 +41,7 @@
 #include "VideoLayerRemote.h"
 #include "VideoTrackPrivateRemote.h"
 #include <WebCore/MediaPlayerPrivate.h>
+#include <WebCore/MediaTimeUpdateData.h>
 #include <WebCore/PlatformLayer.h>
 #include <WebCore/SecurityOriginData.h>
 #include <WebCore/VideoFrameMetadata.h>
@@ -76,18 +77,14 @@ class PixelBufferConformerCV;
 
 namespace WebKit {
 
+using WebCore::MediaTimeUpdateData;
+
 class RemoteAudioSourceProvider;
 class RemoteMediaResourceLoaderProxy;
 class UserData;
 struct AudioTrackPrivateRemoteConfiguration;
 struct TextTrackPrivateRemoteConfiguration;
 struct VideoTrackPrivateRemoteConfiguration;
-
-struct MediaTimeUpdateData {
-    MediaTime currentTime;
-    bool timeIsProgressing;
-    MonotonicTime wallTime;
-};
 
 class MediaPlayerPrivateRemote final
     : public WebCore::MediaPlayerPrivateInterface
@@ -217,6 +214,10 @@ public:
     MediaTime currentTime() const final;
     MediaTime currentOrPendingSeekTime() const final;
 
+#if PLATFORM(MAC)
+    void screenReservedChanged(bool) final;
+#endif
+
     void gpuProcessConnectionDidClose();
 
 private:
@@ -236,10 +237,9 @@ private:
 
     private:
         mutable Lock m_lock;
-        std::atomic<bool> m_timeIsProgressing { false };
+        std::atomic<double> m_effectiveRate { 0 };
         MediaTime m_cachedMediaTime WTF_GUARDED_BY_LOCK(m_lock);
         MonotonicTime m_cachedMediaTimeQueryTime WTF_GUARDED_BY_LOCK(m_lock);
-        double m_rate WTF_GUARDED_BY_LOCK(m_lock) { 1.0 };
         mutable std::optional<MediaTime> m_lastReturnedTime WTF_GUARDED_BY_LOCK(m_lock);
         bool m_forceUseCachedTime WTF_GUARDED_BY_LOCK(m_lock) { false };
         ThreadSafeWeakRef<const MediaPlayerPrivateRemote> m_parent;
@@ -315,6 +315,7 @@ private:
     bool hasAudio() const final;
 
     void setPageIsVisible(bool) final;
+    void setViewportVisibility(ViewportVisibility) final;
 
     MediaTime getStartDate() const final;
 
@@ -552,6 +553,7 @@ private:
     bool m_waitingForKey { false };
     std::optional<bool> m_shouldMaintainAspectRatio;
     std::optional<bool> m_pageIsVisible;
+    ViewportVisibility m_viewportVisibility { ViewportVisibility::NotVisible };
     RefPtr<RemoteVideoFrameProxy> m_videoFrameForCurrentTime;
 #if PLATFORM(COCOA)
     RefPtr<RemoteVideoFrameProxy> m_videoFrameGatheredWithVideoFrameMetadata;

@@ -46,6 +46,7 @@
 #import "ViewGestureController.h"
 #import "ViewSnapshotStore.h"
 #import "WKAPICast.h"
+#import "WKAppKitGestureController.h"
 #import "WKFullScreenWindowController.h"
 #import "WKStringCF.h"
 #import "WKViewInternal.h"
@@ -315,6 +316,9 @@ void PageClientImpl::didCommitLoadForMainFrame(const String&, bool)
     impl->dismissContentRelativeChildWindowsWithAnimation(true);
     impl->clearPromisedImageDragData();
     impl->pageDidScroll({ 0, 0 });
+#if HAVE(APPKIT_GESTURES_SUPPORT)
+    impl->invalidateCachedPositionInformation();
+#endif
 #if ENABLE(WRITING_TOOLS)
     impl->hideTextAnimationView();
 #endif
@@ -903,7 +907,7 @@ void PageClientImpl::navigationGestureDidBegin()
     protect(m_impl)->dismissContentRelativeChildWindowsWithAnimation(true);
 
     if (auto webView = this->webView()) {
-        if (RefPtr navigationState = NavigationState::fromWebPage(Ref { *webView->_page }))
+        if (RefPtr navigationState = NavigationState::fromWebPage(*webView->_page))
             navigationState->navigationGestureDidBegin();
     }
 }
@@ -911,7 +915,7 @@ void PageClientImpl::navigationGestureDidBegin()
 void PageClientImpl::navigationGestureWillEnd(bool willNavigate, WebBackForwardListItem& item)
 {
     if (auto webView = this->webView()) {
-        if (RefPtr navigationState = NavigationState::fromWebPage(Ref { *webView->_page }))
+        if (RefPtr navigationState = NavigationState::fromWebPage(*webView->_page))
             navigationState->navigationGestureWillEnd(willNavigate, item);
     }
 }
@@ -919,7 +923,7 @@ void PageClientImpl::navigationGestureWillEnd(bool willNavigate, WebBackForwardL
 void PageClientImpl::navigationGestureDidEnd(bool willNavigate, WebBackForwardListItem& item)
 {
     if (auto webView = this->webView()) {
-        if (RefPtr navigationState = NavigationState::fromWebPage(Ref { *webView->_page }))
+        if (RefPtr navigationState = NavigationState::fromWebPage(*webView->_page))
             navigationState->navigationGestureDidEnd(willNavigate, item);
     }
 }
@@ -931,7 +935,7 @@ void PageClientImpl::navigationGestureDidEnd()
 void PageClientImpl::willRecordNavigationSnapshot(WebBackForwardListItem& item)
 {
     if (auto webView = this->webView()) {
-        if (RefPtr navigationState = NavigationState::fromWebPage(Ref { *webView->_page }))
+        if (RefPtr navigationState = NavigationState::fromWebPage(*webView->_page))
             navigationState->willRecordNavigationSnapshot(item);
     }
 }
@@ -939,7 +943,7 @@ void PageClientImpl::willRecordNavigationSnapshot(WebBackForwardListItem& item)
 void PageClientImpl::didRemoveNavigationGestureSnapshot()
 {
     if (auto webView = this->webView()) {
-        if (RefPtr navigationState = NavigationState::fromWebPage(Ref { *webView->_page }))
+        if (RefPtr navigationState = NavigationState::fromWebPage(*webView->_page))
             navigationState->navigationGestureSnapshotWasRemoved();
     }
 }
@@ -1224,8 +1228,15 @@ void PageClientImpl::showCaptionDisplaySettings(WebCore::HTMLMediaElementIdentif
     protect(m_impl)->showCaptionDisplaySettings(identifier, options, WTF::move(completionHandler));
 }
 
-void PageClientImpl::positionInformationDidChange(const InteractionInformationAtPosition&)
+void PageClientImpl::positionInformationDidChange(const InteractionInformationAtPosition& info)
 {
+    CheckedPtr impl = m_impl.get();
+    if (!impl)
+        return;
+
+#if HAVE(APPKIT_GESTURES_SUPPORT)
+    impl->positionInformationDidChange(info);
+#endif
 }
 
 } // namespace WebKit

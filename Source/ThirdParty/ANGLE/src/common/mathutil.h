@@ -872,9 +872,10 @@ struct IndexRange
     {};
     IndexRange(Undefined) {}
     IndexRange() = default;
-    IndexRange(uint32_t start_, uint32_t end_) : mStart(start_), mCount(end_ - start_ + 1)
+    IndexRange(uint32_t start, uint32_t end)
+        : mStart(start), mEnd(end), mCount(static_cast<uint64_t>(end - start) + 1)
     {
-        ASSERT(start_ <= end_);
+        ASSERT(start <= end);
     }
     bool isEmpty() const { return mCount == 0; }
     uint32_t start() const
@@ -885,15 +886,18 @@ struct IndexRange
     uint32_t end() const
     {
         ASSERT(!isEmpty());
-        return mStart + mCount - 1;
+        return mEnd;
     }
 
     // Number of vertices in the range.
-    uint32_t vertexCount() const { return mCount; }
+    uint64_t vertexCount() const { return mCount; }
 
   private:
     uint32_t mStart{0};
-    uint32_t mCount{0};
+    uint32_t mEnd{0};
+
+    // Since the range is inclusive, mCount == 0 indicates an empty range
+    uint64_t mCount{0};
 };
 
 inline bool operator==(const IndexRange &a, const IndexRange &b)
@@ -1535,6 +1539,12 @@ angle::CheckedNumeric<T> CheckedRoundUp(const T value, const T alignment)
 inline constexpr unsigned int UnsignedCeilDivide(unsigned int value, unsigned int divisor)
 {
     unsigned int divided = value / divisor;
+    return (divided + ((value % divisor == 0) ? 0 : 1));
+}
+
+inline constexpr uint64_t UnsignedCeilDivide64(uint64_t value, uint64_t divisor)
+{
+    uint64_t divided = value / divisor;
     return (divided + ((value % divisor == 0) ? 0 : 1));
 }
 

@@ -32,9 +32,13 @@
 #include "CachedResourceRequest.h"
 #include "Document.h"
 #include "DocumentLoader.h"
+#include "DocumentResourceLoader.h"
 #include "Frame.h"
 #include "FrameLoader.h"
+#include "LocalFrame.h"
+#include "LocalFrameInlines.h"
 #include "MemoryCache.h"
+#include "OriginAccessPatterns.h"
 #include "ReferrerPolicy.h"
 #include "ResourceRequest.h"
 #include "SecurityOrigin.h"
@@ -49,11 +53,20 @@ DocumentPrefetcher::DocumentPrefetcher(FrameLoader& frameLoader)
 
 DocumentPrefetcher::~DocumentPrefetcher()
 {
+    clear();
+}
+
+void DocumentPrefetcher::clear()
+{
     for (auto& [url, data] : m_prefetchedData) {
         RefPtr resource = data.resource;
-        if (resource && resource->hasClient(*this))
+        if (!resource)
+            continue;
+        if (resource->hasClient(*this))
             resource->removeClient(*this);
+        MemoryCache::singleton().remove(*resource);
     }
+    m_prefetchedData.clear();
 }
 
 static bool isPassingSecurityChecks(const URL& url, Document& document)
@@ -158,8 +171,16 @@ void DocumentPrefetcher::prefetch(const URL& url, const Vector<String>& tags, st
     prefetchedResource->addClient(*this);
 }
 
-void DocumentPrefetcher::responseReceived(const CachedResource&, const ResourceResponse&, CompletionHandler<void()>&& completionHandler)
+void DocumentPrefetcher::responseReceived(const CachedResource& resource, const ResourceResponse& response, CompletionHandler<void()>&& completionHandler)
 {
+    // Remove unsuccessful prefetches from the memory cache as soon as the
+    // response headers arrive, rather than waiting for notifyFinished.
+    // This prevents navigations from finding and reusing a 503 (or other
+    // error) response that is still in the cache while the body loads.
+    // We only remove from the memory cache here (not the client registration),
+    // since the load is still in progress. Full cleanup happens in notifyFinished.
+    if (!response.isSuccessful())
+        MemoryCache::singleton().remove(const_cast<CachedResource&>(resource));
     if (completionHandler)
         completionHandler();
 }

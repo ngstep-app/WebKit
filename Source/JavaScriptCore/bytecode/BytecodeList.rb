@@ -351,7 +351,6 @@ op :create_promise,
     args: {
         dst: VirtualRegister,
         callee: VirtualRegister,
-        isInternalPromise: bool,
     },
     metadata: {
         cachedCallee: WriteBarrier[JSCell]
@@ -1204,10 +1203,14 @@ op :create_cloned_arguments,
 op :new_promise,
     args: {
         dst: VirtualRegister,
-        isInternalPromise: bool,
     }
 
 op :new_generator,
+    args: {
+        dst: VirtualRegister,
+    }
+
+op :new_async_function_generator,
     args: {
         dst: VirtualRegister,
     }
@@ -1429,6 +1432,7 @@ op :llint_polymorphic_closure_call_trampoline
 op :checkpoint_osr_exit_from_inlined_call_trampoline
 op :checkpoint_osr_exit_trampoline
 op :normal_osr_exit_trampoline
+op :array_sort_comparator_return_trampoline
 op :fuzzer_return_early_from_loop_hint
 op :loop_osr_entry_gate
 op :llint_get_host_call_return_value

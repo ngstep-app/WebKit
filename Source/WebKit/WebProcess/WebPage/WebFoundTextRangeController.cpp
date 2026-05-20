@@ -34,6 +34,7 @@
 #include <WebCore/Document.h>
 #include <WebCore/DocumentMarkerController.h>
 #include <WebCore/DocumentMarkers.h>
+#include <WebCore/DocumentPage.h>
 #include <WebCore/DocumentQuirks.h>
 #include <WebCore/DocumentView.h>
 #include <WebCore/Editor.h>
@@ -573,10 +574,10 @@ WebCore::LocalFrame* WebFoundTextRangeController::frameForFoundTextRange(const W
     Ref mainFrame = m_webPage.get()->corePage()->mainFrame();
 
     if (range.pathToFrame.isEmpty())
-        return dynamicDowncast<WebCore::LocalFrame>(mainFrame.ptr());
+        return dynamicDowncast<WebCore::LocalFrame>(mainFrame.unsafePtr());
 
     RefPtr foundFrame = protect(mainFrame->page())->findFrameByPath(range.pathToFrame);
-    return dynamicDowncast<WebCore::LocalFrame>(foundFrame.get());
+    return dynamicDowncast<WebCore::LocalFrame>(foundFrame.unsafeGet());
 }
 
 WebCore::Document* WebFoundTextRangeController::documentForFoundTextRange(const WebFoundTextRange& range) const

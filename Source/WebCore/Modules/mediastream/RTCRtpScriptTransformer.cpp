@@ -36,6 +36,7 @@
 #include "RTCEncodedStreamProducer.h"
 #include "ScriptExecutionContextInlines.h"
 #include "WorkerThread.h"
+#include <JavaScriptCore/HeapCellInlines.h>
 
 namespace WebCore {
 
@@ -44,7 +45,7 @@ ExceptionOr<Ref<RTCRtpScriptTransformer>> RTCRtpScriptTransformer::create(Script
     if (!context.globalObject())
         return Exception { ExceptionCode::InvalidStateError };
 
-    auto& globalObject = *JSC::jsCast<JSDOMGlobalObject*>(context.globalObject());
+    auto& globalObject = *downcast<JSDOMGlobalObject>(context.globalObject());
     JSC::JSLockHolder lock(globalObject.vm());
 
     auto producerOrException = RTCEncodedStreamProducer::create(context);

@@ -66,9 +66,10 @@ public:
     static bool isContentDataSupported(const Style::Content&);
 
     enum class ConstructBlockLevelRendererFor {
-        Inline           = 1 << 0,
-        ListItem         = 1 << 1,
-        TableOrTablePart = 1 << 2
+        Inline              = 1 << 0,
+        ListItem            = 1 << 1,
+        TableOrTablePart    = 1 << 2,
+        DeprecatedFlexBox   = 1 << 3
     };
     static RenderPtr<RenderElement> createFor(Element&, RenderStyle&&, OptionSet<ConstructBlockLevelRendererFor> = { });
 
@@ -146,7 +147,7 @@ public:
 
     virtual void dirtyLineFromChangedChild() { }
 
-    void setChildNeedsLayout(MarkingBehavior = MarkContainingBlockChain);
+    void setChildNeedsLayout(MarkingBehavior = MarkingBehavior::MarkContainingBlockChain);
     void NODELETE setOutOfFlowChildNeedsStaticPositionLayout();
     void NODELETE clearChildNeedsLayout();
     void setNeedsOutOfFlowMovementLayout(const RenderStyle* oldStyle);
@@ -319,7 +320,7 @@ public:
     bool hasCachedSVGResource() const { return m_hasCachedSVGResource; }
 
     bool isAnonymousBlock() const;
-    bool isAnonymousForPercentageResolution() const { return isAnonymous() && !isViewTransitionPseudo(); }
+    bool shouldSkipForPercentageResolution() const { return isAnonymous() && !isViewTransitionPseudo() && !isRenderView(); }
     inline bool isBlockBox() const;
     inline bool isBlockLevelBox() const;
     inline bool isBlockContainer() const;
@@ -364,6 +365,8 @@ protected:
 
     virtual void styleWillChange(Style::Difference, const RenderStyle& newStyle);
     virtual void styleDidChange(Style::Difference, const RenderStyle* oldStyle);
+
+    void dirtyEnclosingLayerSVGChildrenIfNeeded();
 
     void insertedIntoTree() override;
     void willBeRemovedFromTree() override;
@@ -481,7 +484,7 @@ inline void RenderElement::setChildNeedsLayout(MarkingBehavior markParents)
     if (normalChildNeedsLayout())
         return;
     setNormalChildNeedsLayoutBit(true);
-    if (markParents == MarkContainingBlockChain)
+    if (markParents == MarkingBehavior::MarkContainingBlockChain)
         scheduleLayout(markContainingBlocksForLayout());
 }
 

@@ -42,6 +42,7 @@
 #include <wtf/HashSet.h>
 #include <wtf/MonotonicTime.h>
 #include <wtf/Platform.h>
+#include <wtf/ReducedResolutionSeconds.h>
 #include <wtf/WeakHashSet.h>
 
 namespace JSC {
@@ -59,7 +60,6 @@ struct ScrollToOptions;
 struct WindowPostMessageOptions;
 
 enum class PlatformEventModifier : uint8_t;
-using ReducedResolutionSeconds = Seconds;
 
 template<typename> class ExceptionOr;
 
@@ -140,7 +140,7 @@ public:
 
     WEBCORE_EXPORT static void NODELETE overrideTransientActivationDurationForTesting(std::optional<Seconds>&&);
     void setLastActivationTimestamp(MonotonicTime lastActivationTimestamp) { m_lastActivationTimestamp = lastActivationTimestamp; }
-    void NODELETE consumeLastActivationIfNecessary();
+    WEBCORE_EXPORT void NODELETE consumeLastActivationIfNecessary();
     MonotonicTime lastActivationTimestamp() const { return m_lastActivationTimestamp; }
     void notifyActivated(MonotonicTime);
     WEBCORE_EXPORT bool hasTransientActivation() const;
@@ -320,7 +320,7 @@ public:
 
 #if PLATFORM(IOS_FAMILY)
     void incrementScrollEventListenersCount();
-    void decrementScrollEventListenersCount();
+    void decrementScrollEventListenersCount(unsigned count = 1);
     unsigned scrollEventListenerCount() const { return m_scrollEventListenerCount; }
 #endif
 
@@ -456,7 +456,7 @@ private:
     bool m_contextMenuTriggered { false };
 
     // Workaround for https://webkit.org/b/301443 causing very old timestamps to be produced:
-    Seconds m_lastInputEventStartTime;
+    ReducedResolutionSeconds m_lastInputEventStartTime;
 
     struct PendingKeyDownState {
         PerformanceEventTimingCandidate keyDown;

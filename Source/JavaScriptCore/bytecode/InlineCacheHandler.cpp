@@ -34,10 +34,10 @@
 #include "InlineCacheCompiler.h"
 #include "InstanceOfAccessCase.h"
 #include "JSModuleEnvironment.h"
+#include "JSModuleNamespaceObject.h"
 #include "ModuleNamespaceAccessCase.h"
 #include "PropertyInlineCache.h"
 #include "SharedJITStubSet.h"
-#include "StructureInlines.h"
 
 namespace JSC {
 
@@ -56,6 +56,7 @@ InlineCacheHandler::InlineCacheHandler()
     disableThreadingChecks();
 }
 
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 InlineCacheHandler::InlineCacheHandler(bool makesJSCalls, Ref<InlineCacheHandler>&& previous, Ref<PolymorphicAccessJITStubRoutine>&& stubRoutine, std::unique_ptr<PropertyInlineCacheClearingWatchpoint>&& watchpoint, CacheType cacheType)
     : m_callTarget(stubRoutine->code().code().template retagged<JITStubRoutinePtrTag>())
     , m_jumpTarget(CodePtr<NoPtrTag> { m_callTarget.retagged<NoPtrTag>().dataLocation<uint8_t*>() + prologueSizeInBytesDataIC }.template retagged<JITStubRoutinePtrTag>())
@@ -67,6 +68,7 @@ InlineCacheHandler::InlineCacheHandler(bool makesJSCalls, Ref<InlineCacheHandler
 {
     disableThreadingChecks();
 }
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 
 InlineCacheHandlerWithJSCall::InlineCacheHandlerWithJSCall(Ref<InlineCacheHandler>&& previous, Ref<PolymorphicAccessJITStubRoutine>&& stubRoutine, std::unique_ptr<PropertyInlineCacheClearingWatchpoint>&& watchpoint, CacheType cacheType)
     : InlineCacheHandler(true, WTF::move(previous), WTF::move(stubRoutine), WTF::move(watchpoint), cacheType)
@@ -120,7 +122,11 @@ Ref<InlineCacheHandler> InlineCacheHandler::createPreCompiled(Ref<InlineCacheHan
     case AccessCase::Load:
     case AccessCase::GetGetter:
     case AccessCase::Getter:
-    case AccessCase::Setter: {
+    case AccessCase::Setter:
+    case AccessCase::IndexedUndefinedKeyLoad:
+    case AccessCase::IndexedNullKeyLoad:
+    case AccessCase::IndexedTrueKeyLoad:
+    case AccessCase::IndexedFalseKeyLoad: {
         result->u.s1.m_holder = nullptr;
         if (auto* holder = accessCase.tryGetAlternateBase())
             result->u.s1.m_holder = holder;
@@ -135,7 +141,11 @@ Ref<InlineCacheHandler> InlineCacheHandler::createPreCompiled(Ref<InlineCacheHan
         result->u.s2.m_newStructureID = accessCase.newStructureID();
         break;
     }
-    case AccessCase::Transition: {
+    case AccessCase::Transition:
+    case AccessCase::IndexedUndefinedKeyTransition:
+    case AccessCase::IndexedNullKeyTransition:
+    case AccessCase::IndexedTrueKeyTransition:
+    case AccessCase::IndexedFalseKeyTransition: {
         result->u.s2.m_newStructureID = accessCase.newStructureID();
         result->u.s2.m_newSize = accessCase.newStructure()->outOfLineCapacity() * sizeof(JSValue);
         result->u.s2.m_oldSize = accessCase.structure()->outOfLineCapacity() * sizeof(JSValue);
@@ -184,6 +194,7 @@ Ref<InlineCacheHandler> InlineCacheHandler::createNonHandlerSlowPath(CodePtr<JIT
     return result;
 }
 
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 Ref<InlineCacheHandler> InlineCacheHandler::createSlowPath(VM& vm, AccessType accessType)
 {
     auto result = adoptRef(*new InlineCacheHandler);
@@ -192,6 +203,7 @@ Ref<InlineCacheHandler> InlineCacheHandler::createSlowPath(VM& vm, AccessType ac
     result->m_jumpTarget = CodePtr<NoPtrTag> { codeRef.retaggedCode<NoPtrTag>().dataLocation<uint8_t*>() + prologueSizeInBytesDataIC }.template retagged<JITStubRoutinePtrTag>();
     return result;
 }
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 
 Ref<InlineCacheHandler> InlineCacheCompiler::generateSlowPathHandler(VM& vm, AccessType accessType)
 {

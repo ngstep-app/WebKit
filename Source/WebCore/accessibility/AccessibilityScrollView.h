@@ -62,7 +62,7 @@ public:
     // Returns the screen position and transform for this frame.
     // Reads from the AXObjectCache's cached value, populated asynchronously via IPC.
     // On first access when cache is empty, fires an async requestFrameScreenPosition.
-    FrameGeometry frameGeometry() const;
+    AXFrameGeometry frameGeometry() const;
     IntPoint frameScreenPosition() const final { return frameGeometry().screenPosition; }
     AffineTransform frameScreenTransform() const final { return frameGeometry().screenTransform; }
 
@@ -107,7 +107,7 @@ private:
     void setFocused(bool) final;
     bool canSetFocusAttribute() const final;
     bool isFocused() const final;
-    void NODELETE addLocalFrameChild();
+    void addLocalFrameChild();
     void addRemoteFrameChild();
     const AccessibilityScrollView* frameRootScrollView() const;
 

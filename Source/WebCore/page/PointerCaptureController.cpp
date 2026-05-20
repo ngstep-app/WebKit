@@ -29,11 +29,12 @@
 #include "ChromeClient.h"
 #include "ComposedTreeAncestorIterator.h"
 #include "DocumentPage.h"
+#include "DocumentQuirks.h"
 #include "Element.h"
 #include "EventHandler.h"
 #include "EventNames.h"
-#include "EventTargetInlines.h"
 #include "EventTarget.h"
+#include "FrameDestructionObserverInlines.h"
 #include "FrameInlines.h"
 #include "HitTestResult.h"
 #include "MouseEventTypes.h"
@@ -42,6 +43,7 @@
 #include "PointerEvent.h"
 #include "Quirks.h"
 #include "Settings.h"
+#include "TaskSource.h"
 #include <algorithm>
 #include <ranges>
 #include <wtf/CheckedArithmetic.h>
@@ -532,8 +534,11 @@ void PointerCaptureController::pointerEventWasDispatched(const PointerEvent& eve
 
     // If the pointer event dispatched was pointerdown and the event was canceled, then set the PREVENT MOUSE EVENT flag for this pointerType.
     // https://www.w3.org/TR/pointerevents/#mapping-for-devices-that-support-hover
-    if (event.type() == eventNames().pointerdownEvent)
+    if (event.type() == eventNames().pointerdownEvent) {
         capturingData->preventsCompatibilityMouseEvents = event.defaultPrevented();
+        if (event.defaultPrevented())
+            m_pointerDownDefaultPreventedDuringCurrentHandling = true;
+    }
 }
 
 void PointerCaptureController::cancelPointer(PointerID pointerId, const IntPoint& documentPoint, PointerEvent* existingCancelEvent)

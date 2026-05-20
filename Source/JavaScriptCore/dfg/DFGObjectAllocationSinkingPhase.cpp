@@ -42,18 +42,17 @@
 #include "DFGValidate.h"
 #include "JSArrayIterator.h"
 #include "JSAsyncFromSyncIterator.h"
+#include "JSAsyncFunctionGenerator.h"
 #include "JSAsyncGenerator.h"
 #include "JSGenerator.h"
-#include "JSInternalPromise.h"
 #include "JSIteratorHelper.h"
 #include "JSMapIterator.h"
+#include "JSPromise.h"
 #include "JSPromiseReaction.h"
 #include "JSRegExpStringIterator.h"
 #include "JSSetIterator.h"
 #include "JSStringIterator.h"
 #include "JSWrapForValidIterator.h"
-#include "StructureInlines.h"
-#include <wtf/StdList.h>
 
 namespace JSC { namespace DFG {
 
@@ -148,7 +147,7 @@ public:
     // once it is escaped if it still has pointers to it in order to
     // replace any use of those pointers by the corresponding
     // materialization
-    enum class Kind { Escaped, Array, ArrayButterfly, Object, Activation, Function, GeneratorFunction, AsyncFunction, AsyncGeneratorFunction, InternalFieldObject, RegExpObject };
+    enum class Kind { Escaped, Array, ArrayButterfly, Object, Activation, Function, GeneratorFunction, AsyncFunction, AsyncGeneratorFunction, InternalFieldObject, RegExpObject, Promise };
 
     using Fields = UncheckedKeyHashMap<PromotedLocationDescriptor, Node*>;
 
@@ -306,6 +305,11 @@ public:
     bool NODELETE isRegExpObjectAllocation() const
     {
         return m_kind == Kind::RegExpObject;
+    }
+
+    bool NODELETE isPromiseAllocation() const
+    {
+        return m_kind == Kind::Promise;
     }
 
     friend bool NODELETE operator==(const Allocation&, const Allocation&) = default;
@@ -1151,16 +1155,11 @@ private:
             case JSGeneratorType:
                 target = handleInternalFieldClass<JSGenerator>(node, writes);
                 break;
+            case JSAsyncFunctionGeneratorType:
+                target = handleInternalFieldClass<JSAsyncFunctionGenerator>(node, writes);
+                break;
             case JSAsyncGeneratorType:
                 target = handleInternalFieldClass<JSAsyncGenerator>(node, writes);
-                break;
-            case JSPromiseType:
-                if (node->structure()->classInfoForCells() == JSInternalPromise::info())
-                    target = handleInternalFieldClass<JSInternalPromise>(node, writes);
-                else {
-                    ASSERT(node->structure()->classInfoForCells() == JSPromise::info());
-                    target = handleInternalFieldClass<JSPromise>(node, writes);
-                }
                 break;
             default:
                 DFG_CRASH(m_graph, node, "Bad structure");
@@ -1173,6 +1172,13 @@ private:
 
             writes.add(RegExpObjectRegExpPLoc, LazyNode(node->cellOperand()));
             writes.add(RegExpObjectLastIndexPLoc, LazyNode(node->child1().node()));
+            break;
+        }
+
+        case NewPromise: {
+            ASSERT(node->structure()->classInfoForCells() == JSPromise::info());
+            target = &m_heap.newAllocation(node, Allocation::Kind::Promise);
+            writes.add(StructurePLoc, LazyNode(m_graph.freeze(node->structure().get())));
             break;
         }
 
@@ -1928,6 +1934,13 @@ escapeChildren:
                 OpInfo(allocation.identifier()->structure()), OpInfo(data), 0, 0);
         }
 
+        case Allocation::Kind::Promise: {
+            return m_graph.addNode(
+                allocation.identifier()->prediction(), NewPromise,
+                where->origin.withSemantic(allocation.identifier()->origin.semantic),
+                OpInfo(allocation.identifier()->structure()));
+        }
+
         case Allocation::Kind::Activation: {
             ObjectMaterializationData* data = m_graph.m_objectMaterializationData.add();
             FrozenValue* symbolTable = allocation.identifier()->cellOperand();
@@ -2364,6 +2377,10 @@ escapeChildren:
                         node->convertToPhantomNewInternalFieldObject();
                         break;
 
+                    case NewPromise:
+                        node->convertToPhantomNewPromise();
+                        break;
+
                     case CreateActivation:
                         node->convertToPhantomCreateActivation();
                         break;
@@ -2702,14 +2719,20 @@ escapeChildren:
         case NewAsyncFunction: {
             Vector<PromotedHeapLocation> locations = m_locationsForAllocation.get(escapee);
             ASSERT(locations.size() == 2);
-                
+
             PromotedHeapLocation executable(FunctionExecutablePLoc, allocation.identifier());
             ASSERT_UNUSED(executable, locations.contains(executable));
-                
+
             PromotedHeapLocation activation(FunctionActivationPLoc, allocation.identifier());
             ASSERT(locations.contains(activation));
 
             node->child1() = Edge(resolve(block, activation), KnownCellUse);
+            break;
+        }
+
+        case NewPromise: {
+            ASSERT(m_locationsForAllocation.get(escapee).size() == 1);
+            ASSERT(m_locationsForAllocation.get(escapee)[0] == PromotedHeapLocation(StructurePLoc, allocation.identifier()));
             break;
         }
 

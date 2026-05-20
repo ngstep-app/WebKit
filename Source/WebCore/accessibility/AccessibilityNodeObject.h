@@ -41,6 +41,8 @@ namespace WebCore {
 class AXObjectCache;
 class Element;
 class HTMLLabelElement;
+class HTMLMediaElement;
+class HTMLVideoElement;
 class Node;
 
 class AccessibilityNodeObject : public AccessibilityObject {
@@ -184,7 +186,7 @@ public:
     String revealableText() const final;
     bool isHiddenUntilFoundContainer() const final;
     String text() const final;
-    void alternativeText(Vector<AccessibilityText>&) const;
+    virtual void alternativeText(Vector<AccessibilityText>&) const;
     void helpText(Vector<AccessibilityText>&) const;
     String stringValue() const override;
 
@@ -229,7 +231,7 @@ public:
 
     LayoutRect elementRect() const override;
     Path elementPath() const override;
-    bool supportsPath() const override { return isImageMapLink(); }
+    bool supportsPath() const override;
 
     bool isLabelContainingOnlyStaticText() const;
     bool isNativeLabel() const override;
@@ -256,7 +258,7 @@ protected:
     mutable bool m_containsOnlyStaticTextDirty { false };
     mutable bool m_containsOnlyStaticText { false };
 
-#ifndef NDEBUG
+#if ASSERT_ENABLED
     bool m_initialized { false };
 #endif
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014-2025 Apple Inc. All rights reserved.
+ * Copyright (C) 2014-2026 Apple Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -42,7 +42,9 @@
 #include "WebProcessProxyMessages.h"
 #include "WebUserContentControllerMessages.h"
 #include <JavaScriptCore/APICast.h>
+#include <JavaScriptCore/JSCJSValueInlines.h>
 #include <JavaScriptCore/JSContextRef.h>
+#include <JavaScriptCore/JSLock.h>
 #include <JavaScriptCore/JSRetainPtr.h>
 #include <WebCore/DOMWrapperWorld.h>
 #include <WebCore/FrameDestructionObserverInlines.h>
@@ -328,6 +330,7 @@ private:
             return;
 
         protect(WebProcess::singleton().parentProcessConnection())->sendWithAsyncReply(Messages::WebProcessProxy::DidPostMessage(webPage->webPageProxyIdentifier(), m_controller->identifier(), webFrame->info(), m_identifier, *message), [completionHandler = WTF::move(completionHandler), context](Expected<WebKit::JavaScriptEvaluationResult, String>&& result) {
+            JSC::JSLockHolder lock(toJS(context.get()));
             if (!result)
                 return completionHandler(JSC::jsUndefined(), result.error());
             completionHandler(toJS(toJS(context.get()), result->toJS(context.get()).get()), { });
@@ -357,6 +360,7 @@ private:
         auto [result] = sendResult.takeReplyOr(makeUnexpected(String()));
         if (!result)
             return JSC::jsUndefined();
+        JSC::JSLockHolder lock(toJS(context.get()));
         return toJS(toJS(context.get()), result->toJS(context.get()).get());
     }
 

@@ -29,7 +29,7 @@
 
 #include "DateConstructor.h"
 #include "JSObjectInlines.h"
-#include "StructureInlines.h"
+#include "StructureCreateInlines.h"
 #include "TemporalDuration.h"
 #include "TemporalPlainDate.h"
 #include "TemporalPlainDateTime.h"
@@ -70,13 +70,13 @@ JSObject* TemporalCalendar::getTemporalCalendarWithISODefault(JSGlobalObject* gl
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     if (itemValue.inherits<TemporalPlainDate>())
-        return jsCast<TemporalPlainDate*>(itemValue)->calendar();
+        return uncheckedDowncast<TemporalPlainDate>(itemValue)->calendar();
 
     if (itemValue.inherits<TemporalPlainDateTime>())
-        return jsCast<TemporalPlainDateTime*>(itemValue)->calendar();
+        return uncheckedDowncast<TemporalPlainDateTime>(itemValue)->calendar();
 
     if (itemValue.inherits<TemporalPlainTime>())
-        return jsCast<TemporalPlainTime*>(itemValue)->calendar();
+        return uncheckedDowncast<TemporalPlainTime>(itemValue)->calendar();
 
     JSValue calendar = itemValue.get(globalObject, vm.propertyNames->calendar);
     RETURN_IF_EXCEPTION(scope, { });
@@ -112,26 +112,26 @@ JSObject* TemporalCalendar::from(JSGlobalObject* globalObject, JSValue calendarL
     if (calendarLike.isObject()) {
         // FIXME: Also support PlainMonthDay, PlainYearMonth, ZonedDateTime.
         if (calendarLike.inherits<TemporalPlainDate>())
-            return jsCast<TemporalPlainDate*>(calendarLike)->calendar();
+            return uncheckedDowncast<TemporalPlainDate>(calendarLike)->calendar();
 
         if (calendarLike.inherits<TemporalPlainDateTime>())
-            return jsCast<TemporalPlainDateTime*>(calendarLike)->calendar();
+            return uncheckedDowncast<TemporalPlainDateTime>(calendarLike)->calendar();
 
         if (calendarLike.inherits<TemporalPlainTime>())
-            return jsCast<TemporalPlainTime*>(calendarLike)->calendar();
+            return uncheckedDowncast<TemporalPlainTime>(calendarLike)->calendar();
 
-        JSObject* calendarLikeObject = jsCast<JSObject*>(calendarLike);
+        JSObject* calendarLikeObject = uncheckedDowncast<JSObject>(calendarLike);
         bool hasProperty = calendarLikeObject->hasProperty(globalObject, vm.propertyNames->calendar);
         RETURN_IF_EXCEPTION(scope, { });
         if (!hasProperty)
-            return jsCast<JSObject*>(calendarLike);
+            return uncheckedDowncast<JSObject>(calendarLike);
 
         calendarLike = calendarLikeObject->get(globalObject, vm.propertyNames->calendar);
         if (calendarLike.isObject()) {
-            bool hasProperty = jsCast<JSObject*>(calendarLike)->hasProperty(globalObject, vm.propertyNames->calendar);
+            bool hasProperty = uncheckedDowncast<JSObject>(calendarLike)->hasProperty(globalObject, vm.propertyNames->calendar);
             RETURN_IF_EXCEPTION(scope, { });
             if (!hasProperty)
-                return jsCast<JSObject*>(calendarLike);
+                return uncheckedDowncast<JSObject>(calendarLike);
         }
     }
 
@@ -438,7 +438,7 @@ ISO8601::PlainDate TemporalCalendar::isoDateAdd(JSGlobalObject* globalObject, co
 
 static ISO8601::Duration NODELETE dateDuration(double y, double m, double w, double d)
 {
-    return ISO8601::Duration { y, m, w, d, 0, 0, 0, 0, 0, 0 };
+    return ISO8601::Duration { static_cast<int64_t>(y), static_cast<int64_t>(m), static_cast<int64_t>(w), static_cast<int64_t>(d), 0, 0, 0, 0, 0, 0 };
 }
 
 static bool NODELETE isoDateSurpasses(int32_t sign, double y1, double m1, double d1, const ISO8601::PlainDate& isoDate2)

@@ -59,7 +59,6 @@ $(PROJECT_DIR)/builtins/JSIteratorPrototype.js
 $(PROJECT_DIR)/builtins/MapConstructor.js
 $(PROJECT_DIR)/builtins/MapIteratorPrototype.js
 $(PROJECT_DIR)/builtins/MapPrototype.js
-$(PROJECT_DIR)/builtins/ModuleLoader.js
 $(PROJECT_DIR)/builtins/ObjectConstructor.js
 $(PROJECT_DIR)/builtins/PromiseConstructor.js
 $(PROJECT_DIR)/builtins/PromiseOperations.js
@@ -125,6 +124,7 @@ $(PROJECT_DIR)/inspector/protocol/Worker.json
 $(PROJECT_DIR)/inspector/scripts/codegen/__init__.py
 $(PROJECT_DIR)/inspector/scripts/codegen/cpp_generator.py
 $(PROJECT_DIR)/inspector/scripts/codegen/cpp_generator_templates.py
+$(PROJECT_DIR)/inspector/scripts/codegen/generate_cpp_alternate_backend_dispatcher_header.py
 $(PROJECT_DIR)/inspector/scripts/codegen/generate_cpp_backend_dispatcher_header.py
 $(PROJECT_DIR)/inspector/scripts/codegen/generate_cpp_backend_dispatcher_implementation.py
 $(PROJECT_DIR)/inspector/scripts/codegen/generate_cpp_frontend_dispatcher_header.py
@@ -132,12 +132,25 @@ $(PROJECT_DIR)/inspector/scripts/codegen/generate_cpp_frontend_dispatcher_implem
 $(PROJECT_DIR)/inspector/scripts/codegen/generate_cpp_protocol_types_header.py
 $(PROJECT_DIR)/inspector/scripts/codegen/generate_cpp_protocol_types_implementation.py
 $(PROJECT_DIR)/inspector/scripts/codegen/generate_js_backend_commands.py
+$(PROJECT_DIR)/inspector/scripts/codegen/generate_objc_backend_dispatcher_header.py
+$(PROJECT_DIR)/inspector/scripts/codegen/generate_objc_backend_dispatcher_implementation.py
+$(PROJECT_DIR)/inspector/scripts/codegen/generate_objc_configuration_header.py
+$(PROJECT_DIR)/inspector/scripts/codegen/generate_objc_configuration_implementation.py
+$(PROJECT_DIR)/inspector/scripts/codegen/generate_objc_frontend_dispatcher_implementation.py
+$(PROJECT_DIR)/inspector/scripts/codegen/generate_objc_header.py
+$(PROJECT_DIR)/inspector/scripts/codegen/generate_objc_internal_header.py
+$(PROJECT_DIR)/inspector/scripts/codegen/generate_objc_protocol_type_conversions_header.py
+$(PROJECT_DIR)/inspector/scripts/codegen/generate_objc_protocol_type_conversions_implementation.py
+$(PROJECT_DIR)/inspector/scripts/codegen/generate_objc_protocol_types_implementation.py
 $(PROJECT_DIR)/inspector/scripts/codegen/generator.py
 $(PROJECT_DIR)/inspector/scripts/codegen/generator_templates.py
 $(PROJECT_DIR)/inspector/scripts/codegen/models.py
+$(PROJECT_DIR)/inspector/scripts/codegen/objc_generator.py
+$(PROJECT_DIR)/inspector/scripts/codegen/objc_generator_templates.py
 $(PROJECT_DIR)/inspector/scripts/codegen/preprocess.pl
 $(PROJECT_DIR)/inspector/scripts/generate-inspector-protocol-bindings.py
 $(PROJECT_DIR)/parser/Keywords.table
+$(PROJECT_DIR)/parser/generateLexerUnicodePropertyTables.py
 $(PROJECT_DIR)/runtime/ArrayConstructor.cpp
 $(PROJECT_DIR)/runtime/AsyncFromSyncIteratorPrototype.cpp
 $(PROJECT_DIR)/runtime/AsyncGeneratorPrototype.cpp
@@ -172,7 +185,6 @@ $(PROJECT_DIR)/runtime/IntlSegmenterPrototype.cpp
 $(PROJECT_DIR)/runtime/IntlSegmentsPrototype.cpp
 $(PROJECT_DIR)/runtime/JSDataViewPrototype.cpp
 $(PROJECT_DIR)/runtime/JSGlobalObject.cpp
-$(PROJECT_DIR)/runtime/JSInternalPromiseConstructor.cpp
 $(PROJECT_DIR)/runtime/JSIteratorHelperPrototype.cpp
 $(PROJECT_DIR)/runtime/JSModuleLoader.cpp
 $(PROJECT_DIR)/runtime/JSONObject.cpp
@@ -180,6 +192,7 @@ $(PROJECT_DIR)/runtime/JSPromiseConstructor.cpp
 $(PROJECT_DIR)/runtime/JSPromisePrototype.cpp
 $(PROJECT_DIR)/runtime/MapConstructor.cpp
 $(PROJECT_DIR)/runtime/MapPrototype.cpp
+$(PROJECT_DIR)/runtime/ModuleRegistryEntry.cpp
 $(PROJECT_DIR)/runtime/NumberConstructor.cpp
 $(PROJECT_DIR)/runtime/NumberPrototype.cpp
 $(PROJECT_DIR)/runtime/ObjectConstructor.cpp
@@ -256,6 +269,5 @@ $(PROJECT_DIR)/wasm/js/WebAssemblyTagPrototype.cpp
 $(PROJECT_DIR)/wasm/wasm.json
 $(PROJECT_DIR)/yarr/create_regex_tables
 $(PROJECT_DIR)/yarr/generateYarrCanonicalizeUnicode
-$(PROJECT_DIR)/parser/generateLexerUnicodePropertyTables.py
 $(PROJECT_DIR)/yarr/generateYarrUnicodePropertyTables.py
 $(PROJECT_DIR)/yarr/hasher.py

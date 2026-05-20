@@ -33,6 +33,7 @@
 #include "JSWebAssemblyArrayInlines.h"
 #include "JSWebAssemblyInstance.h"
 #include "JSWebAssemblyRuntimeError.h"
+#include "OperationsInlines.h"
 #include <wtf/Vector.h>
 #include <wtf/text/MakeString.h>
 
@@ -158,17 +159,19 @@ bool WebAssemblyArrayMutI16TypeExpectation::isValid(const Wasm::Type& type) cons
 {
     if (!type.isRefNull())
         return false;
-    Ref<const Wasm::TypeDefinition> referentType = Wasm::TypeInformation::get(type.index);
-    if (!referentType->is<Wasm::ArrayType>())
+    RefPtr referentRTT = Wasm::TypeInformation::tryGetRTT(type.index);
+    if (!referentRTT || referentRTT->kind() != Wasm::RTTKind::Array)
         return false;
-    Wasm::FieldType elementType = referentType->as<Wasm::ArrayType>()->elementType();
+    Wasm::FieldType elementType = referentRTT->elementType();
     return elementType.mutability == Wasm::Mutability::Mutable
         && elementType.type.is<Wasm::PackedType>()
         && elementType.type.as<Wasm::PackedType>() == Wasm::PackedType::I16;
 }
 
-bool WebAssemblyBuiltinSignature::isValid(const Wasm::FunctionSignature& sig) const
+bool WebAssemblyBuiltinSignature::isValid(const Wasm::RTT& sig) const
 {
+    if (sig.kind() != Wasm::RTTKind::Function)
+        return false;
     if (sig.returnCount() != m_results.size() || sig.argumentCount() != m_params.size())
         return false;
     for (unsigned i = 0; i < sig.returnCount(); ++i) {
@@ -250,7 +253,7 @@ static bool isMutI16Array(const JSWebAssemblyArray* array)
 // Expands into code that verifies that the variable contains a (non-null) array of mutable i16s.
 #define ENSURE_ARRAY_MUT_I16(var) \
     { \
-        auto* tmpArray = jsDynamicCast<JSWebAssemblyArray*>(var); \
+        auto* tmpArray = dynamicDowncast<JSWebAssemblyArray>(var); \
         if (!tmpArray || !isMutI16Array(tmpArray)) [[unlikely]] \
             THROW_ILLEGAL_ARGUMENT_EXCEPTION; \
     }
@@ -509,7 +512,7 @@ DEFINE_BUILTIN_IMPLEMENTATION(jsstring, fromCharCodeArray, JSGlobalObject* globa
 
     // At this point 'array' must be an (array mut i16), guaranteed by Wasm type rules
     // or by a runtime check in JS entrypoint wrapper.
-    auto* array = jsCast<JSWebAssemblyArray*>(arrayObject);
+    auto* array = uncheckedDowncast<JSWebAssemblyArray>(arrayObject);
     ASSERT(isMutI16Array(array));
 
     if (startArg < 0 || endArg < 0)
@@ -545,10 +548,10 @@ DEFINE_BUILTIN_IMPLEMENTATION_I32(jsstring, intoCharCodeArray, JSGlobalObject* g
     if (!arrayObject || !stringArg.isString()) [[unlikely]]
         THROW_ILLEGAL_ARGUMENT_EXCEPTION;
 
-    JSString* string = jsCast<JSString*>(stringArg);
+    JSString* string = uncheckedDowncast<JSString>(stringArg);
     // At this point 'array' must be an (array mut i16), guaranteed by Wasm type rules
     // or by a runtime check in JS entrypoint wrapper.
-    auto* array = jsCast<JSWebAssemblyArray*>(arrayObject);
+    auto* array = uncheckedDowncast<JSWebAssemblyArray>(arrayObject);
     ASSERT(isMutI16Array(array));
 
     size_t stringLength = string->length();

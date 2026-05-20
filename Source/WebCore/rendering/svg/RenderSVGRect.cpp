@@ -28,6 +28,7 @@
 
 #include "config.h"
 #include "RenderSVGRect.h"
+#include "RenderObjectNode.h"
 
 #include "RenderSVGShapeInlines.h"
 #include "RenderStyle+GettersInlines.h"
@@ -119,7 +120,8 @@ void RenderSVGRect::fillShape(GraphicsContext& context) const
     }
 #endif
 
-    context.fillRect(m_fillBoundingBox);
+    context.fillRect(m_fillBoundingBox, fillRequiresClip() ? GraphicsContext::RequiresClipToRect::Yes : GraphicsContext::RequiresClipToRect::No);
+    setFillRequiresClip(true);
 }
 
 bool RenderSVGRect::canUseStrokeHitTestFastPath() const

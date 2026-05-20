@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2025 Apple Inc. All rights reserved.
+ * Copyright (C) 2015-2026 Apple Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -41,6 +41,7 @@
 #include "SystemFontDatabaseCoreText.h"
 #include "UnrealizedCoreTextFont.h"
 #include <CoreText/SFNTLayoutTypes.h>
+#include <array>
 #include <pal/spi/cf/CoreTextSPI.h>
 #include <pal/spi/cocoa/AccessibilitySupportSPI.h>
 #include <wtf/HashSet.h>
@@ -53,6 +54,7 @@
 #include <wtf/cf/NotificationCenterCF.h>
 #include <wtf/cf/TypeCastsCF.h>
 #include <wtf/cocoa/RuntimeApplicationChecksCocoa.h>
+#include <wtf/unicode/CharacterNames.h>
 
 namespace WebCore {
 
@@ -158,7 +160,7 @@ RefPtr<Font> FontCache::similarFont(const FontDescription& description, const St
         return fontForFamily(description, "verdana"_s);
 #endif
 
-    static constexpr ASCIILiteral matchWords[] = { "Arabic"_s, "Pashto"_s, "Urdu"_s };
+    static constexpr auto matchWords = WTF::toArray<ASCIILiteral>({ "Arabic"_s, "Pashto"_s, "Urdu"_s });
     auto familyMatcher = StringView(family);
     for (auto matchWord : matchWords) {
         if (equalIgnoringASCIICase(familyMatcher, matchWord))
@@ -249,8 +251,7 @@ SynthesisPair computeNecessarySynthesis(CTFontRef font, const FontDescription& f
 
     bool needsSyntheticBold = fontDescription.hasAutoFontSynthesisWeight()
         && !synthesisOptions.contains(FontLookupOptions::DisallowBoldSynthesis);
-    bool needsSyntheticOblique = fontDescription.hasAutoFontSynthesisStyle()
-        && !synthesisOptions.contains(FontLookupOptions::DisallowObliqueSynthesis);
+    bool needsSyntheticOblique = fontDescription.allowsItalicOrObliqueFontSynthesisStyle() && !synthesisOptions.contains(FontLookupOptions::DisallowObliqueSynthesis);
 
     if (!needsSyntheticBold && !needsSyntheticOblique)
         return SynthesisPair(false, false);
@@ -991,7 +992,7 @@ void FontCache::prewarm(PrewarmInformation&& prewarmInformation)
             if (auto warmingFont = adoptCF(CTFontCreateWithName(cfFontName.get(), 0, nullptr))) {
                 // This is sufficient to warm CoreText caches for language and character specific fallbacks.
                 CFIndex coveredLength = 0;
-                UniChar character = ' ';
+                UniChar character = space;
 
                 auto fallbackWarmingFont = adoptCF(CTFontCreateForCharactersWithLanguageAndOption(warmingFont.get(), &character, 1, nullptr, kCTFontFallbackOptionSystem, &coveredLength));
             }

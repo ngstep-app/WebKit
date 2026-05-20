@@ -33,8 +33,10 @@ namespace WebCore {
 
 class LayoutScope;
 class LogicalSelectionOffsetCaches;
+class RelayoutScopeForScrollbarChange;
 class RenderInline;
 class RenderText;
+class ScrollbarUpdateScope;
 
 struct PaintInfo;
 struct RenderBlockRareData;
@@ -55,6 +57,7 @@ typedef unsigned TextRunFlags;
 class RenderBlock : public RenderBox {
     WTF_MAKE_TZONE_ALLOCATED(RenderBlock);
     WTF_OVERRIDE_DELETE_FOR_CHECKED_PTR(RenderBlock);
+    friend class RelayoutScopeForScrollbarChange;
 public:
     // FIXME: This is temporary to allow us to move code from RenderBlock into RenderBlockFlow that accesses member variables that we haven't moved out of
     // RenderBlock yet.
@@ -255,18 +258,22 @@ public:
 
     PaintInfo paintInfoForBlockChildren(const PaintInfo&) const;
 
+    void layoutOutOfFlowBoxes(RelayoutChildren, bool fixedPositionObjectsOnly = false);
+
+    static void relayoutRenderBlockForScrollbarChange(RenderBlock&);
+
 protected:
     RenderFragmentedFlow* locateEnclosingFragmentedFlow() const override;
     bool establishesIndependentFormattingContextIgnoringDisplayType(const RenderStyle&) const;
 
     void layout() override;
 
-    void layoutOutOfFlowBoxes(RelayoutChildren, bool fixedPositionObjectsOnly = false);
     virtual void layoutOutOfFlowBox(RenderBox&, RelayoutChildren, bool fixedPositionObjectsOnly);
     
     void markFixedPositionBoxForLayoutIfNeeded(RenderBox& child);
 
-    LayoutUnit marginIntrinsicLogicalWidthForChild(RenderBox&) const;
+    std::pair<LayoutUnit, LayoutUnit> intrinsicLogicalMarginStartAndEnd(const RenderBox&) const;
+    inline LayoutUnit marginIntrinsicLogicalWidthForChild(const RenderBox&) const;
 
     void paint(PaintInfo&, const LayoutPoint&) override;
     void paintObject(PaintInfo&, const LayoutPoint&) override;
@@ -290,7 +297,7 @@ protected:
 
     void removeFromUpdateScrollInfoAfterLayoutTransaction();
 
-    void updateScrollInfoAfterLayout();
+    std::optional<ScrollbarUpdateScope> updateScrollInfoAfterLayout();
 
     void styleWillChange(Style::Difference, const RenderStyle& newStyle) override;
     void styleDidChange(Style::Difference, const RenderStyle* oldStyle) override;
@@ -324,6 +331,8 @@ protected:
     RenderBlockRareData& ensureBlockRareData() LIFETIME_BOUND;
     RenderBlockRareData* NODELETE blockRareData() const LIFETIME_BOUND;
     bool recomputeLogicalWidth();
+
+    LayoutSize intrinsicSize() const override;
 
 private:
     // FIXME-BLOCKFLOW: Remove virtualizaion when all callers have moved to RenderBlockFlow

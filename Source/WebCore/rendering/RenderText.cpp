@@ -90,6 +90,14 @@ using namespace WTF::Unicode;
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(RenderText);
 
+bool isDutchLocale(const AtomString& locale)
+{
+    return locale.length() >= 2
+        && isASCIIAlphaCaselessEqual(locale[0], 'n')
+        && isASCIIAlphaCaselessEqual(locale[1], 'l')
+        && (locale.length() == 2 || locale[2] == '-');
+}
+
 struct SameSizeAsRenderText : public RenderObject {
 #if ENABLE(TEXT_AUTOSIZING)
     float candidateTextSize;
@@ -223,30 +231,95 @@ static inline size_t capitalizeCharacter(String textContent, unsigned startChara
     return capitalize(content.data(), capitalizedContentLength);
 }
 
-String capitalize(const String& string)
+// Titlecase the first letter of a word using ICU's locale-aware u_strToTitle.
+// CSS capitalize only uppercases the first letter; u_strToTitle also lowercases
+// the rest. We determine the titlecased prefix and return only that.
+static size_t capitalizeWordWithLocale(const String& textContent, unsigned startOffset, unsigned endOffset, const AtomString& locale, StringBuilder& output)
 {
-    Vector<char16_t> previousCharacter(1, ' ');
-    return capitalize(string, previousCharacter);
+    auto localeUTF8 = locale.string().utf8();
+    unsigned wordLength = std::min(endOffset, textContent.length()) - startOffset;
+    if (!wordLength)
+        return 0;
+
+    const char16_t* wordData;
+    Vector<char16_t, 32> wordBuffer;
+    if (textContent.is8Bit()) {
+        wordBuffer.resize(wordLength);
+        auto wordSpan = wordBuffer.mutableSpan();
+        for (unsigned i = 0; i < wordLength; ++i)
+            wordSpan[i] = textContent[startOffset + i];
+        wordData = wordSpan.data();
+    } else
+        wordData = textContent.span16().subspan(startOffset, wordLength).data();
+
+    Vector<char16_t, 32> titlecased(wordLength + 4);
+    UErrorCode status = U_ZERO_ERROR;
+    auto realLength = u_strToTitle(titlecased.mutableSpan().data(), titlecased.size(), wordData, wordLength, nullptr, localeUTF8.data(), &status);
+    if (U_FAILURE(status)) {
+        if (status != U_BUFFER_OVERFLOW_ERROR)
+            return 0;
+        titlecased.grow(realLength);
+        status = U_ZERO_ERROR;
+        u_strToTitle(titlecased.mutableSpan().data(), titlecased.size(), wordData, wordLength, nullptr, localeUTF8.data(), &status);
+        if (U_FAILURE(status))
+            return 0;
+    }
+
+    // Find the titlecased prefix: the initial run of non-lowercase alphabetic characters.
+    // For Dutch "ij" with locale "nl", this is 2 ("IJ"). For most words, this is 1.
+    // This assumes the titlecased prefix is BMP-only with no combining marks, which
+    // holds for Dutch IJ. If extended to other locales, use U16_NEXT for surrogate
+    // pairs and handle combining marks.
+    size_t prefixLength = 0;
+    for (size_t i = 0; i < static_cast<size_t>(realLength); ++i) {
+        ASSERT(!U16_IS_SURROGATE(titlecased[i]));
+        auto type = u_charType(titlecased[i]);
+        if (type == U_LOWERCASE_LETTER)
+            break;
+        ASSERT(type != U_NON_SPACING_MARK && type != U_COMBINING_SPACING_MARK);
+        if (U_MASK(type) & U_GC_L_MASK)
+            prefixLength = i + 1;
+    }
+
+    if (!prefixLength)
+        return 0;
+
+    for (size_t i = 0; i < prefixLength; ++i)
+        output.append(static_cast<UChar>(titlecased[i]));
+    return prefixLength;
 }
 
-String capitalize(const String& string, Vector<char16_t> previousCharacter)
+String capitalize(const String& string, const AtomString& locale)
+{
+    return capitalize(string, ' ', locale);
+}
+
+String capitalize(const String& string, char32_t previousCharacter, const AtomString& locale)
 {
     int32_t length = string.length();
-    int32_t previousCharacterLength = previousCharacter.size();
     auto& stringImpl = *string.impl();
 
     static_assert(String::MaxLength < std::numeric_limits<unsigned>::max(), "Must be able to add one without overflowing unsigned");
 
     // Replace NO BREAK SPACE with a normal spaces since ICU does not treat it as a word separator.
+    std::array<char16_t, 2> previousCharacterUTF16;
+    int32_t previousCharacterLength = 0;
+    U16_APPEND_UNSAFE(previousCharacterUTF16, previousCharacterLength, previousCharacter);
+
     Vector<char16_t> stringWithPrevious(previousCharacterLength + length);
     for (int32_t i = 0; i < previousCharacterLength; ++i)
-        stringWithPrevious[i] = convertNoBreakSpaceToSpace(previousCharacter[i]);
+        stringWithPrevious[i] = convertNoBreakSpaceToSpace(previousCharacterUTF16[i]);
     for (int32_t i = previousCharacterLength; i < length + previousCharacterLength; ++i)
         stringWithPrevious[i] = convertNoBreakSpaceToSpace(stringImpl[i - previousCharacterLength]);
 
     auto* breakIterator = WTF::wordBreakIterator(stringWithPrevious.span());
     if (!breakIterator)
         return string;
+
+    bool isDutch = isDutchLocale(locale);
+    auto needsLocaleAwareTitlecase = [&](char16_t firstCharOfWord) {
+        return isDutch && isASCIIAlphaCaselessEqual(firstCharOfWord, 'i');
+    };
 
     StringBuilder result;
     result.reserveCapacity(length);
@@ -255,7 +328,13 @@ String capitalize(const String& string, Vector<char16_t> previousCharacter)
     for (int32_t endOfWord = ubrk_next(breakIterator); endOfWord != UBRK_DONE; startOfWord = endOfWord, endOfWord = ubrk_next(breakIterator)) {
         // Do not try to titlecase the previous content.
         if (startOfWord >= previousCharacterLength) {
-            auto capitalizedContentLength = capitalizeCharacter(string, startOfWord - previousCharacterLength, result);
+            auto startOffset = startOfWord - previousCharacterLength;
+            auto endOffset = endOfWord - previousCharacterLength;
+            size_t capitalizedContentLength;
+            if (needsLocaleAwareTitlecase(stringImpl[startOffset]))
+                capitalizedContentLength = capitalizeWordWithLocale(string, startOffset, endOffset, locale, result);
+            else
+                capitalizedContentLength = capitalizeCharacter(string, startOffset, result);
             for (int32_t i = startOfWord + capitalizedContentLength; i < endOfWord; ++i)
                 result.append(stringImpl[i - previousCharacterLength]);
         } else {
@@ -291,7 +370,12 @@ static LayoutRect selectionRectForTextBox(const InlineIterator::TextBox& textBox
             if ((isLastTextBox && !isCaretWithinLastTextBox) || (!isLastTextBox && !isCaretWithinTextBox))
                 return { };
         } else {
-            bool isRangeWithinTextBox = (rangeStart >= textBox.start() && rangeStart <= textBox.end());
+            bool isRangeWithinTextBox = (rangeStart >= textBox.start() && rangeStart < textBox.end());
+            // When rangeStart == textBox.end(), the range starts _after_ this text box.
+            // However that position is not necessarily at the start of the next line. If there's trimmed content between,
+            // we should consider it a trailing content on the currernt line.
+            if (!isRangeWithinTextBox && rangeStart == textBox.end())
+                isRangeWithinTextBox = textBox.nextTextBox() && textBox.nextTextBox()->start() > textBox.end();
             if (!isRangeWithinTextBox)
                 return { };
         }
@@ -448,24 +532,26 @@ void RenderText::styleDidChange(Style::Difference diff, const RenderStyle* oldSt
     }
 
     const RenderStyle& newStyle = style();
-    if (!oldStyle)
+    if (!oldStyle) {
         initiateFontLoadingByAccessingGlyphDataAndComputeCanUseSimplifiedTextMeasuring(m_text);
+        m_useBackslashAsYenSymbol = computeUseBackslashAsYenSymbol();
+    } else if (oldStyle->fontCascade().useBackslashAsYenSymbol() != newStyle.fontCascade().useBackslashAsYenSymbol())
+        m_useBackslashAsYenSymbol = computeUseBackslashAsYenSymbol();
+
     if (oldStyle && !oldStyle->fontCascadeEqual(newStyle))
         m_canUseSimplifiedTextMeasuring = { };
 
-    bool needsResetText = false;
-    if (!oldStyle) {
-        m_useBackslashAsYenSymbol = computeUseBackslashAsYenSymbol();
-        needsResetText = m_useBackslashAsYenSymbol;
-    } else if (oldStyle->fontCascade().useBackslashAsYenSymbol() != newStyle.fontCascade().useBackslashAsYenSymbol()) {
-        m_useBackslashAsYenSymbol = computeUseBackslashAsYenSymbol();
-        needsResetText = true;
-    }
-
-    auto oldTransform = oldStyle ? oldStyle->textTransform() : Style::TextTransform { CSS::Keyword::None { } };
-    TextSecurity oldSecurity = oldStyle ? oldStyle->textSecurity() : TextSecurity::None;
-    if (needsResetText || oldTransform != newStyle.textTransform() || oldSecurity != newStyle.textSecurity())
-        RenderText::setText(originalText(), true);
+    auto needsRenderedTextUpdateOnly = [&] {
+        if (!oldStyle)
+            return m_useBackslashAsYenSymbol || !newStyle.textTransform().isNone() || newStyle.textSecurity() != TextSecurity::None;
+        if (oldStyle->fontCascade().useBackslashAsYenSymbol() != newStyle.fontCascade().useBackslashAsYenSymbol())
+            return true;
+        if (oldStyle->textTransform() != newStyle.textTransform())
+            return true;
+        return oldStyle->textSecurity() != newStyle.textSecurity();
+    };
+    if (needsRenderedTextUpdateOnly())
+        updateRenderedText();
 
     // FIXME: First line change on the block comes in as equal on text.
     auto needsLayoutBoxStyleUpdate = layoutBox() && (diff >= Style::DifferenceResult::RecompositeLayer || (&style() != &firstLineStyle()));
@@ -566,7 +652,7 @@ void RenderText::collectSelectionGeometries(Vector<SelectionGeometry>& rects, un
         bool containsEnd = textBox->start() <= end && textBox->end() >= end;
 
         bool isFixed = false;
-        auto absoluteQuad = localToAbsoluteQuad(FloatRect(rect), UseTransforms, &isFixed);
+        auto absoluteQuad = localToAbsoluteQuad(FloatRect(rect), MapCoordinatesMode::UseTransforms, &isFixed);
         bool boxIsHorizontal = !is<InlineIterator::SVGTextBoxIterator>(textBox) ? textBox->isHorizontal() : !writingMode().isVertical();
 
         auto selectionGeometry = SelectionGeometry(absoluteQuad, HTMLElement::selectionRenderingBehavior(textNode()), textBox->direction(), extentsRect.x(), extentsRect.maxX(), extentsRect.maxY(), 0, textBox->isLineBreak(), isFirstOnLine, isLastOnLine, containsStart, containsEnd, boxIsHorizontal, isFixed, view().pageNumberForBlockProgressionOffset(absoluteQuad.enclosingBoundingBox().x()));
@@ -616,7 +702,7 @@ static Vector<FloatQuad> collectAbsoluteQuads(const RenderText& textRenderer, bo
             }
         }
         
-        quads.append(textRenderer.localToAbsoluteQuad(boundaries, UseTransforms, wasFixed));
+        quads.append(textRenderer.localToAbsoluteQuad(boundaries, MapCoordinatesMode::UseTransforms, wasFixed));
     }
     return quads;
 }
@@ -719,7 +805,7 @@ Vector<FloatQuad> RenderText::absoluteQuadsForRange(unsigned start, unsigned end
 
             for (auto& rect : rects) {
                 if (FloatRect localRect { rect }; !localRect.isZero())
-                    quads.append(localToAbsoluteQuad(localRect, UseTransforms, wasFixed));
+                    quads.append(localToAbsoluteQuad(localRect, MapCoordinatesMode::UseTransforms, wasFixed));
             }
             continue;
         }
@@ -738,12 +824,12 @@ Vector<FloatQuad> RenderText::absoluteQuadsForRange(unsigned start, unsigned end
                     boundaries.setX(selectionRect.x());
                 }
             }
-            quads.append(localToAbsoluteQuad(boundaries, UseTransforms, wasFixed));
+            quads.append(localToAbsoluteQuad(boundaries, MapCoordinatesMode::UseTransforms, wasFixed));
             continue;
         }
         FloatRect rect = localQuadForTextBox(textBox, start, end, useSelectionHeight);
         if (!rect.isZero())
-            quads.append(localToAbsoluteQuad(rect, UseTransforms, wasFixed));
+            quads.append(localToAbsoluteQuad(rect, MapCoordinatesMode::UseTransforms, wasFixed));
     }
     return quads;
 }
@@ -1025,12 +1111,11 @@ unsigned RenderText::lastCharacterIndexStrippingSpaces() const
     if (!style().collapseWhiteSpace())
         return text().length() - 1;
     
-    int i = text().length() - 1;
-    for ( ; i  >= 0; --i) {
+    for (auto i = text().length(); i--;) {
         if (text()[i] != ' ' && (text()[i] != '\n' || style().preserveNewline()) && text()[i] != '\t')
-            break;
+            return i;
     }
-    return i;
+    return 0;
 }
 
 RenderText::Widths RenderText::trimmedPreferredWidths(float leadWidth, bool& stripFrontSpaces)
@@ -1051,6 +1136,10 @@ RenderText::Widths RenderText::trimmedPreferredWidths(float leadWidth, bool& str
 
     unsigned length = this->length();
 
+    widths.hasBreakableChar = m_hasBreakableChar;
+    widths.hasBreak = m_hasBreak;
+    widths.endsWithBreak = m_hasBreak && length && text()[length - 1] == '\n';
+
     if (!length || (stripFrontSpaces && text().containsOnly<isASCIIWhitespace>()))
         return widths;
 
@@ -1061,10 +1150,6 @@ RenderText::Widths RenderText::trimmedPreferredWidths(float leadWidth, bool& str
 
     widths.beginMin = m_beginMinWidth;
     widths.endMin = m_endMinWidth;
-
-    widths.hasBreakableChar = m_hasBreakableChar;
-    widths.hasBreak = m_hasBreak;
-    widths.endsWithBreak = m_hasBreak && text()[length - 1] == '\n';
 
     if (text()[0] == ' ' || (text()[0] == '\n' && !style.preserveNewline()) || text()[0] == '\t') {
         auto& font = style.fontCascade(); // FIXME: This ignores first-line.
@@ -1180,7 +1265,7 @@ void RenderText::computePreferredLogicalWidths(float leadWidth, bool forcedMinMa
 static inline float hyphenWidth(RenderText& renderer, const FontCascade& font)
 {
     const RenderStyle& style = renderer.style();
-    auto textRun = RenderBlock::constructTextRun(style.hyphenString().string(), style);
+    auto textRun = RenderBlock::constructTextRun(style.hyphenString(), style);
     return font.width(textRun);
 }
 
@@ -1549,7 +1634,7 @@ static inline bool NODELETE isInlineFlowOrEmptyText(const RenderObject& renderer
     return textRenderer && textRenderer->text().isEmpty();
 }
 
-Vector<char16_t> RenderText::previousCharacter() const
+char32_t RenderText::previousCharacter() const
 {
     const RenderObject* previousText = this;
     while ((previousText = previousText->previousInPreOrder())) {
@@ -1559,38 +1644,19 @@ Vector<char16_t> RenderText::previousCharacter() const
             break;
     }
     auto* renderText = dynamicDowncast<RenderText>(previousText);
-    Vector<char16_t> previous;
     if (!renderText)
-        previous.append(' ');
-    else {
-        auto& previousString = renderText->text();
-        if (previousString.is8Bit())
-            previous.append(previousString[previousString.length() - 1]);
-        else {
-            auto previousCharacterLength = [&] {
-                auto contentIterator = SurrogatePairAwareTextIterator { previousString.span16(), 0, previousString.length() };
-                unsigned characterLength = 0;
-                char32_t currentCharacter = 0;
-                while (contentIterator.consume(currentCharacter, characterLength))
-                    contentIterator.advance(characterLength);
-                return characterLength;
-            }();
-
-            if (previousCharacterLength > previousString.length()) {
-                ASSERT_NOT_REACHED();
-                return previous;
-            }
-            for (size_t i = previousString.length() - previousCharacterLength; i < previousString.length(); ++i)
-                previous.append(previousString[i]);
-        }
-    }
-    return previous;
+        return ' ';
+    auto& previousString = renderText->text();
+    unsigned length = previousString.length();
+    if (!length)
+        return ' ';
+    return StringView(previousString).codePointBefore(length);
 }
 
 static String convertToFullSizeKana(const String& string)
 {
     // https://www.w3.org/TR/css-text-3/#small-kana
-    static constexpr SortedArrayMap sortedMap { std::to_array<std::pair<char32_t, char16_t>>({
+    static constexpr SortedArrayMap sortedMap { WTF::toArray<std::pair<char32_t, char16_t>>({
         { 0x3041, 0x3042 },
         { 0x3043, 0x3044 },
         { 0x3045, 0x3046 },
@@ -1689,11 +1755,10 @@ static String convertToMathAuto(const String& string)
 
 String applyTextTransform(const RenderStyle& style, const String& text)
 {
-    Vector<char16_t> previousCharacter(1, ' ');
-    return applyTextTransform(style, text, previousCharacter);
+    return applyTextTransform(style, text, ' ');
 }
 
-String applyTextTransform(const RenderStyle& style, const String& text, Vector<char16_t> previousCharacter)
+String applyTextTransform(const RenderStyle& style, const String& text, char32_t previousCharacter)
 {
     auto transform = style.textTransform();
 
@@ -1703,7 +1768,7 @@ String applyTextTransform(const RenderStyle& style, const String& text, Vector<c
     // https://w3c.github.io/csswg-drafts/css-text/#text-transform-order
     auto modified = text;
     if (transform.contains(Style::TextTransformValue::Capitalize))
-        modified = capitalize(modified, previousCharacter); // FIXME: Need to take locale into account.
+        modified = capitalize(modified, previousCharacter, Style::toPlatform(style.computedLocale()));
     else if (transform.contains(Style::TextTransformValue::Uppercase))
         modified = modified.convertToUppercaseWithLocale(Style::toPlatform(style.computedLocale()));
     else if (transform.contains(Style::TextTransformValue::Lowercase))
@@ -1825,6 +1890,7 @@ static void invalidateLineLayoutPathOnContentChangeIfNeeded(RenderText& renderer
         container->invalidateLineLayout(RenderBlockFlow::InvalidationReason::ContentChange);
         return;
     }
+
     if (!inlineLayout->updateTextContent(renderer, offset, oldLength))
         container->invalidateLineLayout(RenderBlockFlow::InvalidationReason::ContentChange);
 }
@@ -1842,13 +1908,29 @@ void RenderText::setTextInternal(const String& text, bool force)
         m_originalTextDiffersFromRendered = false;
     }
 
-    setRenderedText(text);
-
-    setNeedsLayoutAndPreferredWidthsUpdate();
-    m_knownToHaveNoOverflowAndNoFallbackFonts = false;
+    updateRenderedText(text);
 
     if (AXObjectCache* cache = document().existingAXObjectCache())
         cache->deferTextChangedIfNeeded(textNode());
+}
+
+void RenderText::updateRenderedText(const String& text)
+{
+    setRenderedText(text);
+    setNeedsLayoutAndPreferredWidthsUpdate();
+    m_knownToHaveNoOverflowAndNoFallbackFonts = false;
+}
+
+void RenderText::updateRenderedText()
+{
+    updateRenderedText(originalText());
+    auto invalidateLineLayoutIfNeeded = [&] {
+        CheckedPtr container = LayoutIntegration::LineLayout::blockContainer(*this);
+        if (!container || !container->inlineLayout())
+            return;
+        container->invalidateLineLayout(RenderBlockFlow::InvalidationReason::ContentChange);
+    };
+    invalidateLineLayoutIfNeeded();
 }
 
 void RenderText::setText(const String& newContent, bool force)

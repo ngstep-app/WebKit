@@ -29,6 +29,7 @@
 
 #if ENABLE(MODEL_ELEMENT)
 
+#include "ARKitBadgeSystemImage.h"
 #include "AbortSignal.h"
 #include "ContainerNodeInlines.h"
 #include "DOMMatrixReadOnly.h"
@@ -47,6 +48,7 @@
 #include "FrameDestructionObserverInlines.h"
 #include "GraphicsLayer.h"
 #include "GraphicsLayerCA.h"
+#include "HTMLAnchorElement.h"
 #include "HTMLModelElementCamera.h"
 #include "HTMLNames.h"
 #include "HTMLParserIdioms.h"
@@ -70,18 +72,21 @@
 #include "ModelPlayerProvider.h"
 #include "ModelPlayerTransformState.h"
 #include "MouseEvent.h"
-#include "NodeInlines.h"
 #include "Page.h"
 #include "PlaceholderModelPlayer.h"
+#include "PlatformScreen.h"
 #include "RenderBoxInlines.h"
 #include "RenderLayer.h"
 #include "RenderLayerBacking.h"
 #include "RenderLayerModelObject.h"
 #include "RenderModel.h"
 #include "RenderReplaced.h"
+#include "ScreenProperties.h"
 #include "ScriptController.h"
 #include "Settings.h"
 #include <JavaScriptCore/ConsoleTypes.h>
+#include <JavaScriptCore/HeapInlines.h>
+#include <WebCore/HTTPStatusCodes.h>
 #include <wtf/Seconds.h>
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/URL.h>
@@ -94,7 +99,7 @@
 #include "DocumentImmersive.h"
 #endif
 
-#if ENABLE(TOUCH_EVENTS) && ENABLE(GPU_PROCESS_MODEL)
+#if ENABLE(TOUCH_EVENTS) && (ENABLE(GPU_PROCESS_MODEL) || ENABLE(MODEL_PROCESS))
 #include <WebCore/TouchEvent.h>
 #endif
 
@@ -137,7 +142,20 @@ HTMLModelElement::HTMLModelElement(const QualifiedName& tagName, Document& docum
 #if ENABLE(MODEL_ELEMENT_ENVIRONMENT_MAP)
     , m_environmentMapReadyPromise(makeUniqueRef<EnvironmentMapPromise>())
 #endif
+#if HAVE(SUPPORT_HDR_DISPLAY) && ENABLE(PIXEL_FORMAT_RGBA16F)
+    , m_screenPropertiesChangedObserver(ScreenPropertiesChangedObserver::create([weakThis = WeakPtr { *this }](PlatformDisplayID displayID) {
+        RefPtr protectedThis = weakThis.get();
+        if (!protectedThis)
+            return;
+        if (auto* screenData = WebCore::screenData(displayID))
+            protectedThis->updateScreenHeadroom(screenData->currentEDRHeadroom, screenData->suppressEDR);
+    }))
+#endif
 {
+#if HAVE(SUPPORT_HDR_DISPLAY) && ENABLE(PIXEL_FORMAT_RGBA16F)
+    if (RefPtr screenPropertiesChangedObserver = m_screenPropertiesChangedObserver)
+        document.addScreenPropertiesChangedObserver(*screenPropertiesChangedObserver);
+#endif
 }
 
 HTMLModelElement::~HTMLModelElement()
@@ -328,11 +346,27 @@ RenderPtr<RenderElement> HTMLModelElement::createElementRenderer(RenderStyle&& s
 
 void HTMLModelElement::didAttachRenderers()
 {
+#if ENABLE(MODEL_PROCESS)
+    if (RefPtr page = document().page()) {
+        page->incrementModelElementCount();
+        m_didIncrementModelElementCount = true;
+    }
+#endif
+
     if (!m_shouldCreateModelPlayerUponRendererAttachment)
         return;
 
     m_shouldCreateModelPlayerUponRendererAttachment = false;
     createModelPlayer();
+}
+
+void HTMLModelElement::willDetachRenderers()
+{
+#if ENABLE(MODEL_PROCESS)
+    if (RefPtr page = document().page(); m_didIncrementModelElementCount && page)
+        page->decrementModelElementCount();
+    m_didIncrementModelElementCount = false;
+#endif
 }
 
 // MARK: - CachedRawResourceClient overrides.
@@ -569,6 +603,10 @@ void HTMLModelElement::createModelPlayer()
     modelPlayer->setStageMode(stageMode());
 #endif
 
+#if HAVE(SUPPORT_HDR_DISPLAY) && ENABLE(PIXEL_FORMAT_RGBA16F)
+    modelPlayer->setDynamicRangeLimit(m_dynamicRangeLimit, m_currentEDRHeadroom, m_suppressEDR);
+#endif
+
     // FIXME: We need to tell the player if the size changes as well, so passing this
     // in with load probably doesn't make sense.
     modelPlayer->load(*model, contentSize());
@@ -585,7 +623,7 @@ void HTMLModelElement::createModelPlayer()
 
 void HTMLModelElement::deleteModelPlayer()
 {
-    auto deleteModelPlayerBlock = [weakThis = WeakPtr { *this }, modelPlayerProvider = RefPtr { m_modelPlayerProvider.get() }, modelPlayer = RefPtr { m_modelPlayer }] {
+    auto deleteModelPlayerBlock = [weakThis = WeakPtr { *this }, modelPlayerProvider = protect(m_modelPlayerProvider), modelPlayer = protect(m_modelPlayer)] {
         if (modelPlayerProvider && modelPlayer)
             modelPlayerProvider->deleteModelPlayer(*modelPlayer);
 
@@ -653,6 +691,7 @@ void HTMLModelElement::reloadModelPlayer()
     auto transformState = modelPlayer->currentTransformState();
     ASSERT(animationState && transformState);
 
+#if ENABLE(MODEL_PROCESS)
     if (!m_modelPlayerProvider)
         m_modelPlayerProvider = document().page()->modelPlayerProvider();
     if (RefPtr modelPlayerProvider = m_modelPlayerProvider.get()) {
@@ -663,6 +702,7 @@ void HTMLModelElement::reloadModelPlayer()
         RELEASE_LOG_ERROR(ModelElement, "%p - HTMLModelElement: Failed to create model player to reload with", this);
         return;
     }
+#endif
 
     RELEASE_LOG(ModelElement, "%p - HTMLModelElement: Reloading previous states to new model player: %p", this, modelPlayer.get());
     modelPlayer->reload(*model, contentSize(), *animationState, WTF::move(*transformState));
@@ -791,6 +831,10 @@ bool HTMLModelElement::canSetEntityTransform() const
 
 bool HTMLModelElement::supportsStageModeInteraction() const
 {
+#if ENABLE(MODEL_ELEMENT_IMMERSIVE)
+    if (m_detachedForImmersive)
+        return false;
+#endif
     return canSetEntityTransform();
 }
 
@@ -895,6 +939,28 @@ void HTMLModelElement::defaultEventHandler(Event& event)
 {
     HTMLElement::defaultEventHandler(event);
 
+#if USE(SYSTEM_PREVIEW)
+    // Swallow synthesized click events on the model body inside an <a rel="ar"> so they don't
+    // bubble to the anchor and trigger AR Quick Look. Taps that land on the badge sub-rect ARE
+    // allowed to reach the anchor (that's how AR is launched). We only intercept click here —
+    // not touchstart/mousedown — so the visionOS gesture system still sees the initial touch
+    // events and can drive stagemode="orbit" interaction. This must run BEFORE the
+    // supportsMouseInteraction early-return below, because on visionOS ModelProcessModelPlayer
+    // inherits supportsMouseInteraction() = false, which would otherwise skip all consumption.
+    if (event.type() == eventNames().clickEvent) {
+        if (RefPtr anchor = dynamicDowncast<HTMLAnchorElement>(parentElement()); anchor && anchor->isSystemPreviewLink()) {
+            FloatPoint localPoint;
+            if (auto* mouseEvent = dynamicDowncast<MouseEvent>(&event))
+                localPoint = FloatPoint(mouseEvent->offsetX(), mouseEvent->offsetY());
+            if (!isPointInSystemPreviewBadge(localPoint)) {
+                event.preventDefault();
+                event.setDefaultHandled();
+                event.stopPropagation();
+            }
+        }
+    }
+#endif
+
     RefPtr modelPlayer = m_modelPlayer;
     if (!modelPlayer || !modelPlayer->supportsMouseInteraction())
         return;
@@ -902,11 +968,16 @@ void HTMLModelElement::defaultEventHandler(Event& event)
     auto type = event.type();
     bool isMouseEvent = type == eventNames().mousedownEvent || type == eventNames().mousemoveEvent || type == eventNames().mouseupEvent;
 
-#if ENABLE(TOUCH_EVENTS) && ENABLE(GPU_PROCESS_MODEL)
-    bool isTouchEvent = type == eventNames().touchstartEvent || type == eventNames().touchmoveEvent || type == eventNames().touchendEvent;
+#if ENABLE(TOUCH_EVENTS) && (ENABLE(GPU_PROCESS_MODEL) || ENABLE(MODEL_PROCESS))
+    bool isTouchEvent = type == eventNames().touchstartEvent || type == eventNames().touchmoveEvent || type == eventNames().touchendEvent || type == eventNames().touchcancelEvent;
 
     if (isTouchEvent) {
         auto& touchEvent = downcast<TouchEvent>(event);
+
+#if USE(SYSTEM_PREVIEW)
+        if (type == eventNames().touchstartEvent && !m_isDragging && isPointInSystemPreviewBadge(FloatPoint(touchEvent.offsetX(), touchEvent.offsetY())))
+            return;
+#endif
 
         if (type == eventNames().touchstartEvent && !m_isDragging && !event.defaultPrevented() && isInteractive())
             dragDidStart(touchEvent);
@@ -926,6 +997,11 @@ void HTMLModelElement::defaultEventHandler(Event& event)
     if (mouseEvent.button() != MouseButton::Left)
         return;
 
+#if USE(SYSTEM_PREVIEW)
+    if (type == eventNames().mousedownEvent && !m_isDragging && isPointInSystemPreviewBadge(FloatPoint(mouseEvent.offsetX(), mouseEvent.offsetY())))
+        return;
+#endif
+
     if (type == eventNames().mousedownEvent && !m_isDragging && !event.defaultPrevented() && isInteractive())
         dragDidStart(mouseEvent);
     else if (type == eventNames().mousemoveEvent && m_isDragging)
@@ -941,6 +1017,37 @@ LayoutPoint HTMLModelElement::flippedLocationInElementForMouseEvent(WebCore::Mou
         flippedY = renderModel->paddingBoxHeight() - flippedY;
     return { LayoutUnit(event.offsetX()), flippedY };
 }
+
+#if USE(SYSTEM_PREVIEW)
+bool HTMLModelElement::isPointInSystemPreviewBadge(const FloatPoint& localPoint) const
+{
+    if (!document().settings().systemPreviewEnabled())
+        return false;
+
+    RefPtr anchor = dynamicDowncast<HTMLAnchorElement>(parentElement());
+    if (!anchor || !anchor->isSystemPreviewLink())
+        return false;
+
+    CheckedPtr renderModel = dynamicDowncast<RenderModel>(renderer());
+    if (!renderModel)
+        return false;
+
+    using BadgeMetrics = ARKitBadgeSystemImage::BadgeMetrics;
+    float width = renderModel->paddingBoxWidth();
+    float height = renderModel->paddingBoxHeight();
+
+    bool useSmallBadge = width < BadgeMetrics::minimumSizeForLarge || height < BadgeMetrics::minimumSizeForLarge;
+    float badgeDimension = useSmallBadge ? BadgeMetrics::smallDimension : BadgeMetrics::largeDimension;
+    float badgeOffset = useSmallBadge ? BadgeMetrics::smallOffset : BadgeMetrics::largeOffset;
+
+    float minimumDimension = badgeDimension + 2 * badgeOffset;
+    if (width < minimumDimension || height < minimumDimension)
+        return false;
+
+    FloatRect badgeRect { width - badgeDimension - badgeOffset, badgeOffset, badgeDimension, badgeDimension };
+    return badgeRect.contains(localPoint);
+}
+#endif
 
 void HTMLModelElement::dragDidStart(WebCore::MouseRelatedEvent& event)
 {
@@ -1177,7 +1284,7 @@ const URL& HTMLModelElement::environmentMap() const
 
 void HTMLModelElement::setEnvironmentMap(const URL& url)
 {
-    if (url.string() == m_environmentMapURL.string())
+    if (url == m_environmentMapURL)
         return;
 
     m_environmentMapURL = url;
@@ -1252,7 +1359,7 @@ void HTMLModelElement::environmentMapResetAndReject(Exception&& exception)
 void HTMLModelElement::environmentMapResourceFinished()
 {
     int status = m_environmentMapResource->response().httpStatusCode();
-    if (m_environmentMapResource->loadFailedOrCanceled() || (status && (status < 200 || status > 299))) {
+    if (m_environmentMapResource->loadFailedOrCanceled() || !isHttpOkStatus(status)) {
         environmentMapResetAndReject(Exception { ExceptionCode::NetworkError });
 
         // sending a message with empty data to indicate resource removal
@@ -1440,56 +1547,6 @@ void HTMLModelElement::setAnimationCurrentTime(double currentTime, DOMPromiseDef
     });
 }
 
-// MARK: - Audio support.
-
-void HTMLModelElement::hasAudio(HasAudioPromise&& promise)
-{
-    RefPtr modelPlayer = m_modelPlayer;
-    if (!modelPlayer) {
-        promise.reject();
-        return;
-    }
-
-    modelPlayer->isPlayingAnimation([promise = WTF::move(promise)](std::optional<bool> hasAudio) mutable {
-        if (!hasAudio)
-            promise.reject();
-        else
-            promise.resolve(*hasAudio);
-    });
-}
-
-void HTMLModelElement::isMuted(IsMutedPromise&& promise)
-{
-    RefPtr modelPlayer = m_modelPlayer;
-    if (!modelPlayer) {
-        promise.reject();
-        return;
-    }
-
-    modelPlayer->isPlayingAnimation([promise = WTF::move(promise)](std::optional<bool> isMuted) mutable {
-        if (!isMuted)
-            promise.reject();
-        else
-            promise.resolve(*isMuted);
-    });
-}
-
-void HTMLModelElement::setIsMuted(bool isMuted, DOMPromiseDeferred<void>&& promise)
-{
-    RefPtr modelPlayer = m_modelPlayer;
-    if (!modelPlayer) {
-        promise.reject();
-        return;
-    }
-
-    modelPlayer->setIsMuted(isMuted, [promise = WTF::move(promise)](bool success) mutable {
-        if (success)
-            promise.resolve();
-        else
-            promise.reject();
-    });
-}
-
 #if ENABLE(MODEL_ELEMENT_IMMERSIVE)
 
 bool HTMLModelElement::immersive() const
@@ -1555,18 +1612,23 @@ void HTMLModelElement::exitImmersivePresentation(CompletionHandler<void()>&& com
         return;
     }
 
-    modelPlayer->exitImmersivePresentation([weakThis = WeakPtr { *this }, completion = WTF::move(completion)] mutable {
+    auto generation = m_immersiveDetachGeneration;
+    modelPlayer->exitImmersivePresentation([weakThis = WeakPtr { *this }, generation, completion = WTF::move(completion)] mutable {
         RefPtr protectedThis = weakThis.get();
         if (!protectedThis)
             return completion();
 
-        protectedThis->setDetachedForImmersive(false);
+        // Only reset if no new request has re-armed the flag since this exit started.
+        if (protectedThis->m_immersiveDetachGeneration == generation)
+            protectedThis->setDetachedForImmersive(false);
         completion();
     });
 }
 
 void HTMLModelElement::setDetachedForImmersive(bool detachedForImmersive)
 {
+    if (detachedForImmersive)
+        ++m_immersiveDetachGeneration;
     m_detachedForImmersive = detachedForImmersive;
     visibilityStateChanged();
     invalidateStyleAndLayerComposition();
@@ -1581,7 +1643,7 @@ void HTMLModelElement::ensureModelPlayer(CompletionHandler<void(ExceptionOr<RefP
         reloadModelPlayer();
 
     if (modelPlayer && !modelPlayer->isPlaceholder())
-        return completion(RefPtr { modelPlayer });
+        return completion(protect(modelPlayer));
 
     RELEASE_LOG_INFO(ModelElement, "%p - HTMLModelElement: Model Player creation request: STARTED", this);
     m_modelPlayerCreationCallbacks.append(WTF::move(completion));
@@ -1657,18 +1719,6 @@ bool HTMLModelElement::modelContainerSizeIsEmpty() const
 #endif
 }
 
-#if ENABLE(ARKIT_INLINE_PREVIEW_MAC)
-
-String HTMLModelElement::inlinePreviewUUIDForTesting() const
-{
-    RefPtr modelPlayer = m_modelPlayer;
-    if (!modelPlayer)
-        return emptyString();
-    return modelPlayer->inlinePreviewUUIDForTesting();
-}
-
-#endif
-
 void HTMLModelElement::collectPresentationalHintsForAttribute(const QualifiedName& name, const AtomString& value, MutableStyleProperties& style)
 {
     if (name == widthAttr) {
@@ -1704,9 +1754,6 @@ Node::NeedsPostConnectionSteps HTMLModelElement::insertionSteps(InsertionType in
     if (insertionType.connectedToDocument) {
         Ref document = this->document();
         document->registerForVisibilityStateChangedCallbacks(*this);
-#if ENABLE(MODEL_PROCESS)
-        document->incrementModelElementCount();
-#endif
         m_modelPlayerProvider = document->page()->modelPlayerProvider();
         LazyLoadModelObserver::observe(*this);
     }
@@ -1721,9 +1768,6 @@ void HTMLModelElement::removingSteps(RemovalType removalType, ContainerNode& old
     if (removalType.disconnectedFromDocument) {
         Ref document = this->document();
         document->unregisterForVisibilityStateChangedCallbacks(*this);
-#if ENABLE(MODEL_PROCESS)
-        document->decrementModelElementCount();
-#endif
         LazyLoadModelObserver::unobserve(*this, document);
 
         m_loadModelTimer = nullptr;
@@ -1861,6 +1905,38 @@ String HTMLModelElement::modelElementStateForTesting() const
     ASSERT_NOT_REACHED();
     return "Unknown"_s;
 }
+
+#if HAVE(SUPPORT_HDR_DISPLAY) && ENABLE(PIXEL_FORMAT_RGBA16F)
+void HTMLModelElement::dynamicRangeLimitDidChange(PlatformDynamicRangeLimit dynamicRangeLimit)
+{
+    if (m_dynamicRangeLimit == dynamicRangeLimit)
+        return;
+
+    m_dynamicRangeLimit = dynamicRangeLimit;
+    if (RefPtr modelPlayer = m_modelPlayer)
+        modelPlayer->setDynamicRangeLimit(m_dynamicRangeLimit, m_currentEDRHeadroom, m_suppressEDR);
+}
+
+void HTMLModelElement::updateScreenHeadroom(float currentEDRHeadroom, bool suppressEDR)
+{
+    if (m_suppressEDR == suppressEDR && m_currentEDRHeadroom == currentEDRHeadroom)
+        return;
+
+    m_currentEDRHeadroom = currentEDRHeadroom;
+    m_suppressEDR = suppressEDR;
+
+    if (RefPtr modelPlayer = m_modelPlayer)
+        modelPlayer->setDynamicRangeLimit(m_dynamicRangeLimit, m_currentEDRHeadroom, m_suppressEDR);
+}
+
+std::optional<double> HTMLModelElement::getEffectiveDynamicRangeLimitValue() const
+{
+    if (RefPtr modelPlayer = m_modelPlayer)
+        return modelPlayer->getEffectiveDynamicRangeLimitValue();
+
+    return std::nullopt;
+}
+#endif // HAVE(SUPPORT_HDR_DISPLAY) && ENABLE(PIXEL_FORMAT_RGBA16F)
 
 } // namespace WebCore
 

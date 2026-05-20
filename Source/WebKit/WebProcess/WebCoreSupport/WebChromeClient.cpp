@@ -836,6 +836,12 @@ void WebChromeClient::requestFrameScreenPosition(FrameIdentifier frameID) const
     if (RefPtr page = m_page.get())
         page->requestFrameScreenPosition(frameID);
 }
+
+void WebChromeClient::scheduleAccessibilityFrameGeometryUpdate() const
+{
+    if (RefPtr page = m_page.get())
+        page->scheduleAccessibilityFrameGeometryUpdate();
+}
 #endif
 
 void WebChromeClient::mainFrameDidChange()
@@ -912,7 +918,7 @@ void WebChromeClient::scrollContainingScrollViewsToRevealRect(const IntRect&) co
 CornerRadii WebChromeClient::scrollbarAvoidanceCornerRadii() const
 {
 #if HAVE(NSVIEW_CORNER_CONFIGURATION)
-    if (RefPtr page = m_page.get())
+    if (auto* page = m_page.get())
         return page->scrollbarAvoidanceCornerRadii();
 #endif
     return { };
@@ -1165,6 +1171,7 @@ RefPtr<GraphicsContextGL> WebChromeClient::createGraphicsContextGL(const Graphic
 {
 #if PLATFORM(GTK)
     WebProcess::singleton().initializePlatformDisplayIfNeeded();
+    WebProcess::singleton().initializeVulkanIfNeeded();
 #endif
 #if ENABLE(GPU_PROCESS)
     if (WebProcess::singleton().shouldUseRemoteRenderingForWebGL()) {

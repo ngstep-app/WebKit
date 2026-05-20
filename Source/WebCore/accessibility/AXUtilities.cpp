@@ -27,7 +27,6 @@
 
 #include "AXLoggerBase.h"
 #include "AXObjectCache.h"
-#include "CSSPrimitiveValueMappings.h"
 #include "CSSProperty.h"
 #include "CSSValueList.h"
 #include "Document.h"
@@ -42,6 +41,7 @@
 #include "RenderStyleConstants.h"
 #include "RenderTreeBuilder.h"
 #include "SpaceSplitString.h"
+#include "StyleKeyword+Mappings.h"
 #include "StylePropertiesInlines.h"
 #include <wtf/CheckedPtr.h>
 #include <wtf/RefPtr.h>
@@ -52,8 +52,8 @@ using namespace HTMLNames;
 
 RefPtr<ContainerNode> composedParentIgnoringDocumentFragments(const Node& node)
 {
-    RefPtr ancestor = node.parentInComposedTree();
-    while (is<DocumentFragment>(ancestor.get()))
+    auto* ancestor = node.parentInComposedTree();
+    while (is<DocumentFragment>(ancestor))
         ancestor = ancestor->parentInComposedTree();
     return ancestor;
 }
@@ -137,11 +137,8 @@ bool hasAccNameAttribute(Element& element)
 
     // For title, check that it's not whitespace-only.
     const auto& titleValue = element.attributeWithoutSynchronization(titleAttr);
-    if (!titleValue.isEmpty()) {
-        auto titleCopy = titleValue.string();
-        if (!titleCopy.trim(isASCIIWhitespace).isEmpty())
-            return true;
-    }
+    if (!titleValue.string().containsOnly<isASCIIWhitespace>())
+        return true;
 
     return false;
 }
@@ -530,11 +527,11 @@ std::optional<CursorType> cursorTypeFrom(const StyleProperties& properties)
 {
     for (auto property : properties) {
         if (property.id() == CSSPropertyCursor) {
-            if (auto* primitiveValue = dynamicDowncast<CSSPrimitiveValue>(property.value()))
-                return fromCSSValue<CursorType>(*primitiveValue);
-            if (auto* valueList = dynamicDowncast<CSSValueList>(property.value()); valueList && valueList->size() >= 2) {
-                if (auto* primitiveValue = dynamicDowncast<CSSPrimitiveValue>((*valueList)[valueList->size() - 1]))
-                    return fromCSSValue<CursorType>(*primitiveValue);
+            if (RefPtr keywordValue = dynamicDowncast<CSSKeywordValue>(property.value()))
+                return fromCSSValue<CursorType>(*keywordValue);
+            if (RefPtr valueList = dynamicDowncast<CSSValueList>(property.value()); valueList && valueList->size() >= 2) {
+                if (RefPtr keywordValue = dynamicDowncast<CSSKeywordValue>((*valueList)[valueList->size() - 1]))
+                    return fromCSSValue<CursorType>(*keywordValue);
             }
         }
     }

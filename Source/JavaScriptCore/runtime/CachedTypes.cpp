@@ -44,14 +44,11 @@
 #include "UnlinkedProgramCodeBlock.h"
 #include <wtf/FileHandle.h>
 #include <wtf/InlineMap.h>
-#include <wtf/MallocPtr.h>
 #include <wtf/MallocSpan.h>
 #include <wtf/Packed.h>
-#include <wtf/RobinHoodHashMap.h>
 #include <wtf/StdLibExtras.h>
 #include <wtf/UUID.h>
 #include <wtf/text/AtomStringImpl.h>
-#include <wtf/text/ParsingUtilities.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
@@ -1205,15 +1202,15 @@ class CachedScopedArgumentsTable : public CachedObject<ScopedArgumentsTable> {
 public:
     void encode(Encoder& encoder, const ScopedArgumentsTable& scopedArgumentsTable)
     {
-        m_length = scopedArgumentsTable.m_length;
-        m_arguments.encode(encoder, scopedArgumentsTable.m_arguments.get(), m_length);
+        m_length = scopedArgumentsTable.m_arguments.size();
+        m_arguments.encode(encoder, scopedArgumentsTable.m_arguments.span().data(), m_length);
     }
 
     ScopedArgumentsTable* decode(Decoder& decoder) const
     {
         ScopedArgumentsTable* scopedArgumentsTable = ScopedArgumentsTable::tryCreate(decoder.vm(), m_length);
         RELEASE_ASSERT(scopedArgumentsTable); // We crash here. This is unlikely to continue execution if we hit this condition when decoding UnlinkedCodeBlock.
-        m_arguments.decode(decoder, scopedArgumentsTable->m_arguments.get(), m_length);
+        m_arguments.decode(decoder, scopedArgumentsTable->m_arguments.mutableSpan().data(), m_length);
         return scopedArgumentsTable;
     }
 
@@ -1420,13 +1417,13 @@ public:
 
         JSCell* cell = v.asCell();
 
-        if (auto* symbolTable = jsDynamicCast<SymbolTable*>(cell)) {
+        if (auto* symbolTable = dynamicDowncast<SymbolTable>(cell)) {
             m_type = EncodedType::SymbolTable;
             this->allocate<CachedSymbolTable>(encoder)->encode(encoder, *symbolTable);
             return;
         }
 
-        if (auto* string = jsDynamicCast<JSString*>(cell)) {
+        if (auto* string = dynamicDowncast<JSString>(cell)) {
             m_type = EncodedType::String;
             // TODO: This seems wrong? What if this fails.
             auto str = string->tryGetValue();
@@ -1434,25 +1431,25 @@ public:
             return;
         }
 
-        if (auto* immutableButterfly = jsDynamicCast<JSCellButterfly*>(cell)) {
+        if (auto* immutableButterfly = dynamicDowncast<JSCellButterfly>(cell)) {
             m_type = EncodedType::ImmutableButterfly;
             this->allocate<CachedImmutableButterfly>(encoder)->encode(encoder, *immutableButterfly);
             return;
         }
 
-        if (auto* regexp = jsDynamicCast<RegExp*>(cell)) {
+        if (auto* regexp = dynamicDowncast<RegExp>(cell)) {
             m_type = EncodedType::RegExp;
             this->allocate<CachedRegExp>(encoder)->encode(encoder, *regexp);
             return;
         }
 
-        if (auto* templateObjectDescriptor = jsDynamicCast<JSTemplateObjectDescriptor*>(cell)) {
+        if (auto* templateObjectDescriptor = dynamicDowncast<JSTemplateObjectDescriptor>(cell)) {
             m_type = EncodedType::TemplateObjectDescriptor;
             this->allocate<CachedTemplateObjectDescriptor>(encoder)->encode(encoder, *templateObjectDescriptor);
             return;
         }
 
-        if (auto* bigInt = jsDynamicCast<JSBigInt*>(cell)) {
+        if (auto* bigInt = dynamicDowncast<JSBigInt>(cell)) {
             m_type = EncodedType::BigInt;
             this->allocate<CachedBigInt>(encoder)->encode(encoder, *bigInt);
             return;
@@ -1937,6 +1934,7 @@ public:
     unsigned NODELETE scriptMode() const { return m_scriptMode; }
     unsigned NODELETE superBinding() const { return m_superBinding; }
     unsigned NODELETE derivedContextType() const { return m_derivedContextType; }
+    unsigned NODELETE evalContextType() const { return m_evalContextType; }
     unsigned NODELETE inlineAttribute() const { return m_inlineAttribute; }
     unsigned NODELETE needsClassFieldInitializer() const { return m_needsClassFieldInitializer; }
     unsigned NODELETE privateBrandRequirement() const { return m_privateBrandRequirement; }
@@ -1972,6 +1970,7 @@ private:
     unsigned m_constructorKind : 2;
     unsigned m_functionMode : 2; // FunctionMode
     unsigned m_derivedContextType: 2;
+    unsigned m_evalContextType : 2;
     unsigned m_inlineAttribute : 1;
     unsigned m_needsClassFieldInitializer : 1;
     unsigned m_implementationVisibility : bitWidthOfImplementationVisibility;
@@ -2017,6 +2016,7 @@ public:
     Ref<UnlinkedMetadataTable> metadata(Decoder& decoder) const { return m_metadata.decode(decoder); }
 
     unsigned NODELETE isConstructor() const { return m_isConstructor; }
+    unsigned NODELETE isBuiltinDefaultClassConstructor() const { return m_isBuiltinDefaultClassConstructor; }
     unsigned NODELETE hasCapturedVariables() const { return m_hasCapturedVariables; }
     unsigned NODELETE isBuiltinFunction() const { return m_isBuiltinFunction; }
     unsigned NODELETE superBinding() const { return m_superBinding; }
@@ -2053,6 +2053,7 @@ private:
     VirtualRegister m_scopeRegister;
 
     unsigned m_isConstructor : 1;
+    unsigned m_isBuiltinDefaultClassConstructor : 1;
     unsigned m_hasCapturedVariables : 1;
     unsigned m_isBuiltinFunction : 1;
     unsigned m_superBinding : 1;
@@ -2259,6 +2260,7 @@ ALWAYS_INLINE UnlinkedCodeBlock::UnlinkedCodeBlock(Decoder& decoder, Structure* 
     , m_hasCapturedVariables(cachedCodeBlock.hasCapturedVariables())
 
     , m_isBuiltinFunction(cachedCodeBlock.isBuiltinFunction())
+    , m_isBuiltinDefaultClassConstructor(cachedCodeBlock.isBuiltinDefaultClassConstructor())
     , m_superBinding(cachedCodeBlock.superBinding())
     , m_scriptMode(cachedCodeBlock.scriptMode())
     , m_isArrowFunctionContext(cachedCodeBlock.isArrowFunctionContext())
@@ -2349,6 +2351,7 @@ ALWAYS_INLINE void CachedFunctionExecutable::encode(Encoder& encoder, const Unli
     m_scriptMode = executable.m_scriptMode;
     m_superBinding = executable.m_superBinding;
     m_derivedContextType = executable.m_derivedContextType;
+    m_evalContextType = executable.m_evalContextType;
     m_inlineAttribute = executable.m_inlineAttribute;
     m_needsClassFieldInitializer = executable.m_needsClassFieldInitializer;
     m_implementationVisibility = executable.m_implementationVisibility;
@@ -2394,6 +2397,7 @@ ALWAYS_INLINE UnlinkedFunctionExecutable::UnlinkedFunctionExecutable(Decoder& de
     , m_unlinkedFunctionEnd(cachedExecutable.unlinkedFunctionEnd())
     , m_needsClassFieldInitializer(cachedExecutable.needsClassFieldInitializer())
     , m_parameterCount(cachedExecutable.parameterCount())
+    , m_singletonHasBeenInvalidated(false)
     , m_privateBrandRequirement(cachedExecutable.privateBrandRequirement())
     , m_features(cachedExecutable.features())
     , m_constructorKind(cachedExecutable.constructorKind())
@@ -2403,6 +2407,7 @@ ALWAYS_INLINE UnlinkedFunctionExecutable::UnlinkedFunctionExecutable(Decoder& de
     , m_functionMode(cachedExecutable.functionMode())
     , m_derivedContextType(cachedExecutable.derivedContextType())
     , m_inlineAttribute(cachedExecutable.inlineAttribute())
+    , m_evalContextType(cachedExecutable.evalContextType())
     , m_unlinkedCodeBlockForCall()
     , m_unlinkedCodeBlockForConstruct()
 
@@ -2448,6 +2453,7 @@ ALWAYS_INLINE void CachedCodeBlock<CodeBlockType>::encode(Encoder& encoder, cons
     m_isConstructor = codeBlock.m_isConstructor;
     m_hasCapturedVariables = codeBlock.m_hasCapturedVariables;
     m_isBuiltinFunction = codeBlock.m_isBuiltinFunction;
+    m_isBuiltinDefaultClassConstructor = codeBlock.m_isBuiltinDefaultClassConstructor;
     m_superBinding = codeBlock.m_superBinding;
     m_scriptMode = codeBlock.m_scriptMode;
     m_isArrowFunctionContext = codeBlock.m_isArrowFunctionContext;
@@ -2630,7 +2636,7 @@ template<typename UnlinkedCodeBlockType>
 void encodeCodeBlock(Encoder& encoder, const SourceCodeKey& key, const UnlinkedCodeBlock* codeBlock)
 {
     auto* entry = encoder.template malloc<CacheEntry<UnlinkedCodeBlockType>>(encoder);
-    entry->encode(encoder, { key, jsCast<const UnlinkedCodeBlockType*>(codeBlock) });
+    entry->encode(encoder, { key, uncheckedDowncast<UnlinkedCodeBlockType>(codeBlock) });
 }
 
 RefPtr<CachedBytecode> encodeCodeBlock(VM& vm, const SourceCodeKey& key, const UnlinkedCodeBlock* codeBlock, FileSystem::FileHandle& fileHandle, BytecodeCacheError& error)

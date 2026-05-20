@@ -28,7 +28,6 @@
 #import "AuthenticationChallenge.h"
 #import "AuthenticationCocoa.h"
 #import "CachedResourceLoader.h"
-#import "CookieStorage.h"
 #import "CredentialStorage.h"
 #import "FormDataStreamCocoa.h"
 #import "FrameLoader.h"
@@ -82,9 +81,7 @@ static NSOperationQueue *operationQueueForAsyncClients()
     return queue.get().get();
 }
 
-ResourceHandleInternal::~ResourceHandleInternal()
-{
-}
+ResourceHandleInternal::~ResourceHandleInternal() = default;
 
 ResourceHandle::~ResourceHandle()
 {

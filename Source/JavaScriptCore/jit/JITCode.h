@@ -28,6 +28,7 @@
 #include <JavaScriptCore/ArityCheckMode.h>
 #include <JavaScriptCore/CallFrame.h>
 #include <JavaScriptCore/CodeOrigin.h>
+#include <JavaScriptCore/Intrinsic.h>
 #include <JavaScriptCore/JSCJSValue.h>
 #include <JavaScriptCore/MacroAssemblerCodeRef.h>
 #include <JavaScriptCore/RegisterAtOffsetList.h>
@@ -70,7 +71,7 @@ enum class JITType : uint8_t {
     FTLJIT = 0b101,
 };
 static constexpr unsigned widthOfJITType = 3;
-static_assert(WTF::getMSBSetConstexpr(static_cast<std::underlying_type_t<JITType>>(JITType::FTLJIT)) + 1 == widthOfJITType);
+static_assert(WTF::getMSBSet(static_cast<std::underlying_type_t<JITType>>(JITType::FTLJIT)) + 1 == widthOfJITType);
 
 #if CPU(ADDRESS64)
 template<typename ByteSizedEnumType>

@@ -32,9 +32,8 @@
 
 #include "AXObjectCacheInlines.h"
 #include "AccessibilityObject.h"
-#include "CSSGridAutoRepeatValue.h"
-#include "CSSGridIntegerRepeatValue.h"
-#include "CSSGridLineNamesValue.h"
+#include "CSSGridTemplateListValue.h"
+#include "CSSPrimitiveNumericTypes+Serialization.h"
 #include "CSSSerializationContext.h"
 #include "CSSStyleDeclaration.h"
 #include "CSSValuePool.h"
@@ -42,7 +41,6 @@
 #include "DOMCSSNamespace.h"
 #include "DOMTokenList.h"
 #include "ElementInlines.h"
-#include "EventTargetInlines.h"
 #include "FloatLine.h"
 #include "FloatPoint.h"
 #include "FloatRoundedRect.h"
@@ -1212,14 +1210,20 @@ Path InspectorOverlay::drawElementTitle(GraphicsContext& context, Node& node, co
     Vector<String> layoutContextBubbleStrings;
     
     if (rendererIsFlexboxItem(*renderer))
-        layoutContextBubbleStrings.append(WEB_UI_STRING_KEY("Flex Item", "Flex Item (Inspector Element Selection)", "Inspector element selection tooltip text for items inside a Flexbox Container."));
+        layoutContextBubbleStrings.append(WEB_UI_STRING_KEY("flex item", "flex item (Inspector Element Selection)", "Inspector element selection tooltip text for items inside a Flexbox Container."));
     else if (rendererIsGridItem(*renderer))
-        layoutContextBubbleStrings.append(WEB_UI_STRING_KEY("Grid Item", "Grid Item (Inspector Element Selection)", "Inspector element selection tooltip text for items inside a Grid Container."));
+        layoutContextBubbleStrings.append(WEB_UI_STRING_KEY("grid item", "grid item (Inspector Element Selection)", "Inspector element selection tooltip text for items inside a Grid Container."));
 
     if (is<RenderFlexibleBox>(renderer))
-        layoutContextBubbleStrings.append(WEB_UI_STRING_KEY("Flex", "Flex (Inspector Element Selection)", "Inspector element selection tooltip text for Flexbox containers."));
-    else if (is<RenderGrid>(renderer))
-        layoutContextBubbleStrings.append(WEB_UI_STRING_KEY("Grid", "Grid (Inspector Element Selection)", "Inspector element selection tooltip text for Grid containers."));
+        layoutContextBubbleStrings.append(WEB_UI_STRING_KEY("flex", "flex (Inspector Element Selection)", "Inspector element selection tooltip text for Flexbox containers."));
+    else if (CheckedPtr renderGrid = dynamicDowncast<RenderGrid>(renderer)) {
+        if (renderGrid->isSubgrid())
+            layoutContextBubbleStrings.append(WEB_UI_STRING_KEY("subgrid", "subgrid (Inspector Element Selection)", "Inspector element selection tooltip text for Subgrid containers."));
+        else if (renderGrid->isMasonry())
+            layoutContextBubbleStrings.append(WEB_UI_STRING_KEY("grid lanes", "grid lanes (Inspector Element Selection)", "Inspector element selection tooltip text for Grid Lanes containers."));
+        else
+            layoutContextBubbleStrings.append(WEB_UI_STRING_KEY("grid", "grid (Inspector Element Selection)", "Inspector element selection tooltip text for Grid containers."));
+    }
 
     // Need to enable AX to get the computed role.
     WebCore::AXObjectCache::enableAccessibility();
@@ -1441,42 +1445,65 @@ static Vector<String> authoredGridTrackSizes(Node* node, Style::GridTrackSizingD
             cssValue = computedValue;
     }
 
-    RefPtr cssValueList = dynamicDowncast<CSSValueList>(cssValue.get());
-    if (!cssValueList)
+    RefPtr gridTemplateListValue = dynamicDowncast<CSSGridTemplateListValue>(cssValue.get());
+    if (!gridTemplateListValue)
         return { };
-    Vector<String> trackSizes;
 
-    auto handleValueIgnoringLineNames = [&](const CSSValue& currentValue) {
-        if (!is<CSSGridLineNamesValue>(currentValue))
-            trackSizes.append(currentValue.cssText(CSS::defaultSerializationContext()));
-    };
+    return WTF::switchOn(gridTemplateListValue->list(),
+        [&](CSS::Keyword::None) -> Vector<String> {
+            return { };
+        },
+        [&](const CSS::GridSubgrid&) -> Vector<String> {
+            return { };
+        },
+        [&](const CSS::GridTrackList& trackList) -> Vector<String> {
+            Vector<String> trackSizes;
 
-    for (Ref currentValue : *cssValueList) {
-        if (RefPtr cssGridAutoRepeatValue = dynamicDowncast<CSSGridAutoRepeatValue>(currentValue)) {
-            // Auto-repeated values will be looped through until no more values were used in layout based on the expected track count.
-            while (trackSizes.size() < expectedTrackCount) {
-                for (Ref autoRepeatValue : *cssGridAutoRepeatValue) {
-                    handleValueIgnoringLineNames(autoRepeatValue);
-                    if (trackSizes.size() >= expectedTrackCount)
-                        break;
-                }
+            for (auto& track : trackList.value) {
+                WTF::switchOn(track,
+                    [&](const CSS::GridLineNames&) {
+                        // Only adding track sizes, so line names are ignored.
+                    },
+                    [&](const CSS::GridTrackSize& trackSize) {
+                        trackSizes.append(CSS::serializationForCSS(CSS::defaultSerializationContext(), trackSize));
+                    },
+                    [&](const CSS::GridTrackRepeatFunction& repeatFunction) {
+                        auto handleValueIgnoringLineNames = [&](const auto& repeatedValue) {
+                            if (auto* trackSize = std::get_if<CSS::GridTrackSize>(&repeatedValue))
+                                trackSizes.append(CSS::serializationForCSS(CSS::defaultSerializationContext(), *trackSize));
+                        };
+
+                        WTF::switchOn(repeatFunction->repetitions,
+                            [&](const CSS::Integer<CSS::Positive, unsigned>& numberOfRepetitions) {
+                                return WTF::switchOn(numberOfRepetitions,
+                                    [&](const CSS::Integer<CSS::Positive, unsigned>::Raw& numberOfRepetitions) {
+                                        for (unsigned i = 0; i < numberOfRepetitions.value; ++i) {
+                                            for (auto& repeatedValue : repeatFunction->repeated)
+                                                handleValueIgnoringLineNames(repeatedValue);
+                                        }
+                                    },
+                                    [&](const CSS::Integer<CSS::Positive, unsigned>::Calc&) {
+                                        // Number of repetitions is not yet calculated.
+                                    }
+                                );
+                            },
+                            [&](CSS::SpecificKeyword auto const& /* auto-fit or auto-fill */) {
+                                while (trackSizes.size() < expectedTrackCount) {
+                                    for (auto& repeatedValue : repeatFunction->repeated) {
+                                        handleValueIgnoringLineNames(repeatedValue);
+                                        if (trackSizes.size() >= expectedTrackCount)
+                                            break;
+                                    }
+                                }
+                            }
+                        );
+                    }
+                );
             }
-            break;
-        }
 
-        if (RefPtr cssGridIntegerRepeatValue = dynamicDowncast<CSSGridIntegerRepeatValue>(currentValue)) {
-            size_t repetitions = cssGridIntegerRepeatValue->repetitions().resolveAsIntegerDeprecated();
-            for (size_t i = 0; i < repetitions; ++i) {
-                for (Ref integerRepeatValue : *cssGridIntegerRepeatValue)
-                    handleValueIgnoringLineNames(integerRepeatValue);
-            }
-            continue;
+            return trackSizes;
         }
-
-        handleValueIgnoringLineNames(currentValue);
-    }
-    
-    return trackSizes;
+    );
 }
 
 static Style::GridOrderedNamedLinesMap gridLineNames(const RenderStyle* renderStyle, Style::GridTrackSizingDirection direction, unsigned expectedLineCount)
@@ -1485,9 +1512,9 @@ static Style::GridOrderedNamedLinesMap gridLineNames(const RenderStyle* renderSt
         return { };
     
     Style::GridOrderedNamedLinesMap combinedGridLineNames;
-    auto appendLineNames = [&](unsigned index, const Vector<String>& newNames) {
+    auto appendLineNames = [&](unsigned index, const Style::GridLineNames& newNames) {
         if (auto result = combinedGridLineNames.map.add(index, newNames); !result.isNewEntry)
-            result.iterator->value.appendVector(newNames);
+            result.iterator->value.value.value.appendVector(newNames.value.value);
     };
 
     auto& tracks = renderStyle->gridTemplateList(direction);
@@ -1507,7 +1534,7 @@ static Style::GridOrderedNamedLinesMap gridLineNames(const RenderStyle* renderSt
 
     for (auto& [name, indexes] : renderStyle->gridTemplateAreas().implicitNamedGridLines(direction).map) {
         for (auto i : indexes)
-            appendLineNames(i, {name});
+            appendLineNames(i, Style::GridLineNames { { name } });
     }
     
     return combinedGridLineNames;
@@ -1728,7 +1755,7 @@ std::optional<InspectorOverlay::Highlight::GridHighlightOverlay> InspectorOverla
             for (auto lineName : columnLineNames.map.get(i)) {
                 if (!lineLabel.isEmpty())
                     lineLabel.append(thinSpace, bullet, thinSpace);
-                lineLabel.append(lineName);
+                lineLabel.append(lineName.value);
             }
         }
 
@@ -1816,7 +1843,7 @@ std::optional<InspectorOverlay::Highlight::GridHighlightOverlay> InspectorOverla
             for (auto lineName : rowLineNames.map.get(i)) {
                 if (!lineLabel.isEmpty())
                     lineLabel.append(thinSpace, bullet, thinSpace);
-                lineLabel.append(lineName);
+                lineLabel.append(lineName.value);
             }
         }
 

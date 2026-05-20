@@ -28,10 +28,11 @@
 
 #include "CSSFontFaceSource.h"
 #include "CSSFontFaceSrcValue.h"
+#include "CSSFontFamilyNameValue.h"
 #include "CSSFontFeatureValue.h"
 #include "CSSFontSelector.h"
 #include "CSSFontStyleRangeValue.h"
-#include "CSSPrimitiveValueMappings.h"
+#include "CSSMarkup.h"
 #include "CSSUnicodeRangeValue.h"
 #include "CSSValue.h"
 #include "CSSValueList.h"
@@ -46,6 +47,10 @@
 #include "SVGFontFaceElement.h"
 #include "Settings.h"
 #include "SharedBuffer.h"
+#include "StyleKeyword+Mappings.h"
+#include "StylePrimitiveNumericTypes+Conversions.h"
+#include "StylePrimitiveNumericTypes+DeprecatedCSSValueConversion.h"
+#include "StylePrimitiveNumericTypes+DeprecatedConversions.h"
 #include "StyleProperties.h"
 #include "StyleResolveForFont.h"
 #include "StyleRule.h"
@@ -168,17 +173,14 @@ static FontSelectionRange calculateWeightRange(CSSValue& value)
         ASSERT(valueList->length() == 2);
         if (valueList->length() != 2)
             return { normalWeightValue(), normalWeightValue() };
-        ASSERT(valueList->item(0)->isPrimitiveValue());
-        ASSERT(valueList->item(1)->isPrimitiveValue());
-        Ref value0 = downcast<CSSPrimitiveValue>(*valueList->item(0));
-        Ref value1 = downcast<CSSPrimitiveValue>(*valueList->item(1));
+        Ref value0 = *valueList->item(0);
+        Ref value1 = *valueList->item(1);
         auto result0 = Style::fontWeightFromCSSValueDeprecated(value0);
         auto result1 = Style::fontWeightFromCSSValueDeprecated(value1);
         return { result0, result1 };
     }
 
-    auto& primitiveValue = downcast<CSSPrimitiveValue>(value);
-    FontSelectionValue result = Style::fontWeightFromCSSValueDeprecated(primitiveValue);
+    FontSelectionValue result = Style::fontWeightFromCSSValueDeprecated(value);
     return { result, result };
 }
 
@@ -203,17 +205,14 @@ static FontSelectionRange calculateWidthRange(CSSValue& value)
         ASSERT(valueList->length() == 2);
         if (valueList->length() != 2)
             return { normalWidthValue(), normalWidthValue() };
-        ASSERT(valueList->item(0)->isPrimitiveValue());
-        ASSERT(valueList->item(1)->isPrimitiveValue());
-        Ref value0 = downcast<CSSPrimitiveValue>(*valueList->item(0));
-        Ref value1 = downcast<CSSPrimitiveValue>(*valueList->item(1));
+        Ref value0 = *valueList->item(0);
+        Ref value1 = *valueList->item(1);
         auto result0 = Style::fontStretchFromCSSValueDeprecated(value0);
         auto result1 = Style::fontStretchFromCSSValueDeprecated(value1);
         return { result0, result1 };
     }
 
-    const auto& primitiveValue = downcast<CSSPrimitiveValue>(value);
-    FontSelectionValue result = Style::fontStretchFromCSSValueDeprecated(primitiveValue);
+    FontSelectionValue result = Style::fontStretchFromCSSValueDeprecated(value);
     return { result, result };
 }
 
@@ -244,28 +243,31 @@ static FontFaceStyleInfo calculateFontFaceStyleInfo(CSSValue& value)
         auto slope = Style::fontStyleFromCSSValueDeprecated(value);
         if (!slope)
             return { FontSelectionRange { normalItalicValue() }, FontStyleAxis::normal };
-        auto axis = (value.valueID() == CSSValueItalic) ? FontStyleAxis::ital : FontStyleAxis::slnt;
+        auto axis = isValueID(value, CSSValueItalic) ? FontStyleAxis::ital : FontStyleAxis::slnt;
         return { FontSelectionRange { *slope }, axis };
     }
 
-    auto keyword = rangeValue->fontStyleValue->valueID();
-    if (!rangeValue->obliqueValues) {
-        if (keyword == CSSValueNormal)
+    return WTF::switchOn(rangeValue->fontStyleRange(),
+        [](const CSS::Keyword::Normal&) -> FontFaceStyleInfo {
             return { FontSelectionRange { normalItalicValue() }, FontStyleAxis::normal };
-        if (keyword == CSSValueItalic)
+        },
+        [](const CSS::Keyword::Italic&) -> FontFaceStyleInfo {
             return { FontSelectionRange { italicValue() }, FontStyleAxis::ital };
-        ASSERT(keyword == CSSValueOblique);
-        return { FontSelectionRange { italicValue() }, FontStyleAxis::slnt };
-    }
-    ASSERT(keyword == CSSValueOblique);
-    auto length = rangeValue->obliqueValues->length();
-    ASSERT(length == 1 || length == 2);
-    auto angleAtIndex = [rangeValue = Ref { *rangeValue }] (size_t index) {
-        return Style::fontStyleAngleFromCSSValueDeprecated(*rangeValue->obliqueValues->itemWithoutBoundsCheck(index));
-    };
-    if (length == 1)
-        return { FontSelectionRange { angleAtIndex(0) }, FontStyleAxis::slnt };
-    return { { angleAtIndex(0), angleAtIndex(1) }, FontStyleAxis::slnt };
+        },
+        [](const CSS::FontStyleRange::Oblique& oblique) -> FontFaceStyleInfo {
+            auto resolveAngle = [](auto& angle) {
+                if (requiresConversionData(angle))
+                    return FontSelectionValue { 0 };
+                return FontSelectionValue { narrowPrecisionToFloat(Style::toStyle(angle, NoConversionDataRequiredToken { }).value) };
+            };
+
+            if (!oblique.first)
+                return { FontSelectionRange { italicValue() }, FontStyleAxis::slnt };
+            if (!oblique.second)
+                return { FontSelectionRange { resolveAngle(*oblique.first) }, FontStyleAxis::slnt };
+            return { FontSelectionRange { resolveAngle(*oblique.first), resolveAngle(*oblique.second) }, FontStyleAxis::slnt };
+        }
+    );
 }
 
 void CSSFontFace::setStyle(CSSValue& style)
@@ -306,7 +308,7 @@ void CSSFontFace::setUnicodeRange(CSSValueList& list)
 void CSSFontFace::setFeatureSettings(CSSValue& featureSettings)
 {
     // Can only call this with a primitive value of normal, or a value list containing font feature values.
-    ASSERT(is<CSSPrimitiveValue>(featureSettings) || is<CSSValueList>(featureSettings));
+    ASSERT(is<CSSKeywordValue>(featureSettings) || is<CSSValueList>(featureSettings));
 
     mutableProperties().setProperty(CSSPropertyFontFeatureSettings, featureSettings);
 
@@ -315,8 +317,10 @@ void CSSFontFace::setFeatureSettings(CSSValue& featureSettings)
     if (auto* list = dynamicDowncast<CSSValueList>(featureSettings)) {
         for (Ref rangeValue : *list) {
             Ref feature = downcast<CSSFontFeatureValue>(rangeValue);
-            if (RefPtr primitiveValue = dynamicDowncast<CSSPrimitiveValue>(feature->value()))
-                settings.insert({ feature->tag(), primitiveValue->resolveAsIntegerDeprecated() });
+            settings.insert({
+                feature->tag(),
+                Style::deprecatedToStyle(feature->value()).value,
+            });
         }
     }
 
@@ -335,7 +339,7 @@ void CSSFontFace::setSizeAdjust(CSSValue& value)
     mutableProperties().setProperty(CSSPropertySizeAdjust, value);
 
     auto& sizeAdjustValue = downcast<CSSPrimitiveValue>(value);
-    auto sizeAdjust = sizeAdjustValue.resolveAsPercentageDeprecated<float>() / 100;
+    auto sizeAdjust = Style::deprecatedToStyleFromCSSValue<Style::Percentage<CSS::Nonnegative, float>>(sizeAdjustValue)->value / 100;
 
     if (m_sizeAdjust == sizeAdjust)
         return;
@@ -363,13 +367,12 @@ void CSSFontFace::setDisplay(CSSValue& loadingBehaviorValue)
     });
 }
 
-String CSSFontFace::family() const
+AtomString CSSFontFace::family() const
 {
-    RefPtr value = dynamicDowncast<CSSPrimitiveValue>(properties().getPropertyCSSValue(CSSPropertyFontFamily));
+    RefPtr value = dynamicDowncast<CSSFontFamilyNameValue>(properties().getPropertyCSSValue(CSSPropertyFontFamily));
     if (!value)
         return { };
-    ASSERT(value->isFontFamily());
-    return value->stringValue();
+    return AtomString(serializeFontFamily(value->fontFamilyName().value));
 }
 
 String CSSFontFace::style() const
@@ -660,7 +663,7 @@ size_t CSSFontFace::pump(ExternalResourceDownloadPolicy policy)
             // but it seems that this behavior is a requirement of the design of FontRanges. FIXME: Perhaps rethink
             // this design.
             if (policy == ExternalResourceDownloadPolicy::Allow || !source->requiresExternalResource()) {
-                if (policy == ExternalResourceDownloadPolicy::Allow && m_status == Status::Pending)
+                if (m_status == Status::Pending)
                     setStatus(Status::Loading);
                 source->load(m_trustedType, protect(document()).get());
             }
@@ -683,7 +686,7 @@ size_t CSSFontFace::pump(ExternalResourceDownloadPolicy policy)
                 setStatus(Status::Success);
             return i;
         case CSSFontFaceSource::Status::Failure:
-            if (policy == ExternalResourceDownloadPolicy::Allow && m_status == Status::Pending)
+            if ((policy == ExternalResourceDownloadPolicy::Allow || !source->requiresExternalResource()) && m_status == Status::Pending)
                 setStatus(Status::Loading);
             break;
         }

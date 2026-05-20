@@ -74,7 +74,7 @@ static bool isMultichannelOpusAvailable()
             return false;
 
         size_t count = propertySize / sizeof(AudioChannelLayoutTag);
-        Vector<AudioChannelLayoutTag> channelLayoutTags(count, { });
+        Vector<AudioChannelLayoutTag> channelLayoutTags(FillWith { }, count, { });
 
         error = PAL::AudioFormatGetProperty(kAudioFormatProperty_AvailableDecodeChannelLayoutTags, sizeof(asbd), &asbd, &propertySize, channelLayoutTags.mutableSpan().data());
         if (error != noErr)
@@ -142,7 +142,7 @@ bool AVAssetMIMETypeCache::isUnsupportedContainerType(const String& type)
 
 bool AVAssetMIMETypeCache::isStaticContainerType(StringView type)
 {
-    static constexpr SortedArraySet staticContainerTypesSet { std::to_array<ComparableLettersLiteral>({
+    static constexpr SortedArraySet staticContainerTypesSet { WTF::toArray<ComparableLettersLiteral>({
         "application/vnd.apple.mpegurl"_s,
         "application/x-mpegurl"_s,
         "audio/3gpp"_s,

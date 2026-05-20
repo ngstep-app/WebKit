@@ -28,6 +28,7 @@
 #include <WebCore/Event.h>
 #include <WebCore/QuirksData.h>
 #include <WebCore/RegistrableDomain.h>
+#include <WebCore/UserAgent.h>
 #include <optional>
 #include <wtf/Forward.h>
 #include <wtf/Platform.h>
@@ -68,18 +69,21 @@ public:
 
     bool NODELETE shouldSilenceResizeObservers() const;
     bool NODELETE shouldSilenceWindowResizeEventsDuringApplicationSnapshotting() const;
+    bool shouldDeferIntersectionObserversDuringResize() const;
     bool NODELETE shouldSilenceMediaQueryListChangeEvents() const;
     bool shouldIgnoreInvalidSignal() const;
+    bool needsAnchorToBeMouseFocusable() const;
     bool needsFormControlToBeMouseFocusable() const;
     bool needsAutoplayPlayPauseEvents() const;
     bool needsSeekingSupportDisabled() const;
     bool needsPerDocumentAutoplayBehavior() const;
-    bool needsHotelsAnimationQuirk(Element&, const RenderStyle&) const;
+    bool needsExpediaGroupAnimationQuirk(Element&) const;
     bool shouldAutoplayWebAudioForArbitraryUserGesture() const;
     bool hasBrokenEncryptedMediaAPISupportQuirk() const;
 #if ENABLE(TOUCH_EVENTS)
     bool shouldDispatchSimulatedMouseEvents(const EventTarget*) const;
     bool shouldDispatchedSimulatedMouseEventsAssumeDefaultPrevented(EventTarget*) const;
+    bool shouldComputeSimulatedMouseEventMovementDelta() const;
     bool shouldPreventDispatchOfTouchEvent(const AtomString&, EventTarget*) const;
 #endif
     bool NODELETE shouldDisablePointerEventsQuirk() const;
@@ -92,6 +96,7 @@ public:
 
     bool shouldPreventOrientationMediaQueryFromEvaluatingToLandscape() const;
     bool NODELETE shouldFlipScreenDimensions() const;
+    bool shouldAvoidProgrammaticScrollClamping() const;
 
     WEBCORE_EXPORT bool shouldDispatchSyntheticMouseEventsWhenModifyingSelection() const;
     WEBCORE_EXPORT bool NODELETE shouldSuppressAutocorrectionAndAutocapitalizationInHiddenEditableAreas() const;
@@ -104,10 +109,12 @@ public:
     WEBCORE_EXPORT bool NODELETE shouldIgnoreAriaForFastPathContentObservationCheck() const;
     WEBCORE_EXPORT bool NODELETE shouldIgnoreViewportArgumentsToAvoidExcessiveZoom() const;
     WEBCORE_EXPORT bool NODELETE shouldIgnoreViewportArgumentsToAvoidEnlargedView() const;
+    WEBCORE_EXPORT bool shouldUseDynamicViewportUnitsAsDefault() const;
     WEBCORE_EXPORT bool shouldLayOutAtMinimumWindowWidthWhenIgnoringScalingConstraints() const;
     WEBCORE_EXPORT bool shouldAllowNotificationPermissionWithoutUserGesture() const;
     WEBCORE_EXPORT static bool shouldAllowNavigationToCustomProtocolWithoutUserGesture(StringView protocol, const SecurityOriginData& requesterOrigin);
 
+    WEBCORE_EXPORT bool needsYouTubeCaptionsQuirk() const;
     WEBCORE_EXPORT bool NODELETE needsYouTubeMouseOutQuirk() const;
 
     WEBCORE_EXPORT bool shouldDisableWritingSuggestionsByDefault() const;
@@ -115,12 +122,9 @@ public:
     WEBCORE_EXPORT static void updateStorageAccessUserAgentStringQuirks(HashMap<RegistrableDomain, String>&&);
     WEBCORE_EXPORT String storageAccessUserAgentStringQuirkForDomain(const URL&);
     WEBCORE_EXPORT static bool needsIPadMiniUserAgent(const URL&);
-    WEBCORE_EXPORT static bool NODELETE needsIPhoneUserAgent(const URL&);
+    WEBCORE_EXPORT static bool NODELETE needsIPhoneUserAgent(const URL&, UseDesktopClassBrowsing = UseDesktopClassBrowsing::Unspecified);
     WEBCORE_EXPORT static bool NODELETE needsDesktopUserAgent(const URL&);
-    WEBCORE_EXPORT static bool NODELETE needsChromeForAndroidUserAgent(const URL&);
     WEBCORE_EXPORT static std::optional<String> needsCustomUserAgentOverride(const URL&, const String& applicationNameForUserAgent, const String& currentUserAgent);
-
-    WEBCORE_EXPORT static bool NODELETE needsMediaSourceEnabled(const URL&);
 
     WEBCORE_EXPORT static bool needsPartitionedCookies(const ResourceRequest&);
 
@@ -137,6 +141,7 @@ public:
     bool NODELETE needsGoogleTranslateScrollingQuirk() const;
     bool needsGeforcenowWarningDisplayNoneQuirk() const;
 
+    bool needsYahooVolumeSliderQuirk() const;
     bool needsZillowFloorplanMarginQuirk() const;
 
     bool needsPrimeVideoUserSelectNoneQuirk() const;
@@ -164,10 +169,12 @@ public:
     Ref<NodeList> applyFacebookFlagQuirk(Document&, NodeList&);
     bool shouldEnableLegacyGetUserMediaQuirk() const;
     bool shouldDisableImageCaptureQuirk() const;
+    bool shouldAllowMediaStreamTrackSerializationQuirk() const;
     bool shouldEnableSpeakerSelectionPermissionsPolicyQuirk() const;
     bool shouldEnableEnumerateDeviceQuirk() const;
     bool shouldEnableCameraAndMicrophonePermissionStateQuirk() const;
     bool shouldEnableRemoteTrackLabelQuirk() const;
+    bool shouldEnableCameraBackgroundPlayback() const;
 #endif
 #if ENABLE(WEB_RTC)
     bool shouldEnableRTCEncodedStreamsQuirk() const;
@@ -332,8 +339,15 @@ public:
     bool shouldComparareUsedValuesForBorderWidthForTriggeringTransitions() const;
 
     bool shouldLimitHLSPlaybackRate() const;
+    bool shouldSuppressHLSSubtitles() const;
+
+    bool shouldSuppressMediaSessionPauseActionOnInterruption() const;
 
     void determineRelevantQuirks();
+
+#if PLATFORM(IOS_FAMILY)
+    bool NODELETE shouldSendFakeTouchForceChangeEvent() const;
+#endif
 
 private:
     bool needsQuirks() const;

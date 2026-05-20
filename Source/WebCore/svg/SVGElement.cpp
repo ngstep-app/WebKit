@@ -27,22 +27,22 @@
 #include "config.h"
 #include "SVGElement.h"
 
-#include "CSSPrimitiveValueMappings.h"
 #include "CSSPropertyParser.h"
 #include "ContainerNodeInlines.h"
 #include "Document.h"
 #include "DocumentClasses.h"
+#include "DocumentPage.h"
 #include "ElementChildIteratorInlines.h"
 #include "Event.h"
 #include "EventNames.h"
-#include "EventTargetInlines.h"
+#include "FrameDestructionObserverInlines.h"
 #include "HTMLElement.h"
 #include "HTMLNames.h"
 #include "HTMLParserIdioms.h"
 #include "JSEventListener.h"
 #include "LegacyRenderSVGResourceContainer.h"
-#include "NodeInlines.h"
 #include "NodeName.h"
+#include "Page.h"
 #include "RenderAncestorIterator.h"
 #include "RenderSVGResourceContainer.h"
 #include "RenderStyle+GettersInlines.h"
@@ -66,6 +66,7 @@
 #include "ShadowRoot.h"
 #include "StyleAdjuster.h"
 #include "StyleExtractor.h"
+#include "StyleKeyword+Mappings.h"
 #include "StyleResolver.h"
 #include "XMLNames.h"
 #include <wtf/HashMap.h>
@@ -613,11 +614,6 @@ bool SVGElement::isAnimatedStyleAttribute(const QualifiedName& attributeName) co
     return SVGPropertyAnimatorFactory::isKnownAttribute(attributeName) || propertyRegistry().isAnimatedStylePropertyAttribute(attributeName);
 }
 
-bool SVGElement::hasAttributeOrIsAnimatingProperty(const QualifiedName& attributeName) const
-{
-    return hasAttribute(attributeName) || propertyRegistry().isAnimatingProperty(attributeName);
-}
-
 RefPtr<SVGAttributeAnimator> SVGElement::createAnimator(const QualifiedName& attributeName, AnimationMode animationMode, CalcMode calcMode, bool isAccumulated, bool isAdditive)
 {
     // Property animator, e.g. "fill" or "fill-opacity".
@@ -1020,6 +1016,8 @@ bool SVGElement::hasPresentationalHintsForAttribute(const QualifiedName& name) c
 {
     if (cssPropertyIdForSVGAttributeName(name, document().settings()) > 0)
         return true;
+    if (name.matches(XMLNames::langAttr) || name.matches(HTMLNames::langAttr))
+        return true;
     return StyledElement::hasPresentationalHintsForAttribute(name);
 }
 
@@ -1028,6 +1026,8 @@ void SVGElement::collectPresentationalHintsForAttribute(const QualifiedName& nam
     CSSPropertyID propertyID = cssPropertyIdForSVGAttributeName(name, document().settings());
     if (propertyID > 0)
         addPropertyToPresentationalHintStyle(style, propertyID, value);
+    else if (name.matches(XMLNames::langAttr) || (name.matches(HTMLNames::langAttr) && !hasAttributeWithoutSynchronization(XMLNames::langAttr)))
+        mapLanguageAttributeToLocale(value, style);
 }
 
 void SVGElement::updateSVGRendererForElementChange()

@@ -53,6 +53,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #include "JITWorklist.h"
 #include "JSArrayIterator.h"
 #include "JSAsyncFunction.h"
+#include "JSAsyncFunctionGenerator.h"
 #include "JSAsyncGenerator.h"
 #include "JSAsyncGeneratorFunction.h"
 #include "JSBoundFunction.h"
@@ -60,10 +61,13 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #include "JSCPtrTag.h"
 #include "JSGeneratorFunction.h"
 #include "JSGlobalObjectFunctions.h"
-#include "JSInternalPromise.h"
 #include "JSLexicalEnvironment.h"
+#include "JSMapIterator.h"
+#include "JSPromise.h"
 #include "JSRemoteFunction.h"
+#include "JSSetIterator.h"
 #include "JSWithScope.h"
+#include "JumpTable.h"
 #include "LLIntEntrypoint.h"
 #include "MegamorphicCache.h"
 #include "ObjectConstructor.h"
@@ -218,7 +222,7 @@ JSC_DEFINE_JIT_OPERATION(operationMaterializeBoundFunctionTargetCode, UGPRPair, 
     CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
     JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
     auto scope = DECLARE_THROW_SCOPE(vm);
-    auto* targetFunction = jsCast<JSFunction*>(callee->targetFunction()); // We call this function only when JSBoundFunction's target is JSFunction.
+    auto* targetFunction = uncheckedDowncast<JSFunction>(callee->targetFunction()); // We call this function only when JSBoundFunction's target is JSFunction.
     OPERATION_RETURN(scope, materializeTargetCode(vm, targetFunction));
 }
 
@@ -230,7 +234,7 @@ JSC_DEFINE_JIT_OPERATION(operationMaterializeRemoteFunctionTargetCode, UGPRPair,
     JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
     auto scope = DECLARE_THROW_SCOPE(vm);
     ASSERT(isRemoteFunction(callee));
-    auto* targetFunction = jsCast<JSFunction*>(callee->targetFunction()); // We call this function only when JSRemoteFunction's target is JSFunction.
+    auto* targetFunction = uncheckedDowncast<JSFunction>(callee->targetFunction()); // We call this function only when JSRemoteFunction's target is JSFunction.
     OPERATION_RETURN(scope, materializeTargetCode(vm, targetFunction));
 }
 
@@ -332,7 +336,7 @@ JSC_DEFINE_JIT_OPERATION(operationTryGetByIdOptimize, EncodedJSValue, (EncodedJS
 
     CodeBlock* codeBlock = callFrame->codeBlock();
     if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, baseValue.structureOrNull(), identifier) && !slot.isTaintedByOpaqueObject() && (slot.isCacheableValue() || slot.isCacheableGetter() || slot.isUnset()))
-        repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::TryById);
+        repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::TryById, /* isNonStringPrimitiveKey */ false);
 
     OPERATION_RETURN(scope, JSValue::encode(slot.getPureResult()));
 }
@@ -394,7 +398,7 @@ JSC_DEFINE_JIT_OPERATION(operationGetByIdDirectOptimize, EncodedJSValue, (Encode
 
     CodeBlock* codeBlock = callFrame->codeBlock();
     if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, baseValue.structureOrNull(), identifier))
-        repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::ByIdDirect);
+        repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::ByIdDirect, /* isNonStringPrimitiveKey */ false);
 
     OPERATION_RETURN(scope, JSValue::encode(found ? slot.getValue(globalObject, identifier) : jsUndefined()));
 }
@@ -438,7 +442,7 @@ static ALWAYS_INLINE JSValue getByIdMegamorphic(JSGlobalObject* globalObject, VM
         if (hasProperty) {
             if (cacheable && slot.isCacheableValue() && slot.cachedOffset() <= MegamorphicCache::maxOffset) [[likely]] {
                 if (slot.slotBase() == baseObject || !baseObject->structure()->isDictionary())
-                    vm.megamorphicCache()->initAsHit(baseObject->structureID(), uid, slot.slotBase(), slot.cachedOffset(), slot.slotBase() == thisValue);
+                    vm.megamorphicCache()->initAsHit(baseObject->structureID(), uid, slot.slotBase(), slot.cachedOffset(), slot.slotBase() == baseValue);
                 else {
                     if (baseObject->structure()->hasBeenFlattenedBefore()) [[unlikely]] {
                         if (propertyCache && propertyCache->considerRepatchingCacheMegamorphic(vm))
@@ -564,7 +568,7 @@ JSC_DEFINE_JIT_OPERATION(operationGetByIdOptimize, EncodedJSValue, (EncodedJSVal
         
         CodeBlock* codeBlock = callFrame->codeBlock();
         if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, baseValue.structureOrNull(), identifier))
-            repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::ById);
+            repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::ById, /* isNonStringPrimitiveKey */ false);
         return found ? slot.getValue(globalObject, identifier) : jsUndefined();
     })));
 }
@@ -637,7 +641,7 @@ JSC_DEFINE_JIT_OPERATION(operationGetByIdWithThisOptimize, EncodedJSValue, (Enco
         
         CodeBlock* codeBlock = callFrame->codeBlock();
         if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, baseValue.structureOrNull(), identifier))
-            repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::ByIdWithThis);
+            repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::ByIdWithThis, /* isNonStringPrimitiveKey */ false);
         return found ? slot.getValue(globalObject, identifier) : jsUndefined();
     })));
 }
@@ -909,7 +913,7 @@ static ALWAYS_INLINE JSValue inByValMegamorphic(JSGlobalObject* globalObject, VM
     constexpr bool verbose = false;
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    if (!baseValue.isObject() || !(subscript.isString() && CacheableIdentifier::isCacheableIdentifierCell(subscript))) [[unlikely]] {
+    if (!baseValue.isObject() || !CacheableIdentifier::isCacheableIdentifierCell(subscript)) [[unlikely]] {
         dataLogLnIf(verbose, " ", __LINE__);
         if (propertyCache && propertyCache->considerRepatchingCacheMegamorphic(vm)) {
             repatchInBySlowPathCall(callFrame->codeBlock(), *propertyCache, InByKind::ByVal);
@@ -1422,7 +1426,7 @@ JSC_DEFINE_JIT_OPERATION(operationPutByIdStrictOptimize, void, (EncodedJSValue e
         OPERATION_RETURN(scope);
     
     if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, structure, identifier))
-        repatchPutBy(globalObject, codeBlock, baseValue, structure, identifier, slot, *propertyCache, PutByKind::ByIdStrict);
+        repatchPutBy(globalObject, codeBlock, baseValue, structure, identifier, slot, *propertyCache, PutByKind::ByIdStrict, /* isNonStringPrimitiveKey */ false);
     OPERATION_RETURN(scope);
 }
 
@@ -1455,7 +1459,7 @@ JSC_DEFINE_JIT_OPERATION(operationPutByIdSloppyOptimize, void, (EncodedJSValue e
         OPERATION_RETURN(scope);
     
     if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, structure, identifier))
-        repatchPutBy(globalObject, codeBlock, baseValue, structure, identifier, slot, *propertyCache, PutByKind::ByIdSloppy);
+        repatchPutBy(globalObject, codeBlock, baseValue, structure, identifier, slot, *propertyCache, PutByKind::ByIdSloppy, /* isNonStringPrimitiveKey */ false);
     OPERATION_RETURN(scope);
 }
 
@@ -1487,7 +1491,7 @@ JSC_DEFINE_JIT_OPERATION(operationPutByIdDirectStrictOptimize, void, (EncodedJSV
         OPERATION_RETURN(scope);
     
     if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, structure, identifier))
-        repatchPutBy(globalObject, codeBlock, baseObject, structure, identifier, slot, *propertyCache, PutByKind::ByIdDirectStrict);
+        repatchPutBy(globalObject, codeBlock, baseObject, structure, identifier, slot, *propertyCache, PutByKind::ByIdDirectStrict, /* isNonStringPrimitiveKey */ false);
     OPERATION_RETURN(scope);
 }
 
@@ -1519,7 +1523,7 @@ JSC_DEFINE_JIT_OPERATION(operationPutByIdDirectSloppyOptimize, void, (EncodedJSV
         OPERATION_RETURN(scope);
     
     if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, structure, identifier))
-        repatchPutBy(globalObject, codeBlock, baseObject, structure, identifier, slot, *propertyCache, PutByKind::ByIdDirectSloppy);
+        repatchPutBy(globalObject, codeBlock, baseObject, structure, identifier, slot, *propertyCache, PutByKind::ByIdDirectSloppy, /* isNonStringPrimitiveKey */ false);
     OPERATION_RETURN(scope);
 }
 
@@ -1603,7 +1607,7 @@ JSC_DEFINE_JIT_OPERATION(operationPutByIdDefinePrivateFieldStrictOptimize, void,
         ASSERT_UNUSED(accessType, accessType == static_cast<AccessType>(propertyCache->accessType));
 
         if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, oldStructure, identifier))
-            repatchPutBy(globalObject, codeBlock, baseObject, oldStructure, identifier, putSlot, *propertyCache, PutByKind::DefinePrivateNameById);
+            repatchPutBy(globalObject, codeBlock, baseObject, oldStructure, identifier, putSlot, *propertyCache, PutByKind::DefinePrivateNameById, /* isNonStringPrimitiveKey */ false);
     });
     OPERATION_RETURN(scope);
 }
@@ -1650,7 +1654,7 @@ JSC_DEFINE_JIT_OPERATION(operationPutByIdSetPrivateFieldStrictOptimize, void, (E
         ASSERT_UNUSED(accessType, accessType == static_cast<AccessType>(propertyCache->accessType));
 
         if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, oldStructure, identifier))
-            repatchPutBy(globalObject, codeBlock, baseObject, oldStructure, identifier, putSlot, *propertyCache, PutByKind::SetPrivateNameById);
+            repatchPutBy(globalObject, codeBlock, baseObject, oldStructure, identifier, putSlot, *propertyCache, PutByKind::SetPrivateNameById, /* isNonStringPrimitiveKey */ false);
     });
     OPERATION_RETURN(scope);
 }
@@ -1768,22 +1772,31 @@ static ALWAYS_INLINE void putByValOptimize(JSGlobalObject* globalObject, CodeBlo
             }
         }
 
-        if (auto propertyName = CacheableIdentifier::getCacheableIdentifier(subscript)) {
-            RETURN_IF_EXCEPTION(scope, void());
-            if (subscript.isSymbol() || !parseIndex(*propertyName.data)) {
+        {
+            CacheableIdentifier identifier;
+            bool isNonStringPrimitiveKey = false;
+            if (auto propertyName = CacheableIdentifier::getCacheableIdentifier(subscript)) {
+                RETURN_IF_EXCEPTION(scope, void());
+                if (subscript.isSymbol() || !parseIndex(*propertyName.data))
+                    identifier = CacheableIdentifier::createFromCell(subscript.asCell());
+            } else {
+                identifier = nonStringPrimitiveKeyForSubscript(vm, subscript);
+                isNonStringPrimitiveKey = !!identifier;
+            }
+
+            if (identifier) {
                 AccessType accessType = static_cast<AccessType>(propertyCache->accessType);
                 PutPropertySlot slot(baseValue, isStrict, codeBlock->putByIdContext());
 
                 Structure* structure = CommonSlowPaths::originalStructureBeforePut(baseValue);
-                baseObject->putInline(globalObject, propertyName.data, value, slot);
+                baseObject->putInline(globalObject, identifier, value, slot);
                 RETURN_IF_EXCEPTION(scope, void());
 
                 if (accessType != static_cast<AccessType>(propertyCache->accessType))
                     return;
 
-                CacheableIdentifier identifier = CacheableIdentifier::createFromCell(subscript.asCell());
                 if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, structure, identifier))
-                    repatchPutBy(globalObject, codeBlock, baseValue, structure, identifier, slot, *propertyCache, kind);
+                    repatchPutBy(globalObject, codeBlock, baseValue, structure, identifier, slot, *propertyCache, kind, isNonStringPrimitiveKey);
                 return;
             }
         }
@@ -1842,24 +1855,32 @@ static ALWAYS_INLINE void directPutByValOptimize(JSGlobalObject* globalObject, C
         }
     }
 
-    if (CacheableIdentifier::isCacheableIdentifierCell(subscript)) {
-        const Identifier propertyName = subscript.toPropertyKey(globalObject);
-        RETURN_IF_EXCEPTION(scope, void());
-        if (subscript.isSymbol() || !parseIndex(propertyName)) {
+    {
+        CacheableIdentifier identifier;
+        bool isNonStringPrimitiveKey = false;
+        if (auto propertyName = CacheableIdentifier::getCacheableIdentifier(subscript)) {
+            RETURN_IF_EXCEPTION(scope, void());
+            if (subscript.isSymbol() || !parseIndex(*propertyName.data))
+                identifier = CacheableIdentifier::createFromCell(subscript.asCell());
+        } else {
+            identifier = nonStringPrimitiveKeyForSubscript(vm, subscript);
+            isNonStringPrimitiveKey = !!identifier;
+        }
+
+        if (identifier) {
             AccessType accessType = static_cast<AccessType>(propertyCache->accessType);
             PutPropertySlot slot(baseValue, isStrict, codeBlock->putByIdContext());
 
             Structure* structure = CommonSlowPaths::originalStructureBeforePut(baseValue);
-            CommonSlowPaths::putDirectWithReify(vm, globalObject, baseObject, propertyName, value, slot);
+            CommonSlowPaths::putDirectWithReify(vm, globalObject, baseObject, identifier, value, slot);
 
             RETURN_IF_EXCEPTION(scope, void());
 
             if (accessType != static_cast<AccessType>(propertyCache->accessType))
                 return;
 
-            CacheableIdentifier identifier = CacheableIdentifier::createFromCell(subscript.asCell());
             if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, structure, identifier))
-                repatchPutBy(globalObject, codeBlock, baseValue, structure, identifier, slot, *propertyCache, kind);
+                repatchPutBy(globalObject, codeBlock, baseValue, structure, identifier, slot, *propertyCache, kind, isNonStringPrimitiveKey);
             return;
         }
     }
@@ -2018,7 +2039,7 @@ ALWAYS_INLINE static void putByValMegamorphic(JSGlobalObject* globalObject, VM& 
     auto scope = DECLARE_THROW_SCOPE(vm);
     bool isStrict = kind == PutByKind::ByValStrict;
 
-    if (!baseValue.isObject() || !(subscript.isString() && CacheableIdentifier::isCacheableIdentifierCell(subscript))) [[unlikely]] {
+    if (!baseValue.isObject() || !CacheableIdentifier::isCacheableIdentifierCell(subscript)) [[unlikely]] {
         if (propertyCache && propertyCache->considerRepatchingCacheMegamorphic(vm))
             repatchPutBySlowPathCall(callFrame->codeBlock(), *propertyCache, kind);
         scope.release();
@@ -2323,7 +2344,7 @@ static ALWAYS_INLINE void putPrivateNameOptimize(JSGlobalObject* globalObject, C
     if (baseValue.isObject() && CacheableIdentifier::isCacheableIdentifierCell(subscript)) {
         CacheableIdentifier identifier = CacheableIdentifier::createFromCell(subscript.asCell());
         if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, structure, identifier))
-            repatchPutBy(globalObject, codeBlock, baseValue, structure, identifier, slot, *propertyCache, define ? PutByKind::DefinePrivateNameByVal : PutByKind::SetPrivateNameByVal);
+            repatchPutBy(globalObject, codeBlock, baseValue, structure, identifier, slot, *propertyCache, define ? PutByKind::DefinePrivateNameByVal : PutByKind::SetPrivateNameByVal, /* isNonStringPrimitiveKey */ false);
     }
 }
 
@@ -2744,7 +2765,7 @@ JSC_DEFINE_JIT_OPERATION(operationNewFunction, EncodedJSValue, (JSGlobalObject* 
     JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
     auto scope = DECLARE_THROW_SCOPE(vm);
     constexpr bool isInvalidated = false;
-    OPERATION_RETURN(scope, newFunctionCommon<JSFunction, isInvalidated>(vm, globalObject, environment, functionExecutable, JSFunction::selectStructureForNewFuncExp(globalObject, jsCast<FunctionExecutable*>(functionExecutable))));
+    OPERATION_RETURN(scope, newFunctionCommon<JSFunction, isInvalidated>(vm, globalObject, environment, functionExecutable, JSFunction::selectStructureForNewFuncExp(globalObject, uncheckedDowncast<FunctionExecutable>(functionExecutable))));
 }
 
 JSC_DEFINE_JIT_OPERATION(operationNewFunctionWithInvalidatedReallocationWatchpoint, EncodedJSValue, (JSGlobalObject* globalObject, JSScope* environment, JSCell* functionExecutable))
@@ -2754,7 +2775,7 @@ JSC_DEFINE_JIT_OPERATION(operationNewFunctionWithInvalidatedReallocationWatchpoi
     JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
     auto scope = DECLARE_THROW_SCOPE(vm);
     constexpr bool isInvalidated = true;
-    OPERATION_RETURN(scope, newFunctionCommon<JSFunction, isInvalidated>(vm, globalObject, environment, functionExecutable, JSFunction::selectStructureForNewFuncExp(globalObject, jsCast<FunctionExecutable*>(functionExecutable))));
+    OPERATION_RETURN(scope, newFunctionCommon<JSFunction, isInvalidated>(vm, globalObject, environment, functionExecutable, JSFunction::selectStructureForNewFuncExp(globalObject, uncheckedDowncast<FunctionExecutable>(functionExecutable))));
 }
 
 JSC_DEFINE_JIT_OPERATION(operationNewSloppyFunction, EncodedJSValue, (JSGlobalObject* globalObject, JSScope* environment, JSCell* functionExecutable))
@@ -2765,7 +2786,7 @@ JSC_DEFINE_JIT_OPERATION(operationNewSloppyFunction, EncodedJSValue, (JSGlobalOb
     auto scope = DECLARE_THROW_SCOPE(vm);
     constexpr bool isInvalidated = false;
     constexpr bool isBuiltin = false;
-    if (jsCast<FunctionExecutable*>(functionExecutable)->hasPrototypeProperty())
+    if (uncheckedDowncast<FunctionExecutable>(functionExecutable)->hasPrototypeProperty())
         OPERATION_RETURN(scope, newFunctionCommon<JSFunction, isInvalidated>(vm, globalObject, environment, functionExecutable, globalObject->sloppyFunctionStructure(isBuiltin)));
     OPERATION_RETURN(scope, newFunctionCommon<JSFunction, isInvalidated>(vm, globalObject, environment, functionExecutable, globalObject->sloppyMethodStructure(isBuiltin)));
 }
@@ -2778,7 +2799,7 @@ JSC_DEFINE_JIT_OPERATION(operationNewSloppyFunctionWithInvalidatedReallocationWa
     auto scope = DECLARE_THROW_SCOPE(vm);
     constexpr bool isInvalidated = true;
     constexpr bool isBuiltin = false;
-    if (jsCast<FunctionExecutable*>(functionExecutable)->hasPrototypeProperty())
+    if (uncheckedDowncast<FunctionExecutable>(functionExecutable)->hasPrototypeProperty())
         OPERATION_RETURN(scope, newFunctionCommon<JSFunction, isInvalidated>(vm, globalObject, environment, functionExecutable, globalObject->sloppyFunctionStructure(isBuiltin)));
     OPERATION_RETURN(scope, newFunctionCommon<JSFunction, isInvalidated>(vm, globalObject, environment, functionExecutable, globalObject->sloppyMethodStructure(isBuiltin)));
 }
@@ -2791,7 +2812,7 @@ JSC_DEFINE_JIT_OPERATION(operationNewStrictFunction, EncodedJSValue, (JSGlobalOb
     auto scope = DECLARE_THROW_SCOPE(vm);
     constexpr bool isInvalidated = false;
     constexpr bool isBuiltin = false;
-    if (jsCast<FunctionExecutable*>(functionExecutable)->hasPrototypeProperty())
+    if (uncheckedDowncast<FunctionExecutable>(functionExecutable)->hasPrototypeProperty())
         OPERATION_RETURN(scope, newFunctionCommon<JSFunction, isInvalidated>(vm, globalObject, environment, functionExecutable, globalObject->strictFunctionStructure(isBuiltin)));
     OPERATION_RETURN(scope, newFunctionCommon<JSFunction, isInvalidated>(vm, globalObject, environment, functionExecutable, globalObject->strictMethodStructure(isBuiltin)));
 }
@@ -2804,7 +2825,7 @@ JSC_DEFINE_JIT_OPERATION(operationNewStrictFunctionWithInvalidatedReallocationWa
     auto scope = DECLARE_THROW_SCOPE(vm);
     constexpr bool isInvalidated = true;
     constexpr bool isBuiltin = false;
-    if (jsCast<FunctionExecutable*>(functionExecutable)->hasPrototypeProperty())
+    if (uncheckedDowncast<FunctionExecutable>(functionExecutable)->hasPrototypeProperty())
         OPERATION_RETURN(scope, newFunctionCommon<JSFunction, isInvalidated>(vm, globalObject, environment, functionExecutable, globalObject->strictFunctionStructure(isBuiltin)));
     OPERATION_RETURN(scope, newFunctionCommon<JSFunction, isInvalidated>(vm, globalObject, environment, functionExecutable, globalObject->strictMethodStructure(isBuiltin)));
 }
@@ -2898,7 +2919,7 @@ JSC_DEFINE_JIT_OPERATION(operationSetFunctionName, void, (JSGlobalObject* global
     JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSFunction* func = jsCast<JSFunction*>(funcCell);
+    JSFunction* func = uncheckedDowncast<JSFunction>(funcCell);
     JSValue name = JSValue::decode(encodedName);
     func->setFunctionName(globalObject, name);
     OPERATION_RETURN(scope);
@@ -2924,16 +2945,6 @@ JSC_DEFINE_JIT_OPERATION(operationNewPromise, JSCell*, (VM* vmPointer, Structure
     OPERATION_RETURN(scope, JSPromise::create(vm, structure));
 }
 
-JSC_DEFINE_JIT_OPERATION(operationNewInternalPromise, JSCell*, (VM* vmPointer, Structure* structure))
-{
-    VM& vm = *vmPointer;
-    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
-    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    OPERATION_RETURN(scope, JSInternalPromise::create(vm, structure));
-}
-
 JSC_DEFINE_JIT_OPERATION(operationNewGenerator, JSCell*, (VM* vmPointer, Structure* structure))
 {
     VM& vm = *vmPointer;
@@ -2942,6 +2953,16 @@ JSC_DEFINE_JIT_OPERATION(operationNewGenerator, JSCell*, (VM* vmPointer, Structu
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     OPERATION_RETURN(scope, JSGenerator::create(vm, structure));
+}
+
+JSC_DEFINE_JIT_OPERATION(operationNewAsyncFunctionGenerator, JSCell*, (VM* vmPointer, Structure* structure))
+{
+    VM& vm = *vmPointer;
+    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
+    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    OPERATION_RETURN(scope, JSAsyncFunctionGenerator::create(vm, structure));
 }
 
 JSC_DEFINE_JIT_OPERATION(operationNewAsyncGenerator, JSCell*, (VM* vmPointer, Structure* structure))
@@ -3397,7 +3418,7 @@ JSC_DEFINE_JIT_OPERATION(operationInstanceOfCustom, size_t, (JSGlobalObject* glo
 
 #if CPU(ARM64) || CPU(X86_64)
 
-JSC_DEFINE_JIT_OPERATION(operationIteratorNextTryFast, UGPRPair, (JSGlobalObject* globalObject, JSArrayIterator* arrayIterator, JSArray* array, void* metadataPointer))
+JSC_DEFINE_JIT_OPERATION(operationIteratorNextTryFast, UGPRPair, (JSGlobalObject* globalObject, JSObject* iterator, JSCell* iterable, void* metadataPointer))
 {
     VM& vm = globalObject->vm();
     CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
@@ -3405,27 +3426,54 @@ JSC_DEFINE_JIT_OPERATION(operationIteratorNextTryFast, UGPRPair, (JSGlobalObject
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     auto& metadata = *std::bit_cast<OpIteratorNext::Metadata*>(metadataPointer);
-    metadata.m_iterableProfile.observeStructureID(array->structureID());
-    metadata.m_iterationMetadata.seenModes = metadata.m_iterationMetadata.seenModes | IterationMode::FastArray;
 
-    auto& indexSlot = arrayIterator->internalField(JSArrayIterator::Field::Index);
-    int64_t index = indexSlot.get().asAnyInt();
-    ASSERT(0 <= index && index <= maxSafeInteger());
+    if (auto* arrayIterator = dynamicDowncast<JSArrayIterator>(iterator)) {
+        auto* array = uncheckedDowncast<JSArray>(iterable);
+        metadata.m_iterableProfile.observeStructureID(array->structureID());
+        metadata.m_iterationMetadata.seenModes = metadata.m_iterationMetadata.seenModes | IterationMode::FastArray;
 
-    JSValue value;
-    bool done = index == JSArrayIterator::doneIndex || index >= array->length();
-    if (!done) {
-        // No need for a barrier here because we know this is a primitive.
-        indexSlot.setWithoutWriteBarrier(jsNumber(index + 1));
-        ASSERT(index == static_cast<unsigned>(index));
-        value = array->getIndex(globalObject, static_cast<unsigned>(index));
-        OPERATION_RETURN_IF_EXCEPTION(scope, makeUGPRPair(0, 0));
-    } else {
-        // No need for a barrier here because we know this is a primitive.
-        indexSlot.setWithoutWriteBarrier(jsNumber(-1));
+        auto& indexSlot = arrayIterator->internalField(JSArrayIterator::Field::Index);
+        int64_t index = indexSlot.get().asAnyInt();
+        ASSERT(0 <= index && index <= maxSafeInteger());
+
+        JSValue value;
+        bool done = index == JSArrayIterator::doneIndex || index >= array->length();
+        if (!done) {
+            // No need for a barrier here because we know this is a primitive.
+            indexSlot.setWithoutWriteBarrier(jsNumber(index + 1));
+            ASSERT(index == static_cast<unsigned>(index));
+            value = array->getIndex(globalObject, static_cast<unsigned>(index));
+            OPERATION_RETURN_IF_EXCEPTION(scope, makeUGPRPair(0, 0));
+        } else {
+            // No need for a barrier here because we know this is a primitive.
+            indexSlot.setWithoutWriteBarrier(jsNumber(-1));
+        }
+
+        OPERATION_RETURN(scope, makeUGPRPair(JSValue::encode(jsBoolean(done)), JSValue::encode(value)));
     }
 
-    OPERATION_RETURN(scope, makeUGPRPair(JSValue::encode(jsBoolean(done)), JSValue::encode(value)));
+    if (auto* mapIterator = dynamicDowncast<JSMapIterator>(iterator)) {
+        metadata.m_iterationMetadata.seenModes = metadata.m_iterationMetadata.seenModes | IterationMode::FastMap;
+        auto result = mapIterator->nextWithAdvance(vm);
+        bool done = result.key.isEmpty();
+        JSValue value;
+        if (!done) {
+            value = constructArrayPair(globalObject, result.key, result.value);
+            OPERATION_RETURN_IF_EXCEPTION(scope, makeUGPRPair(0, 0));
+        }
+        OPERATION_RETURN(scope, makeUGPRPair(JSValue::encode(jsBoolean(done)), JSValue::encode(value)));
+    }
+
+    if (auto* setIterator = dynamicDowncast<JSSetIterator>(iterator)) {
+        metadata.m_iterationMetadata.seenModes = metadata.m_iterationMetadata.seenModes | IterationMode::FastSet;
+        JSValue nextKey = setIterator->nextWithAdvance(vm);
+        bool done = nextKey.isEmpty();
+        JSValue value = done ? JSValue() : nextKey;
+        OPERATION_RETURN(scope, makeUGPRPair(JSValue::encode(jsBoolean(done)), JSValue::encode(value)));
+    }
+
+    RELEASE_ASSERT_NOT_REACHED();
+    OPERATION_RETURN(scope, makeUGPRPair(0, 0));
 }
 
 #endif
@@ -3489,7 +3537,7 @@ ALWAYS_INLINE static JSValue getByVal(JSGlobalObject* globalObject, CallFrame* c
     } else if (subscript.isNumber() && baseValue.isCell() && arrayProfile) {
         arrayProfile->setOutOfBounds();
         if (subscript == jsNumber(-1)) {
-            if (auto* array = jsDynamicCast<JSArray*>(baseValue.asCell()); array && array->definitelyNegativeOneMiss()) [[likely]]
+            if (auto* array = dynamicDowncast<JSArray>(baseValue.asCell()); array && array->definitelyNegativeOneMiss()) [[likely]]
                 return jsUndefined();
         }
     }
@@ -3536,27 +3584,34 @@ JSC_DEFINE_JIT_OPERATION(operationGetByValOptimize, EncodedJSValue, (EncodedJSVa
 
     CodeBlock* codeBlock = callFrame->codeBlock();
 
-    if (baseValue.isCell() && subscript.isInt32()) {
-        Structure* structure = baseValue.asCell()->structure();
-        if (propertyCache->considerRepatchingCacheGeneric(vm, codeBlock, structure)) {
-            if (profile)
-                profile->computeUpdatedPrediction(codeBlock, structure);
-            repatchArrayGetByVal(globalObject, codeBlock, baseValue, subscript, *propertyCache, GetByKind::ByVal);
-        }
-    }
-
     if (baseValue.isCell()) {
-        if (auto propertyName = CacheableIdentifier::getCacheableIdentifier(subscript)) {
-            OPERATION_RETURN_IF_EXCEPTION(scope, encodedJSValue());
-            if (subscript.isSymbol() || !parseIndex(*propertyName.data)) {
+        if (subscript.isInt32()) {
+            Structure* structure = baseValue.asCell()->structure();
+            if (propertyCache->considerRepatchingCacheGeneric(vm, codeBlock, structure)) {
+                if (profile)
+                    profile->computeUpdatedPrediction(codeBlock, structure);
+                repatchArrayGetByVal(globalObject, codeBlock, baseValue, subscript, *propertyCache, GetByKind::ByVal);
+            }
+        } else {
+            CacheableIdentifier identifier;
+            bool isNonStringPrimitiveKey = false;
+            if (auto propertyName = CacheableIdentifier::getCacheableIdentifier(subscript)) {
+                OPERATION_RETURN_IF_EXCEPTION(scope, encodedJSValue());
+                if (subscript.isSymbol() || !parseIndex(*propertyName.data))
+                    identifier = CacheableIdentifier::createFromCell(subscript.asCell());
+            } else {
+                identifier = nonStringPrimitiveKeyForSubscript(vm, subscript);
+                isNonStringPrimitiveKey = !!identifier;
+            }
+
+            if (identifier) {
                 scope.release();
-                OPERATION_RETURN(scope, JSValue::encode(baseValue.getPropertySlot(globalObject, propertyName.data, [&] (bool found, PropertySlot& slot) -> JSValue {
+                OPERATION_RETURN(scope, JSValue::encode(baseValue.getPropertySlot(globalObject, identifier, [&] (bool found, PropertySlot& slot) -> JSValue {
                     LOG_IC((ICEvent::OperationGetByValOptimize, baseValue.classInfoOrNull(), baseValue == slot.slotBase()));
 
-                    CacheableIdentifier identifier = CacheableIdentifier::createFromCell(subscript.asCell());
                     if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, baseValue.structureOrNull(), identifier))
-                        repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::ByVal);
-                    return found ? slot.getValue(globalObject, propertyName.data) : jsUndefined();
+                        repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::ByVal, isNonStringPrimitiveKey);
+                    return found ? slot.getValue(globalObject, identifier) : jsUndefined();
                 })));
             }
         }
@@ -3624,7 +3679,7 @@ ALWAYS_INLINE static JSValue getByValWithThis(JSGlobalObject* globalObject, Call
     } else if (subscript.isNumber() && baseValue.isCell() && arrayProfile) {
         arrayProfile->setOutOfBounds();
         if (subscript == jsNumber(-1)) {
-            if (auto* array = jsDynamicCast<JSArray*>(baseValue.asCell()); array && array->definitelyNegativeOneMiss()) [[likely]]
+            if (auto* array = dynamicDowncast<JSArray>(baseValue.asCell()); array && array->definitelyNegativeOneMiss()) [[likely]]
                 return jsUndefined();
         }
     }
@@ -3640,7 +3695,7 @@ static ALWAYS_INLINE JSValue getByValMegamorphic(JSGlobalObject* globalObject, V
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    if (!baseValue.isObject() || !(subscript.isString() && CacheableIdentifier::isCacheableIdentifierCell(subscript))) [[unlikely]] {
+    if (!baseValue.isObject() || !CacheableIdentifier::isCacheableIdentifierCell(subscript)) [[unlikely]] {
         if (propertyCache && propertyCache->considerRepatchingCacheMegamorphic(vm))
             repatchGetBySlowPathCall(callFrame->codeBlock(), *propertyCache, kind);
         if (kind == GetByKind::ByVal)
@@ -3818,29 +3873,37 @@ JSC_DEFINE_JIT_OPERATION(operationGetByValWithThisOptimize, EncodedJSValue, (Enc
 
     CodeBlock* codeBlock = callFrame->codeBlock();
 
-    if (baseValue.isCell() && subscript.isInt32()) {
-        Structure* structure = baseValue.asCell()->structure();
-        if (propertyCache->considerRepatchingCacheGeneric(vm, codeBlock, structure)) {
-            if (profile)
-                profile->computeUpdatedPrediction(codeBlock, structure);
-            repatchArrayGetByVal(globalObject, codeBlock, baseValue, subscript, *propertyCache, GetByKind::ByValWithThis);
-        }
-    }
-
     PropertySlot slot(thisValue, PropertySlot::PropertySlot::InternalMethodType::Get);
-    if (baseValue.isCell() && CacheableIdentifier::isCacheableIdentifierCell(subscript)) {
-        const Identifier propertyName = subscript.toPropertyKey(globalObject);
-        OPERATION_RETURN_IF_EXCEPTION(scope, encodedJSValue());
-        if (subscript.isSymbol() || !parseIndex(propertyName)) {
-            scope.release();
-            OPERATION_RETURN(scope, JSValue::encode(baseValue.getPropertySlot(globalObject, propertyName, slot, [&] (bool found, PropertySlot& slot) -> JSValue {
-                LOG_IC((ICEvent::OperationGetByValWithThisOptimize, baseValue.classInfoOrNull(), baseValue == slot.slotBase()));
+    if (baseValue.isCell()) {
+        if (subscript.isInt32()) {
+            Structure* structure = baseValue.asCell()->structure();
+            if (propertyCache->considerRepatchingCacheGeneric(vm, codeBlock, structure)) {
+                if (profile)
+                    profile->computeUpdatedPrediction(codeBlock, structure);
+                repatchArrayGetByVal(globalObject, codeBlock, baseValue, subscript, *propertyCache, GetByKind::ByValWithThis);
+            }
+        } else {
+            CacheableIdentifier identifier;
+            bool isNonStringPrimitiveKey = false;
+            if (auto propertyName = CacheableIdentifier::getCacheableIdentifier(subscript)) {
+                OPERATION_RETURN_IF_EXCEPTION(scope, encodedJSValue());
+                if (subscript.isSymbol() || !parseIndex(*propertyName.data))
+                    identifier = CacheableIdentifier::createFromCell(subscript.asCell());
+            } else {
+                identifier = nonStringPrimitiveKeyForSubscript(vm, subscript);
+                isNonStringPrimitiveKey = !!identifier;
+            }
 
-                CacheableIdentifier identifier = CacheableIdentifier::createFromCell(subscript.asCell());
-                if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, baseValue.structureOrNull(), identifier))
-                    repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::ByValWithThis);
-                return found ? slot.getValue(globalObject, propertyName) : jsUndefined();
-            })));
+            if (identifier) {
+                scope.release();
+                OPERATION_RETURN(scope, JSValue::encode(baseValue.getPropertySlot(globalObject, identifier, slot, [&] (bool found, PropertySlot& slot) -> JSValue {
+                    LOG_IC((ICEvent::OperationGetByValWithThisOptimize, baseValue.classInfoOrNull(), baseValue == slot.slotBase()));
+
+                    if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, baseValue.structureOrNull(), identifier))
+                        repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::ByValWithThis, isNonStringPrimitiveKey);
+                    return found ? slot.getValue(globalObject, identifier) : jsUndefined();
+                })));
+            }
         }
     }
 
@@ -3967,7 +4030,7 @@ JSC_DEFINE_JIT_OPERATION(operationGetPrivateNameOptimize, EncodedJSValue, (Encod
         OPERATION_RETURN_IF_EXCEPTION(scope, encodedJSValue());
         ASSERT(fieldName.isSymbol());
 
-        JSObject* base = jsCast<JSObject*>(baseValue.asCell());
+        JSObject* base = uncheckedDowncast<JSObject>(baseValue.asCell());
 
         PropertySlot slot(base, PropertySlot::InternalMethodType::GetOwnProperty);
         base->getPrivateField(globalObject, fieldName, slot);
@@ -3977,7 +4040,7 @@ JSC_DEFINE_JIT_OPERATION(operationGetPrivateNameOptimize, EncodedJSValue, (Encod
 
         CacheableIdentifier identifier = CacheableIdentifier::createFromCell(fieldNameValue.asCell());
         if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, baseValue.structureOrNull(), identifier))
-            repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::PrivateName);
+            repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::PrivateName, /* isNonStringPrimitiveKey */ false);
         OPERATION_RETURN(scope, JSValue::encode(slot.getValue(globalObject, fieldName)));
     }
 
@@ -4049,7 +4112,7 @@ JSC_DEFINE_JIT_OPERATION(operationGetPrivateNameByIdOptimize, EncodedJSValue, (E
     JSValue baseValue = JSValue::decode(base);
 
     if (baseValue.isObject()) {
-        JSObject* base = jsCast<JSObject*>(baseValue.asCell());
+        JSObject* base = uncheckedDowncast<JSObject>(baseValue.asCell());
 
         PropertySlot slot(base, PropertySlot::InternalMethodType::GetOwnProperty);
         base->getPrivateField(globalObject, identifier, slot);
@@ -4059,7 +4122,7 @@ JSC_DEFINE_JIT_OPERATION(operationGetPrivateNameByIdOptimize, EncodedJSValue, (E
 
         CodeBlock* codeBlock = callFrame->codeBlock();
         if (propertyCache->considerRepatchingCacheBy(vm, codeBlock, baseValue.structureOrNull(), identifier))
-            repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::PrivateNameById);
+            repatchGetBy(globalObject, codeBlock, baseValue, identifier, slot, *propertyCache, GetByKind::PrivateNameById, /* isNonStringPrimitiveKey */ false);
         OPERATION_RETURN(scope, JSValue::encode(slot.getValue(globalObject, identifier)));
     }
 
@@ -4336,7 +4399,7 @@ JSC_DEFINE_JIT_OPERATION(operationPushWithScope, JSCell*, (JSGlobalObject* globa
     JSObject* object = JSValue::decode(objectValue).toObject(globalObject);
     OPERATION_RETURN_IF_EXCEPTION(scope, nullptr);
 
-    JSScope* currentScope = jsCast<JSScope*>(currentScopeCell);
+    JSScope* currentScope = uncheckedDowncast<JSScope>(currentScopeCell);
 
     OPERATION_RETURN(scope, JSWithScope::create(vm, globalObject, currentScope, object));
 }
@@ -4347,7 +4410,7 @@ JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationPushWithScopeObject, JSCell*, (JSGlob
     CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
     JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
     auto scope = DECLARE_THROW_SCOPE(vm);
-    JSScope* currentScope = jsCast<JSScope*>(currentScopeCell);
+    JSScope* currentScope = uncheckedDowncast<JSScope>(currentScopeCell);
     OPERATION_RETURN(scope, JSWithScope::create(vm, globalObject, currentScope, object));
 }
 
@@ -4524,7 +4587,7 @@ JSC_DEFINE_JIT_OPERATION(operationResolveScopeForBaseline, EncodedJSValue, (JSGl
     case UnresolvedProperty:
     case UnresolvedPropertyWithVarInjectionChecks: {
         if (resolvedScope->isGlobalObject()) {
-            JSGlobalObject* globalObject = jsCast<JSGlobalObject*>(resolvedScope);
+            JSGlobalObject* globalObject = uncheckedDowncast<JSGlobalObject>(resolvedScope);
             bool hasProperty = globalObject->hasProperty(globalObject, ident);
             OPERATION_RETURN_IF_EXCEPTION(scope, encodedJSValue());
             if (hasProperty) {
@@ -4534,7 +4597,7 @@ JSC_DEFINE_JIT_OPERATION(operationResolveScopeForBaseline, EncodedJSValue, (JSGl
                 metadata.m_globalLexicalBindingEpoch = globalObject->globalLexicalBindingEpoch();
             }
         } else if (resolvedScope->isGlobalLexicalEnvironment()) {
-            JSGlobalLexicalEnvironment* globalLexicalEnvironment = jsCast<JSGlobalLexicalEnvironment*>(resolvedScope);
+            JSGlobalLexicalEnvironment* globalLexicalEnvironment = uncheckedDowncast<JSGlobalLexicalEnvironment>(resolvedScope);
             ConcurrentJSLocker locker(codeBlock->m_lock);
             metadata.m_resolveType = needsVarInjectionChecks(resolveType) ? GlobalLexicalVarWithVarInjectionChecks : GlobalLexicalVar;
             metadata.m_globalLexicalEnvironment.set(vm, codeBlock, globalLexicalEnvironment);
@@ -4559,7 +4622,7 @@ JSC_DEFINE_JIT_OPERATION(operationGetFromScope, EncodedJSValue, (JSGlobalObject*
 
     auto bytecode = pc->as<OpGetFromScope>();
     const Identifier& ident = codeBlock->identifier(bytecode.m_var);
-    JSObject* environment = jsCast<JSObject*>(callFrame->uncheckedR(bytecode.m_scope).jsValue());
+    JSObject* environment = uncheckedDowncast<JSObject>(callFrame->uncheckedR(bytecode.m_scope).jsValue());
     GetPutInfo& getPutInfo = bytecode.metadata(codeBlock).m_getPutInfo;
 
     // ModuleVar is always converted to ClosureVar for get_from_scope.
@@ -4602,7 +4665,7 @@ JSC_DEFINE_JIT_OPERATION(operationPutToScope, void, (JSGlobalObject* globalObjec
     auto& metadata = bytecode.metadata(codeBlock);
 
     const Identifier& ident = codeBlock->identifier(bytecode.m_var);
-    JSObject* jsScope = jsCast<JSObject*>(callFrame->uncheckedR(bytecode.m_scope).jsValue());
+    JSObject* jsScope = uncheckedDowncast<JSObject>(callFrame->uncheckedR(bytecode.m_scope).jsValue());
     JSValue value = callFrame->r(bytecode.m_value).jsValue();
     GetPutInfo& getPutInfo = metadata.m_getPutInfo;
 
@@ -4610,7 +4673,7 @@ JSC_DEFINE_JIT_OPERATION(operationPutToScope, void, (JSGlobalObject* globalObjec
     ASSERT(getPutInfo.resolveType() != ModuleVar);
 
     if (getPutInfo.resolveType() == ResolvedClosureVar) {
-        JSLexicalEnvironment* environment = jsCast<JSLexicalEnvironment*>(jsScope);
+        JSLexicalEnvironment* environment = uncheckedDowncast<JSLexicalEnvironment>(jsScope);
         environment->variableAt(ScopeOffset(metadata.m_operand)).set(vm, environment, value);
         if (WatchpointSet* set = metadata.m_watchpointSet)
             set->touch(vm, "Executed op_put_scope<ResolvedClosureVar>");
@@ -4738,7 +4801,7 @@ JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationLookupExceptionHandlerFromCallerFrame
     CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
     JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
     ASSERT(callFrame->isZombieFrame());
-    ASSERT(vm.hasPendingTerminationException() || jsCast<ErrorInstance*>(vm.exceptionForInspection()->value().asCell())->isStackOverflowError());
+    ASSERT(vm.hasPendingTerminationException() || uncheckedDowncast<ErrorInstance>(vm.exceptionForInspection()->value().asCell())->isStackOverflowError());
     genericUnwind(vm, callFrame);
     ASSERT(vm.targetMachinePCForThrow);
 }

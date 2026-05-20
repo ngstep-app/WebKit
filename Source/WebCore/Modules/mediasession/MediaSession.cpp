@@ -31,6 +31,7 @@
 #include "ContextDestructionObserverInlines.h"
 #include "DocumentLoader.h"
 #include "DocumentPage.h"
+#include "DocumentQuirks.h"
 #include "EventLoop.h"
 #include "EventNames.h"
 #include "HTMLMediaElement.h"
@@ -41,9 +42,11 @@
 #include "LocalDOMWindow.h"
 #include "Logging.h"
 #include "MediaMetadata.h"
+#include "MediaSessionCaptionTrack.h"
 #include "MediaSessionCoordinator.h"
 #include "Navigator.h"
 #include "NowPlayingInfo.h"
+#include "PageGroup.h"
 #include "PlatformMediaSessionManager.h"
 #include "Settings.h"
 #include "UserMediaController.h"
@@ -74,7 +77,7 @@ static ASCIILiteral logClassName()
 
 static PlatformMediaSession::RemoteControlCommandType platformCommandForMediaSessionAction(MediaSessionAction action)
 {
-    static constexpr SortedArrayMap map { std::to_array<std::pair<MediaSessionAction, PlatformMediaSession::RemoteControlCommandType>>({
+    static constexpr SortedArrayMap map { WTF::toArray<std::pair<MediaSessionAction, PlatformMediaSession::RemoteControlCommandType>>({
         { MediaSessionAction::Play, PlatformMediaSession::RemoteControlCommandType::PlayCommand },
         { MediaSessionAction::Pause, PlatformMediaSession::RemoteControlCommandType::PauseCommand },
         { MediaSessionAction::Seekbackward, PlatformMediaSession::RemoteControlCommandType::SkipBackwardCommand },
@@ -132,6 +135,8 @@ static std::optional<std::pair<PlatformMediaSession::RemoteControlCommandType, P
     case MediaSessionAction::Togglemicrophone:
     case MediaSessionAction::Togglescreenshare:
     case MediaSessionAction::Voiceactivity:
+    case MediaSessionAction::Togglecaptions:
+    case MediaSessionAction::Selectcaptiontrack:
         break;
     }
     if (command == PlatformMediaSession::RemoteControlCommandType::NoCommand)
@@ -166,8 +171,15 @@ MediaSession::MediaSession(Navigator& navigator)
     , m_coordinator(MediaSessionCoordinator::create(protect(navigator.scriptExecutionContext()).get()))
 #endif
 {
+    if (RefPtr document = this->document())
+        m_needsYouTubeCaptionsQuirk = document->quirks().needsYouTubeCaptionsQuirk();
+
     m_logger = Document::sharedLogger();
     m_logIdentifier = nextLogIdentifier();
+#if PLATFORM(COCOA)
+    if (RefPtr document = navigator.document())
+        m_shouldSuppressMediaSessionPauseActionOnInterruption = document->quirks().shouldSuppressMediaSessionPauseActionOnInterruption();
+#endif
 
     ALWAYS_LOG(LOGIDENTIFIER);
 }
@@ -633,6 +645,11 @@ void MediaSession::mayResumePlayback(bool shouldResume)
 
 void MediaSession::suspendPlayback()
 {
+#if PLATFORM(COCOA)
+    if (m_shouldSuppressMediaSessionPauseActionOnInterruption)
+        return;
+#endif
+
     ALWAYS_LOG(LOGIDENTIFIER);
     callActionHandler({ MediaSessionAction::Pause });
 }
@@ -660,6 +677,104 @@ std::optional<MediaSessionGroupIdentifier> MediaSession::mediaSessionGroupIdenti
 {
     auto* document = this->document();
     return document && document->page() ? document->page()->mediaSessionGroupIdentifier() : std::nullopt;
+}
+
+RefPtr<CaptionUserPreferences> MediaSession::captionPreferences()
+{
+    if (RefPtr document = this->document()) {
+        if (RefPtr page = document->page())
+            return &protect(page->group())->ensureCaptionPreferences();
+    }
+
+    return nullptr;
+}
+
+void MediaSession::captionPreferencesChanged()
+{
+    RefPtr captionPreferences = this->captionPreferences();
+    if (!captionPreferences)
+        return;
+
+    auto newDisplayMode = captionPreferences->captionDisplayMode();
+    if (newDisplayMode == m_captionDisplayMode)
+        return;
+    m_captionDisplayMode = newDisplayMode;
+
+    if (!m_needsYouTubeCaptionsQuirk)
+        return;
+
+    switch (newDisplayMode) {
+    case CaptionUserPreferencesDisplayMode::AlwaysOn:
+        if (m_captionsEnabled)
+            break;
+
+        ALWAYS_LOG(LOGIDENTIFIER, "newMode: ", newDisplayMode, ", sending toggle action");
+        callActionHandler({ .action = MediaSessionAction::Togglecaptions }, { });
+        break;
+    case CaptionUserPreferencesDisplayMode::ForcedOnly:
+        if (!m_captionsEnabled)
+            break;
+
+        ALWAYS_LOG(LOGIDENTIFIER, "newMode: ", newDisplayMode, ", sending toggle action");
+        callActionHandler({ .action = MediaSessionAction::Togglecaptions }, { });
+        break;
+    case CaptionUserPreferencesDisplayMode::Automatic:
+    case CaptionUserPreferencesDisplayMode::Manual:
+        // No-op
+        break;
+    }
+}
+
+CaptionUserPreferencesDisplayMode MediaSession::captionDisplayMode()
+{
+    if (m_captionDisplayMode)
+        return *m_captionDisplayMode;
+
+    if (RefPtr captionPreferences = this->captionPreferences()) {
+        m_captionDisplayMode = captionPreferences->captionDisplayMode();
+        return *m_captionDisplayMode;
+    }
+
+    return CaptionUserPreferencesDisplayMode::ForcedOnly;
+}
+
+void MediaSession::setCaptionTracks(Vector<MediaSessionCaptionTrack>&& tracks)
+{
+    ALWAYS_LOG(LOGIDENTIFIER, "count: ", tracks.size());
+    m_captionTracks = WTF::move(tracks);
+    if (RefPtr mediaElement = activeMediaElement())
+        mediaElement->mediaSessionCaptionTracksChanged();
+}
+
+void MediaSession::setCaptionsEnabled(bool enabled)
+{
+    if (m_captionsEnabled == enabled)
+        return;
+    m_captionsEnabled = enabled;
+
+    ALWAYS_LOG(LOGIDENTIFIER, enabled);
+
+    if (RefPtr mediaElement = activeMediaElement())
+        mediaElement->mediaSessionCaptionsEnabledChanged();
+}
+
+void MediaSession::presentationModeChanged()
+{
+    RefPtr mediaElement = activeMediaElement();
+    if (!mediaElement)
+        return;
+
+    auto fullscreenMode = mediaElement->fullscreenMode();
+    if (fullscreenMode == MediaPlayerEnums::VideoFullscreenModeNone)
+        return;
+
+    if (captionDisplayMode() == CaptionUserPreferencesDisplayMode::AlwaysOn && !m_captionsEnabled) {
+        ALWAYS_LOG(LOGIDENTIFIER, "newMode: ", fullscreenMode, ", sending toggle action");
+        callActionHandler({ .action = MediaSessionAction::Togglecaptions }, { });
+    } else if (captionDisplayMode() == CaptionUserPreferencesDisplayMode::ForcedOnly && !m_captionsEnabled) {
+        ALWAYS_LOG(LOGIDENTIFIER, "newMode: ", fullscreenMode, ", sending toggle action");
+        callActionHandler({ .action = MediaSessionAction::Togglecaptions }, { });
+    }
 }
 
 }

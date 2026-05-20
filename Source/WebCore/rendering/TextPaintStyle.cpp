@@ -25,6 +25,7 @@
 
 #include "config.h"
 #include "TextPaintStyle.h"
+#include "DocumentView.h"
 
 #include "ColorLuminance.h"
 #include "FocusController.h"
@@ -32,6 +33,7 @@
 #include "LocalFrame.h"
 #include "Page.h"
 #include "PaintInfo.h"
+#include "PlatformRenderTheme.h"
 #include "RenderObjectInlines.h"
 #include "RenderStyle+GettersInlines.h"
 #include "RenderText.h"

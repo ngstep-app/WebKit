@@ -85,19 +85,14 @@ constexpr uint32_t kMaxTriFanLineLoopBuffersPerFrame = 10;
 angle::Result AllocateTriangleFanBufferFromPool(ContextMtl *context,
                                                 GLsizei vertexCount,
                                                 mtl::BufferPool *pool,
-                                                mtl::BufferRef *bufferOut,
-                                                uint32_t *offsetOut,
+                                                mtl::BufferSlice *outBuffer,
                                                 uint32_t *numElemsOut)
 {
     uint32_t numIndices;
     ANGLE_TRY(mtl::GetTriangleFanIndicesCount(context, vertexCount, &numIndices));
 
-    size_t offset;
     pool->releaseInFlightBuffers(context);
-    ANGLE_TRY(pool->allocate(context, numIndices * sizeof(uint32_t), nullptr, bufferOut, &offset,
-                             nullptr));
-
-    *offsetOut   = static_cast<uint32_t>(offset);
+    ANGLE_TRY(pool->allocate(context, numIndices * sizeof(uint32_t), outBuffer));
     *numElemsOut = numIndices;
 
     return angle::Result::Continue;
@@ -106,15 +101,10 @@ angle::Result AllocateTriangleFanBufferFromPool(ContextMtl *context,
 angle::Result AllocateBufferFromPool(ContextMtl *context,
                                      GLsizei indicesToReserve,
                                      mtl::BufferPool *pool,
-                                     mtl::BufferRef *bufferOut,
-                                     uint32_t *offsetOut)
+                                     mtl::BufferSlice *outBuffer)
 {
-    size_t offset;
     pool->releaseInFlightBuffers(context);
-    ANGLE_TRY(pool->allocate(context, indicesToReserve * sizeof(uint32_t), nullptr, bufferOut,
-                             &offset, nullptr));
-
-    *offsetOut = static_cast<uint32_t>(offset);
+    ANGLE_TRY(pool->allocate(context, indicesToReserve * sizeof(uint32_t), outBuffer));
 
     return angle::Result::Continue;
 }
@@ -138,7 +128,7 @@ class LineLoopLastSegmentHelper
 
     ~LineLoopLastSegmentHelper()
     {
-        if (!mLineLoopIndexBuffer)
+        if (mLineLoopIndexBuffer.empty())
         {
             return;
         }
@@ -146,7 +136,8 @@ class LineLoopLastSegmentHelper
         // Draw last segment of line loop here
         mtl::RenderCommandEncoder *encoder = mContextMtl->getRenderCommandEncoder();
         ASSERT(encoder);
-        encoder->drawIndexed(MTLPrimitiveTypeLine, 2, MTLIndexTypeUInt32, mLineLoopIndexBuffer, 0);
+        encoder->drawIndexed(MTLPrimitiveTypeLine, 2, MTLIndexTypeUInt32,
+                             mLineLoopIndexBuffer.buffer(), mLineLoopIndexBuffer.offset());
     }
 
     angle::Result begin(const gl::Context *context,
@@ -160,14 +151,15 @@ class LineLoopLastSegmentHelper
 
         indexBufferPool->releaseInFlightBuffers(mContextMtl);
 
-        ANGLE_TRY(indexBufferPool->allocate(mContextMtl, 2 * sizeof(uint32_t), nullptr,
-                                            &mLineLoopIndexBuffer, nullptr, nullptr));
+        ANGLE_TRY(
+            indexBufferPool->allocate(mContextMtl, 2 * sizeof(uint32_t), &mLineLoopIndexBuffer));
 
         if (indexTypeOrNone == gl::DrawElementsType::InvalidEnum)
         {
             ANGLE_TRY(mContextMtl->getDisplay()->getUtils().generateLineLoopLastSegment(
                 mContextMtl, firstVertex, firstVertex + vertexOrIndexCount - 1,
-                mLineLoopIndexBuffer, 0));
+                mLineLoopIndexBuffer.buffer(),
+                static_cast<uint32_t>(mLineLoopIndexBuffer.offset())));
         }
         else
         {
@@ -175,7 +167,8 @@ class LineLoopLastSegmentHelper
             ANGLE_TRY(
                 mContextMtl->getDisplay()->getUtils().generateLineLoopLastSegmentFromElementsArray(
                     mContextMtl,
-                    {indexTypeOrNone, vertexOrIndexCount, indices, mLineLoopIndexBuffer, 0}));
+                    {indexTypeOrNone, vertexOrIndexCount, indices, mLineLoopIndexBuffer.buffer(),
+                     static_cast<uint32_t>(mLineLoopIndexBuffer.offset())}));
         }
 
         ANGLE_TRY(indexBufferPool->commit(mContextMtl));
@@ -185,7 +178,7 @@ class LineLoopLastSegmentHelper
 
   private:
     ContextMtl *mContextMtl = nullptr;
-    mtl::BufferRef mLineLoopIndexBuffer;
+    mtl::BufferSlice mLineLoopIndexBuffer;
 };
 
 GLint GetOwnershipIdentity(const egl::AttributeMap &attribs)
@@ -316,8 +309,7 @@ angle::Result ContextMtl::drawTriFanArraysWithBaseVertex(const gl::Context *cont
     if (mTriFanArraysIndexBuffer == nullptr || mTriFanArraysIndexBuffer->size() < indexBufferSize)
     {
         // Re-generate a new index buffer, which the first index will be zero.
-        ANGLE_TRY(
-            mtl::Buffer::MakeBuffer(this, indexBufferSize, nullptr, &mTriFanArraysIndexBuffer));
+        ANGLE_TRY(mtl::Buffer::MakeBuffer(this, indexBufferSize, &mTriFanArraysIndexBuffer));
         ANGLE_TRY(getDisplay()->getUtils().generateTriFanBufferFromArrays(
             this, {0, static_cast<uint32_t>(count), mTriFanArraysIndexBuffer, 0}));
     }
@@ -343,14 +335,13 @@ angle::Result ContextMtl::drawTriFanArraysLegacy(const gl::Context *context,
                                                  GLsizei instances)
 {
     // Legacy method is only used for GPU lacking instanced base vertex draw capabilities.
-    mtl::BufferRef genIdxBuffer;
-    uint32_t genIdxBufferOffset;
+    mtl::BufferSlice genIdxBuffer;
     uint32_t genIndicesCount;
     ANGLE_TRY(AllocateTriangleFanBufferFromPool(this, count, &mTriFanIndexBuffer, &genIdxBuffer,
-                                                &genIdxBufferOffset, &genIndicesCount));
+                                                &genIndicesCount));
     ANGLE_TRY(getDisplay()->getUtils().generateTriFanBufferFromArrays(
-        this, {static_cast<uint32_t>(first), static_cast<uint32_t>(count), genIdxBuffer,
-               genIdxBufferOffset}));
+        this, {static_cast<uint32_t>(first), static_cast<uint32_t>(count), genIdxBuffer.buffer(),
+               static_cast<uint32_t>(genIdxBuffer.offset())}));
 
     ANGLE_TRY(mTriFanIndexBuffer.commit(this));
 
@@ -361,8 +352,8 @@ angle::Result ContextMtl::drawTriFanArraysLegacy(const gl::Context *context,
     if (!isNoOp)
     {
         mRenderEncoder.drawIndexedInstanced(MTLPrimitiveTypeTriangle, genIndicesCount,
-                                            MTLIndexTypeUInt32, genIdxBuffer, genIdxBufferOffset,
-                                            instances);
+                                            MTLIndexTypeUInt32, genIdxBuffer.buffer(),
+                                            genIdxBuffer.offset(), instances);
     }
     return angle::Result::Continue;
 }
@@ -408,15 +399,13 @@ angle::Result ContextMtl::drawLineLoopArrays(const gl::Context *context,
         return drawLineLoopArraysNonInstanced(context, first, count);
     }
 
-    mtl::BufferRef genIdxBuffer;
-    uint32_t genIdxBufferOffset;
+    mtl::BufferSlice genIdxBuffer;
     uint32_t genIndicesCount = count + 1;
 
-    ANGLE_TRY(AllocateBufferFromPool(this, genIndicesCount, &mLineLoopIndexBuffer, &genIdxBuffer,
-                                     &genIdxBufferOffset));
+    ANGLE_TRY(AllocateBufferFromPool(this, genIndicesCount, &mLineLoopIndexBuffer, &genIdxBuffer));
     ANGLE_TRY(getDisplay()->getUtils().generateLineLoopBufferFromArrays(
-        this, {static_cast<uint32_t>(first), static_cast<uint32_t>(count), genIdxBuffer,
-               genIdxBufferOffset}));
+        this, {static_cast<uint32_t>(first), static_cast<uint32_t>(count), genIdxBuffer.buffer(),
+               static_cast<uint32_t>(genIdxBuffer.offset())}));
 
     ANGLE_TRY(mLineLoopIndexBuffer.commit(this));
 
@@ -429,14 +418,14 @@ angle::Result ContextMtl::drawLineLoopArrays(const gl::Context *context,
         if (baseInstance == 0)
         {
             mRenderEncoder.drawIndexedInstanced(MTLPrimitiveTypeLineStrip, genIndicesCount,
-                                                MTLIndexTypeUInt32, genIdxBuffer,
-                                                genIdxBufferOffset, instances);
+                                                MTLIndexTypeUInt32, genIdxBuffer.buffer(),
+                                                genIdxBuffer.offset(), instances);
         }
         else
         {
             mRenderEncoder.drawIndexedInstancedBaseVertexBaseInstance(
-                MTLPrimitiveTypeLineStrip, genIndicesCount, MTLIndexTypeUInt32, genIdxBuffer,
-                genIdxBufferOffset, instances, 0, baseInstance);
+                MTLPrimitiveTypeLineStrip, genIndicesCount, MTLIndexTypeUInt32,
+                genIdxBuffer.buffer(), genIdxBuffer.offset(), instances, 0, baseInstance);
         }
     }
 
@@ -551,15 +540,16 @@ angle::Result ContextMtl::drawTriFanElements(const gl::Context *context,
 {
     if (count > 3)
     {
-        mtl::BufferRef genIdxBuffer;
-        uint32_t genIdxBufferOffset;
+        mtl::BufferSlice genIdxBuffer;
         uint32_t genIndicesCount;
         bool primitiveRestart = getState().isPrimitiveRestartEnabled();
         ANGLE_TRY(AllocateTriangleFanBufferFromPool(this, count, &mTriFanIndexBuffer, &genIdxBuffer,
-                                                    &genIdxBufferOffset, &genIndicesCount));
+                                                    &genIndicesCount));
 
         ANGLE_TRY(getDisplay()->getUtils().generateTriFanBufferFromElementsArray(
-            this, {type, count, indices, genIdxBuffer, genIdxBufferOffset, primitiveRestart},
+            this,
+            {type, count, indices, genIdxBuffer.buffer(),
+             static_cast<uint32_t>(genIdxBuffer.offset()), primitiveRestart},
             &genIndicesCount));
 
         ANGLE_TRY(mTriFanIndexBuffer.commit(this));
@@ -570,14 +560,15 @@ angle::Result ContextMtl::drawTriFanElements(const gl::Context *context,
             if (baseVertex == 0 && baseInstance == 0)
             {
                 mRenderEncoder.drawIndexedInstanced(MTLPrimitiveTypeTriangle, genIndicesCount,
-                                                    MTLIndexTypeUInt32, genIdxBuffer,
-                                                    genIdxBufferOffset, instances);
+                                                    MTLIndexTypeUInt32, genIdxBuffer.buffer(),
+                                                    genIdxBuffer.offset(), instances);
             }
             else
             {
                 mRenderEncoder.drawIndexedInstancedBaseVertexBaseInstance(
-                    MTLPrimitiveTypeTriangle, genIndicesCount, MTLIndexTypeUInt32, genIdxBuffer,
-                    genIdxBufferOffset, instances, baseVertex, baseInstance);
+                    MTLPrimitiveTypeTriangle, genIndicesCount, MTLIndexTypeUInt32,
+                    genIdxBuffer.buffer(), genIdxBuffer.offset(), instances, baseVertex,
+                    baseInstance);
             }
         }
 
@@ -620,15 +611,16 @@ angle::Result ContextMtl::drawLineLoopElements(const gl::Context *context,
                                                                       indices);
         }
 
-        mtl::BufferRef genIdxBuffer;
-        uint32_t genIdxBufferOffset;
+        mtl::BufferSlice genIdxBuffer;
         uint32_t reservedIndices = count * 2;
         uint32_t genIndicesCount;
-        ANGLE_TRY(AllocateBufferFromPool(this, reservedIndices, &mLineLoopIndexBuffer,
-                                         &genIdxBuffer, &genIdxBufferOffset));
+        ANGLE_TRY(
+            AllocateBufferFromPool(this, reservedIndices, &mLineLoopIndexBuffer, &genIdxBuffer));
 
         ANGLE_TRY(getDisplay()->getUtils().generateLineLoopBufferFromElementsArray(
-            this, {type, count, indices, genIdxBuffer, genIdxBufferOffset, primitiveRestart},
+            this,
+            {type, count, indices, genIdxBuffer.buffer(),
+             static_cast<uint32_t>(genIdxBuffer.offset()), primitiveRestart},
             &genIndicesCount));
 
         ANGLE_TRY(mLineLoopIndexBuffer.commit(this));
@@ -639,14 +631,15 @@ angle::Result ContextMtl::drawLineLoopElements(const gl::Context *context,
             if (baseVertex == 0 && baseInstance == 0)
             {
                 mRenderEncoder.drawIndexedInstanced(MTLPrimitiveTypeLineStrip, genIndicesCount,
-                                                    MTLIndexTypeUInt32, genIdxBuffer,
-                                                    genIdxBufferOffset, instances);
+                                                    MTLIndexTypeUInt32, genIdxBuffer.buffer(),
+                                                    genIdxBuffer.offset(), instances);
             }
             else
             {
                 mRenderEncoder.drawIndexedInstancedBaseVertexBaseInstance(
-                    MTLPrimitiveTypeLineStrip, genIndicesCount, MTLIndexTypeUInt32, genIdxBuffer,
-                    genIdxBufferOffset, instances, baseVertex, baseInstance);
+                    MTLPrimitiveTypeLineStrip, genIndicesCount, MTLIndexTypeUInt32,
+                    genIdxBuffer.buffer(), genIdxBuffer.offset(), instances, baseVertex,
+                    baseInstance);
             }
         }
 
@@ -664,7 +657,7 @@ angle::Result ContextMtl::drawArraysProvokingVertexImpl(const gl::Context *conte
                                                         GLuint baseInstance)
 {
 
-    size_t outIndexCount               = 0;
+    uint32_t outIndexCount             = 0;
     size_t outIndexOffset              = 0;
     gl::DrawElementsType convertedType = gl::DrawElementsType::UnsignedInt;
     gl::PrimitiveMode outIndexMode     = gl::PrimitiveMode::InvalidEnum;
@@ -673,7 +666,6 @@ angle::Result ContextMtl::drawArraysProvokingVertexImpl(const gl::Context *conte
     ANGLE_TRY(mProvokingVertexHelper.generateIndexBuffer(
         mtl::GetImpl(context), first, count, mode, convertedType, outIndexCount, outIndexOffset,
         outIndexMode, drawIdxBuffer));
-    GLsizei outIndexCounti32 = static_cast<GLsizei>(outIndexCount);
 
     // Note: we don't need to pass the generated index buffer to ContextMtl::setupDraw.
     // Because setupDraw only needs to operate on the original vertex buffers & PrimitiveMode.
@@ -720,20 +712,20 @@ angle::Result ContextMtl::drawArraysProvokingVertexImpl(const gl::Context *conte
             MTLIndexType mtlIdxType  = mtl::GetIndexType(convertedType);                           \
             if (instances == 0)                                                                    \
             {                                                                                      \
-                mRenderEncoder.drawIndexed(mtlType, outIndexCounti32, mtlIdxType, drawIdxBuffer,   \
+                mRenderEncoder.drawIndexed(mtlType, outIndexCount, mtlIdxType, drawIdxBuffer,      \
                                            outIndexOffset);                                        \
             }                                                                                      \
             else                                                                                   \
             {                                                                                      \
                 if (baseInstance == 0)                                                             \
                 {                                                                                  \
-                    mRenderEncoder.drawIndexedInstanced(mtlType, outIndexCounti32, mtlIdxType,     \
+                    mRenderEncoder.drawIndexedInstanced(mtlType, outIndexCount, mtlIdxType,        \
                                                         drawIdxBuffer, outIndexOffset, instances); \
                 }                                                                                  \
                 else                                                                               \
                 {                                                                                  \
                     mRenderEncoder.drawIndexedInstancedBaseVertexBaseInstance(                     \
-                        mtlType, outIndexCounti32, mtlIdxType, drawIdxBuffer, outIndexOffset,      \
+                        mtlType, outIndexCount, mtlIdxType, drawIdxBuffer, outIndexOffset,         \
                         instances, 0, baseInstance);                                               \
                 }                                                                                  \
             }                                                                                      \
@@ -772,17 +764,18 @@ angle::Result ContextMtl::drawElementsImpl(const gl::Context *context,
                                     baseInstance);
     }
 
-    mtl::BufferRef idxBuffer;
+    mtl::BufferSlice idxBuffer;
     mtl::BufferRef drawIdxBuffer;
-    size_t convertedOffset             = 0;
+
     gl::DrawElementsType convertedType = type;
 
-    ANGLE_TRY(mVertexArray->getIndexBuffer(context, type, count, indices, &idxBuffer,
-                                           &convertedOffset, &convertedType));
+    ANGLE_TRY(
+        mVertexArray->getIndexBuffer(context, type, count, indices, &idxBuffer, &convertedType));
 
-    ASSERT(idxBuffer);
-    ASSERT((convertedType == gl::DrawElementsType::UnsignedShort && (convertedOffset % 2) == 0) ||
-           (convertedType == gl::DrawElementsType::UnsignedInt && (convertedOffset % 4) == 0));
+    ASSERT(idxBuffer.buffer());
+    ASSERT(
+        (convertedType == gl::DrawElementsType::UnsignedShort && (idxBuffer.offset() % 2) == 0) ||
+        (convertedType == gl::DrawElementsType::UnsignedInt && (idxBuffer.offset() % 4) == 0));
 
     uint32_t convertedCounti32 = (uint32_t)count;
 
@@ -790,27 +783,24 @@ angle::Result ContextMtl::drawElementsImpl(const gl::Context *context,
 
     if (requiresIndexRewrite(context->getState(), mode))
     {
-        size_t outIndexCount      = 0;
-        gl::PrimitiveMode newMode = gl::PrimitiveMode::InvalidEnum;
-        ANGLE_TRY(mProvokingVertexHelper.preconditionIndexBuffer(
-            mtl::GetImpl(context), idxBuffer, count, convertedOffset,
-            mState.isPrimitiveRestartEnabled(), mode, convertedType, outIndexCount,
-            provokingVertexAdditionalOffset, newMode, drawIdxBuffer));
         // Line strips and triangle strips are rewritten to flat line arrays and tri arrays.
-        convertedCounti32 = (uint32_t)outIndexCount;
-        mode              = newMode;
+        ANGLE_TRY(mProvokingVertexHelper.preconditionIndexBuffer(
+            mtl::GetImpl(context), idxBuffer.buffer(), count, idxBuffer.offset(),
+            mState.isPrimitiveRestartEnabled(), mode, convertedType, convertedCounti32,
+            provokingVertexAdditionalOffset, mode, drawIdxBuffer));
     }
     else
     {
-        drawIdxBuffer = idxBuffer;
+        drawIdxBuffer = idxBuffer.buffer();
     }
     // Draw commands will only be broken up if transform feedback is enabled,
     // if the mode is a simple type, and if the buffer contained any restart
     // indices.
     // It's safe to use idxBuffer in this case, as it will contain the same count and restart ranges
     // as drawIdxBuffer.
-    const std::vector<DrawCommandRange> drawCommands = mVertexArray->getDrawIndices(
-        context, type, convertedType, mode, idxBuffer, convertedCounti32, convertedOffset);
+    const std::vector<DrawCommandRange> drawCommands =
+        mVertexArray->getDrawIndices(context, type, convertedType, mode, idxBuffer.buffer(),
+                                     convertedCounti32, idxBuffer.offset());
     bool isNoOp = false;
     ANGLE_TRY(setupDraw(context, 0, count, instances, type, indices, false, &isNoOp));
     if (!isNoOp)
@@ -2793,7 +2783,7 @@ angle::Result ContextMtl::handleDirtyActiveTextures(const gl::Context *context)
         TextureMtl *textureMtl = mtl::GetImpl(texture);
 
         // Make sure texture's image definitions will be transferred to GPU.
-        ANGLE_TRY(textureMtl->ensureNativeStorageCreated(context));
+        ANGLE_TRY(textureMtl->ensureNativeStorageCreated(context, true));
 
         // The binding of this texture will be done by ProgramMtl.
         return angle::Result::Continue;

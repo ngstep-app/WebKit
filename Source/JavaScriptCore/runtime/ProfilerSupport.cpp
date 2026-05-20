@@ -28,8 +28,6 @@
 
 #include "Options.h"
 #include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <wtf/FileHandle.h>
 #include <wtf/FileSystem.h>
 #include <wtf/MonotonicTime.h>
@@ -202,7 +200,7 @@ void ProfilerSupport::markInterval(const void* identifier, Category, MonotonicTi
     });
 }
 
-void ProfilerSupport::dumpIonGraphFunction(const String& functionName, Ref<JSON::Object>&& function)
+void ProfilerSupport::dumpIonGraphFunction(const String& functionName, ASCIILiteral tier, bool osr, Ref<JSON::Object>&& function)
 {
     if (!Options::dumpIonGraph())
         return;
@@ -213,7 +211,8 @@ void ProfilerSupport::dumpIonGraphFunction(const String& functionName, Ref<JSON:
     json->setArray("functions"_s, WTF::move(functions));
     auto string = json->toJSONString();
 
-    auto handle = FileSystem::createDumpFile(makeString("iongraph-"_s, functionName, "-"_s, WTF::getCurrentProcessID(), "-"_s, generateTimestamp()), ".json"_s, String::fromUTF8(Options::ionGraphDirectory()));
+    auto tierSuffix = osr ? makeString("-"_s, tier, "-OSR"_s) : makeString("-"_s, tier);
+    auto handle = FileSystem::createDumpFile(makeString("iongraph-"_s, functionName, tierSuffix, "-"_s, WTF::getCurrentProcessID(), "-"_s, generateTimestamp()), ".json"_s, String::fromUTF8(Options::ionGraphDirectory()));
     RELEASE_ASSERT(handle);
     handle.write(WTF::asByteSpan(string.utf8().span()));
     handle.flush();

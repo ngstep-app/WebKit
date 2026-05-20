@@ -98,7 +98,7 @@ Extractor::Extractor(Element* element, bool allowVisitedStyle)
 {
 }
 
-RefPtr<CSSPrimitiveValue> Extractor::getFontSizeCSSValuePreferringKeyword() const
+RefPtr<CSSValue> Extractor::getFontSizeCSSValuePreferringKeyword() const
 {
     RefPtr element = m_element;
     if (!element)
@@ -111,7 +111,7 @@ RefPtr<CSSPrimitiveValue> Extractor::getFontSizeCSSValuePreferringKeyword() cons
         return nullptr;
 
     if (auto sizeIdentifier = style->fontDescription().keywordSizeAsIdentifier())
-        return CSSPrimitiveValue::create(sizeIdentifier);
+        return CSSKeywordValue::create(sizeIdentifier);
 
     return CSSPrimitiveValue::create(adjustFloatForAbsoluteZoom(style->fontDescription().computedSize(), *style), CSSUnitType::CSS_PX);
 }
@@ -256,7 +256,7 @@ RefPtr<CSSValue> Extractor::customPropertyValue(const AtomString& propertyName) 
     return value->propertyValue(CSSValuePool::singleton(), *style);
 }
 
-String Extractor::customPropertyValueSerialization(const AtomString& propertyName, const CSS::SerializationContext& serializationContext) const
+WTF::String Extractor::customPropertyValueSerialization(const AtomString& propertyName, const CSS::SerializationContext& serializationContext) const
 {
     std::unique_ptr<RenderStyle> ownedStyle;
     if (auto* style = computeStyleForCustomProperty(ownedStyle))
@@ -264,7 +264,7 @@ String Extractor::customPropertyValueSerialization(const AtomString& propertyNam
     return emptyString();
 }
 
-String Extractor::customPropertyValueSerializationInStyle(const RenderStyle& style, const AtomString& propertyName, const CSS::SerializationContext& serializationContext) const
+WTF::String Extractor::customPropertyValueSerializationInStyle(const RenderStyle& style, const AtomString& propertyName, const CSS::SerializationContext& serializationContext) const
 {
     if (RefPtr value = style.customPropertyValue(propertyName))
         return value->propertyValueSerialization(serializationContext, style);
@@ -456,7 +456,7 @@ RefPtr<CSSValue> Extractor::propertyValue(CSSPropertyID propertyID, UpdateLayout
     );
 }
 
-String Extractor::propertyValueSerialization(CSSPropertyID propertyID, const CSS::SerializationContext& serializationContext, UpdateLayout updateLayout, ExtractorState::PropertyValueType valueType) const
+WTF::String Extractor::propertyValueSerialization(CSSPropertyID propertyID, const CSS::SerializationContext& serializationContext, UpdateLayout updateLayout, ExtractorState::PropertyValueType valueType) const
 {
     std::unique_ptr<RenderStyle> ownedStyle;
     auto style = computeStyle(propertyID, updateLayout, ownedStyle);
@@ -504,7 +504,7 @@ RefPtr<CSSValue> Extractor::propertyValueInStyle(const RenderStyle& style, CSSPr
     return ExtractorGenerated::extractValue(state, propertyID);
 }
 
-String Extractor::propertyValueSerializationInStyle(const RenderStyle& style, CSSPropertyID propertyID, const CSS::SerializationContext& serializationContext, CSSValuePool& cssValuePool, const RenderElement* renderer, ExtractorState::PropertyValueType valueType) const
+WTF::String Extractor::propertyValueSerializationInStyle(const RenderStyle& style, CSSPropertyID propertyID, const CSS::SerializationContext& serializationContext, CSSValuePool& cssValuePool, const RenderElement* renderer, ExtractorState::PropertyValueType valueType) const
 {
     ASSERT(isExposed(propertyID, m_element->document().settings()));
 
@@ -545,17 +545,17 @@ bool Extractor::propertyMatches(CSSPropertyID propertyID, const CSSValue* value)
     if (!m_element)
         return false;
     if (propertyID == CSSPropertyFontSize) {
-        if (auto* primitiveValue = dynamicDowncast<CSSPrimitiveValue>(*value)) {
+        if (auto* keywordValue = dynamicDowncast<CSSKeywordValue>(*value)) {
             protect(m_element->document())->updateLayoutIgnorePendingStylesheets();
             if (auto* style = m_element->computedStyle(m_pseudoElementIdentifier)) {
                 if (CSSValueID sizeIdentifier = style->fontDescription().keywordSizeAsIdentifier()) {
-                    if (primitiveValue->isValueID() && primitiveValue->valueID() == sizeIdentifier)
+                    if (keywordValue->valueID() == sizeIdentifier)
                         return true;
                 }
             }
         }
     }
-    RefPtr<CSSValue> computedValue = propertyValue(propertyID);
+    RefPtr computedValue = propertyValue(propertyID);
     return computedValue && value && computedValue->equals(*value);
 }
 

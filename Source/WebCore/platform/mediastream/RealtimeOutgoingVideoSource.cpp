@@ -31,6 +31,7 @@
 
 #if USE(LIBWEBRTC)
 
+#include "LibWebRTCVideoFrameUtilities.h"
 #include "Logging.h"
 
 ALLOW_UNUSED_PARAMETERS_BEGIN
@@ -47,6 +48,7 @@ namespace WebCore {
 RealtimeOutgoingVideoSource::RealtimeOutgoingVideoSource(Ref<MediaStreamTrackPrivate>&& videoSource)
     : m_videoSource(WTF::move(videoSource))
     , m_blackFrameTimer(*this, &RealtimeOutgoingVideoSource::sendOneBlackFrame)
+    , m_isScreencast(CaptureDevice::isScreenShareType(m_videoSource->deviceType()))
 #if !RELEASE_LOG_DISABLED
     , m_logger(m_videoSource->logger())
     , m_logIdentifier(m_videoSource->logIdentifier())
@@ -91,6 +93,8 @@ void RealtimeOutgoingVideoSource::setSource(Ref<MediaStreamTrackPrivate>&& newSo
 {
     ASSERT(isMainThread());
     ASSERT(!m_videoSource->hasObserver(*this));
+
+    m_isScreencast = CaptureDevice::isScreenShareType(newSource->deviceType());
     m_videoSource = WTF::move(newSource);
 
     ALWAYS_LOG(LOGIDENTIFIER, "track ", m_videoSource->logIdentifier());
@@ -259,13 +263,19 @@ void RealtimeOutgoingVideoSource::sendBlackFramesIfNeeded()
 void RealtimeOutgoingVideoSource::sendOneBlackFrame()
 {
     ALWAYS_LOG(LOGIDENTIFIER);
-    sendFrame(webrtc::scoped_refptr { m_blackFrame.get() });
+    sendFrame(webrtc::scoped_refptr { m_blackFrame.get() }, { });
 }
 
-void RealtimeOutgoingVideoSource::sendFrame(webrtc::scoped_refptr<webrtc::VideoFrameBuffer>&& buffer)
+void RealtimeOutgoingVideoSource::sendFrame(webrtc::scoped_refptr<webrtc::VideoFrameBuffer>&& buffer, const PlatformVideoColorSpace& colorSpace)
 {
+
     MonotonicTime timestamp = MonotonicTime::now();
     webrtc::VideoFrame frame(buffer, m_isApplyingRotation ? webrtc::kVideoRotation_0 : m_currentRotation, static_cast<int64_t>(timestamp.secondsSinceEpoch().microseconds()));
+
+    if (colorSpace.isValid()) {
+        if (auto webrtColorSpace = toWebRTCColorSpace(colorSpace))
+            frame.set_color_space(*webrtColorSpace);
+    }
 
 #if !RELEASE_LOG_DISABLED
     ++m_frameCount;
@@ -294,6 +304,12 @@ bool RealtimeOutgoingVideoSource::GetStats(Stats* stats)
     *stats = { static_cast<int>(m_width), static_cast<int>(m_height) };
     return true;
 }
+
+bool RealtimeOutgoingVideoSource::is_screencast() const
+{
+    return m_isScreencast.load();
+}
+
 
 #if !RELEASE_LOG_DISABLED
 WTFLogChannel& RealtimeOutgoingVideoSource::logChannel() const

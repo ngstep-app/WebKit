@@ -421,6 +421,7 @@ protected:
     WebCore::IntPoint lastKnownMousePositionInView() const override;
 
     float deviceScaleFactor() const override;
+    bool useDarkAppearance() const override;
     bool shouldSuspendScrollAnimations() const final { return false; } // If we return true, ScrollAnimatorMac will keep cycling a timer forever, waiting for a good time to animate.
     void scrollbarStyleChanged(WebCore::ScrollbarStyle, bool forceUpdate) override;
 
@@ -478,6 +479,7 @@ protected:
     std::optional<WebCore::PageIdentifier> NODELETE pageIdentifier() const;
 
     WebCore::Color pluginBackgroundColor() const;
+    void updateFullFramePluginBackgroundColor();
 
     SingleThreadWeakPtr<PluginView> m_view;
     WeakPtr<WebFrame> m_frame;

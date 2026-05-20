@@ -36,6 +36,7 @@
 #include "DFGVariableEventStream.h"
 #include "ExecutionCounter.h"
 #include "JITCode.h"
+#include "JumpTable.h"
 #include <wtf/CompactPointerTuple.h>
 #include <wtf/SegmentedVector.h>
 
@@ -100,7 +101,9 @@ public:
         StructureCacheClearedWatchpointSet,
         StringToStringWatchpointSet,
         StringValueOfWatchpointSet,
+        StringSymbolMatchWatchpointSet,
         StringSymbolReplaceWatchpointSet,
+        StringSymbolSplitWatchpointSet,
         StringSymbolToPrimitiveWatchpointSet,
         RegExpPrimordialPropertiesWatchpointSet,
         PromiseThenWatchpointSet,

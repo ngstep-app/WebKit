@@ -37,6 +37,7 @@
 #include "UserGestureIndicator.h"
 #include "WebXRSystem.h"
 #include "XRSessionMode.h"
+#include <JavaScriptCore/JSCJSValueInlines.h>
 
 namespace WebCore {
 
@@ -63,18 +64,14 @@ static PlatformXR::Device::FeatureList parseFeatures(const Vector<JSC::JSValue>&
 void WebXRTest::simulateDeviceConnection(ScriptExecutionContext& context, const FakeXRDeviceInit& init, WebFakeXRDevicePromise&& promise)
 {
     // https://immersive-web.github.io/webxr-test-api/#dom-xrtest-simulatedeviceconnection
-    context.postTask([this, protectedThis = Ref { *this }, init, promise = WTF::move(promise)] (ScriptExecutionContext& context) mutable {
+    context.postTask([this, protectedThis = protect(*this), init, promise = WTF::move(promise)] (ScriptExecutionContext& context) mutable {
         auto device = WebFakeXRDevice::create();
         auto& simulatedDevice = device->simulatedXRDevice();
 
         device->setViews(init.views);
 
-        PlatformXR::Device::FeatureList supportedFeatures;
-        if (init.supportedFeatures)
-            supportedFeatures = parseFeatures(init.supportedFeatures.value(), context);
-        PlatformXR::Device::FeatureList enabledFeatures;
-        if (init.enabledFeatures)
-            enabledFeatures = parseFeatures(init.enabledFeatures.value(), context);
+        auto supportedFeatures = parseFeatures(init.supportedFeatures, context);
+        auto enabledFeatures = parseFeatures(init.enabledFeatures, context);
 
         if (init.boundsCoordinates) {
             if (init.boundsCoordinates->size() < 3) {

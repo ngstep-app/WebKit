@@ -225,7 +225,8 @@ enum class PreferSolidColorHardPocketReason : uint8_t {
 @protocol _WKAppHighlightDelegate;
 
 #if ENABLE(MODEL_ELEMENT_IMMERSIVE)
-@protocol _WKImmersiveEnvironmentDelegate;
+@protocol WKImmersiveEnvironmentDelegate;
+@class WKImmersiveEnvironment;
 #endif
 
 enum class SimilarToOriginalTextTag : uint8_t { Value };
@@ -234,7 +235,7 @@ using TextValidationMapValue = Variant<String, SimilarToOriginalTextTag>;
 #if PLATFORM(IOS_FAMILY)
 struct LiveResizeParameters {
     CGFloat viewWidth;
-    CGPoint initialScrollPosition;
+    CGPoint initialScrollOffset;
 };
 
 struct OverriddenLayoutParameters {
@@ -301,6 +302,11 @@ struct PerWebProcessState {
     std::optional<LiveResizeParameters> liveResizeParameters;
 
     std::optional<WebKit::TransactionID> firstTransactionIDAfterObscuredInsetChange;
+
+#if ENABLE(RESPONSIVE_LIVE_RESIZE_UPDATE)
+    std::optional<CGFloat> lastResizedViewWidth;
+    RetainPtr<NSDate> lastResizeTimestamp;
+#endif
 };
 
 #endif // PLATFORM(IOS_FAMILY)
@@ -325,7 +331,8 @@ struct PerWebProcessState {
     WeakObjCPtr<id <_WKAppHighlightDelegate>> _appHighlightDelegate;
 
 #if ENABLE(MODEL_ELEMENT_IMMERSIVE)
-    WeakObjCPtr<id <_WKImmersiveEnvironmentDelegate>> _immersiveEnvironmentDelegate;
+    WeakObjCPtr<id <WKImmersiveEnvironmentDelegate>> _immersiveEnvironmentDelegate;
+    RetainPtr<WKImmersiveEnvironment> _currentImmersiveEnvironment;
 #endif
 
     RetainPtr<_WKWarningView> _warningView;
@@ -444,6 +451,9 @@ struct PerWebProcessState {
     WebCore::IntDegrees _animatedResizeOldOrientation;
     UIEdgeInsets _animatedResizeOldObscuredInsets;
     RetainPtr<UIView> _resizeAnimationView;
+#if ENABLE(RESPONSIVE_LIVE_RESIZE_UPDATE)
+    RetainPtr<UIView> _liveResizeSnapshotContainerView;
+#endif
     CGFloat _lastAdjustmentForScroller;
 
     std::pair<CGSize, UIInterfaceOrientation> _lastKnownWindowSizeAndOrientation;
@@ -468,10 +478,6 @@ struct PerWebProcessState {
 
 #if PLATFORM(IOS_FAMILY)
     RefPtr<RunLoop::DispatchTimer> _pendingInteractiveObscuredInsetsChangeTimer;
-#if ENABLE(ACCESSIBILITY_LOCAL_FRAME)
-    RefPtr<RunLoop::DispatchTimer> _pendingAccessibilityFrameGeometryUpdateTimer;
-    MonotonicTime _lastAccessibilityFrameGeometryUpdate;
-#endif
 #endif
 
     // This value tracks the current adjustment added to the bottom inset due to the keyboard sliding out from the bottom
@@ -538,6 +544,8 @@ struct PerWebProcessState {
 
     RetainPtr<WKScrollGeometry> _currentScrollGeometry;
 
+    std::pair<String, RetainPtr<NSURL>> _cachedActiveNSURL;
+
     BOOL _allowsMagnification;
 
 #if ENABLE(PDF_PAGE_NUMBER_INDICATOR)
@@ -574,8 +582,8 @@ struct PerWebProcessState {
 #endif
 
 #if ENABLE(MODEL_ELEMENT_IMMERSIVE)
-- (void)_allowImmersiveElementFromURL:(const URL&)url completion:(CompletionHandler<void(bool)>&&)completion;
-- (void)_presentImmersiveElement:(const WebCore::LayerHostingContextIdentifier)contextID completion:(CompletionHandler<void(bool)>&&)completion;
+- (void)_allowImmersiveElement:(WKFrameInfo *)frameInfo completion:(CompletionHandler<void(bool)>&&)completion;
+- (void)_presentImmersiveElement:(const WebCore::LayerHostingContextIdentifier)contextID frameInfo:(WKFrameInfo *)frameInfo completion:(CompletionHandler<void(bool)>&&)completion;
 - (void)_dismissImmersiveElement:(CompletionHandler<void()>&&)completion;
 #endif
 

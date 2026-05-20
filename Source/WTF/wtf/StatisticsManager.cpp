@@ -30,7 +30,6 @@
 #include <wtf/MathExtras.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/TZoneMallocInlines.h>
-#include <wtf/text/StringHash.h>
 #include <wtf/text/WTFString.h>
 
 namespace WTF {
@@ -59,7 +58,7 @@ static void dumpHistogram(const AbstractLocker&, const Vector<double>& values, d
     if (values.isEmpty() || min == max)
         return;
 
-    Vector<size_t> bins(binCount, 0);
+    Vector<size_t> bins(FillWith { }, binCount, 0);
     double binSize = (max - min) / binCount;
 
     for (double value : values) {

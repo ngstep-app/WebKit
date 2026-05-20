@@ -36,7 +36,6 @@
 #include "DocumentWindow.h"
 #include "ElementInlines.h"
 #include "EventLoop.h"
-#include "EventTargetInlines.h"
 #include "GraphicsLayer.h"
 #include "KeyframeEffect.h"
 #include "LocalDOMWindow.h"
@@ -319,7 +318,7 @@ ReducedResolutionSeconds AnimationTimelinesController::liveCurrentTime() const
     return protect(document().window())->nowTimestamp();
 }
 
-std::optional<Seconds> AnimationTimelinesController::currentTime(UseCachedCurrentTime useCachedCurrentTime)
+std::optional<ReducedResolutionSeconds> AnimationTimelinesController::currentTime(UseCachedCurrentTime useCachedCurrentTime)
 {
     if (!m_document->window())
         return std::nullopt;

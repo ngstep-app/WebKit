@@ -33,7 +33,7 @@
 #include "WebGLOpaqueTexture.h"
 #include "WebXRSession.h"
 #include "WebXRViewport.h"
-#include "XRProjectionLayer.h"
+#include "XRCompositionLayer.h"
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
@@ -51,7 +51,7 @@ XRWebGLSubImage::XRWebGLSubImage(Ref<WebXRViewport>&& viewport, WebGLTexture& co
 {
 }
 
-ExceptionOr<Ref<XRWebGLSubImage>> XRWebGLSubImage::create(Ref<WebXRViewport>&& viewport, XRProjectionLayer& layer)
+ExceptionOr<Ref<XRWebGLSubImage>> XRWebGLSubImage::create(Ref<WebXRViewport>&& viewport, XRCompositionLayer& layer)
 {
     auto colorTexture = layer.colorTextures()[0].get();
     if (!colorTexture || !colorTexture->isUsable())
@@ -80,6 +80,11 @@ const WebGLTexture& XRWebGLSubImage::colorTexture() const
 RefPtr<WebGLTexture> XRWebGLSubImage::depthStencilTexture() const
 {
     return m_depthStencilTexture;
+}
+
+RefPtr<WebGLTexture> XRWebGLSubImage::motionVectorTexture() const
+{
+    return nullptr;
 }
 
 std::optional<uint32_t> XRWebGLSubImage::depthStencilTextureWidth() const

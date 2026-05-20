@@ -227,7 +227,7 @@ static RefPtr<WebCore::HTMLVideoElement> hostVideoElementIgnoringImageOverlay(We
     if (WebCore::ImageOverlay::isInsideOverlay(node))
         return { };
 
-    if (RefPtr video = dynamicDowncast<WebCore::HTMLVideoElement>(node))
+    if (auto* video = dynamicDowncast<WebCore::HTMLVideoElement>(node))
         return video;
 
     return dynamicDowncast<WebCore::HTMLVideoElement>(node.shadowHost());
@@ -242,7 +242,7 @@ static void imagePositionInformation(WebPage& page, WebCore::Element& element, c
 
     auto& [renderImage, image] = *rendererAndImage;
     info.isImage = true;
-    info.imageURL = page.applyLinkDecorationFiltering(protect(element.document())->completeURL(protect(renderImage.cachedImage())->url().string()), WebCore::LinkDecorationFilteringTrigger::Unspecified);
+    info.imageURL = page.applyLinkDecorationFiltering(protect(element.document())->encodingParseURL(protect(renderImage.cachedImage())->url().string()), WebCore::LinkDecorationFilteringTrigger::Unspecified);
     info.imageMIMEType = image.mimeType();
     info.isAnimatedImage = image.isAnimated();
     info.isAnimating = image.isAnimating();
@@ -295,7 +295,7 @@ static void elementPositionInformation(WebPage& page, WebCore::Element& element,
 
     if (linkElement && !info.isImageOverlayText) {
         info.isLink = true;
-        info.url = page.applyLinkDecorationFiltering(document->completeURL(linkElement->getAttribute(WebCore::HTMLNames::hrefAttr)), WebCore::LinkDecorationFilteringTrigger::Unspecified);
+        info.url = page.applyLinkDecorationFiltering(document->encodingParseURL(linkElement->getAttribute(WebCore::HTMLNames::hrefAttr)), WebCore::LinkDecorationFilteringTrigger::Unspecified);
 
         linkIndicatorPositionInformation(page, *linkElement, request, info);
 #if ENABLE(DATA_DETECTION) && PLATFORM(IOS_FAMILY)
@@ -321,7 +321,7 @@ static void elementPositionInformation(WebPage& page, WebCore::Element& element,
             if (request.includeImageData) {
                 if (auto rendererAndImage = imageRendererAndImage(element)) {
                     auto& [renderImage, image] = *rendererAndImage;
-                    info.imageURL = page.applyLinkDecorationFiltering(document->completeURL(protect(renderImage.cachedImage())->url().string()), WebCore::LinkDecorationFilteringTrigger::Unspecified);
+                    info.imageURL = page.applyLinkDecorationFiltering(document->encodingParseURL(protect(renderImage.cachedImage())->url().string()), WebCore::LinkDecorationFilteringTrigger::Unspecified);
                     info.imageMIMEType = image.mimeType();
                     info.image = createShareableBitmap(renderImage, { WebCore::screenSize() * page.corePage()->deviceScaleFactor(), AllowAnimatedImages::Yes, UseSnapshotForTransparentImages::Yes });
                 }
@@ -395,16 +395,24 @@ static void selectionPositionInformation(WebPage& page, const InteractionInforma
             info.url = URL::fileURLWithFileSystemPath(attachment->file()->path());
     }
 
-    for (auto* currentNode = hitNode.get(); currentNode; currentNode = currentNode->parentOrShadowHostNode()) {
-        auto* renderer = currentNode->renderer();
+    for (RefPtr currentNode = hitNode; currentNode; currentNode = currentNode->parentOrShadowHostNode()) {
+        CheckedPtr renderer = currentNode->renderer();
         if (!renderer)
             continue;
 
         CheckedRef style = renderer->style();
-        if (style->usedUserSelect() == WebCore::UserSelect::None && style->userDrag() == WebCore::UserDrag::Element) {
+        if (style->userDrag() == WebCore::UserDrag::Element)
+            info.isDHTMLDraggable = true;
+        if (style->usedUserSelect() == WebCore::UserSelect::None && style->userDrag() == WebCore::UserDrag::Element)
             info.prefersDraggingOverTextSelection = true;
-            break;
+
+        if (!info.isColorInput) {
+            if (RefPtr input = dynamicDowncast<WebCore::HTMLInputElement>(currentNode); input && input->isColorControl() && !input->isDisabledFormControl())
+                info.isColorInput = true;
         }
+
+        if (info.prefersDraggingOverTextSelection || info.isDHTMLDraggable || info.isColorInput)
+            break;
     }
 #if PLATFORM(MACCATALYST)
     bool isInsideFixedPosition;
@@ -627,6 +635,16 @@ InteractionInformationAtPosition positionInformationForWebPage(WebPage& page, co
         focusedElementPositionInformation(page, *page.focusedElement(), request, info);
 
     RefPtr hitTestNode = hitTestResult.innerNonSharedNode();
+
+#if ENABLE(MODEL_ELEMENT)
+    // If the hit lands on a draggable <model>, let the model take precedence over any ancestor
+    // <a rel="ar">. Without this, nodeRespondingToClickEvents walks up to the anchor (because
+    // <model> has no inherent click listeners), which would mark this as a link and trigger the
+    // link preview/context-menu interaction instead of the model's drag gesture on visionOS.
+    if (RefPtr modelElement = dynamicDowncast<WebCore::HTMLModelElement>(hitTestNode); modelElement && modelElement->supportsDragging() && modelElement->model())
+        nodeRespondingToClickEvents = WTF::move(modelElement);
+#endif
+
     if (RefPtr element = dynamicDowncast<WebCore::Element>(nodeRespondingToClickEvents)) {
         elementPositionInformation(page, *element, request, hitTestNode.get(), info);
 
@@ -669,6 +687,11 @@ InteractionInformationAtPosition positionInformationForWebPage(WebPage& page, co
 #if ENABLE(MODEL_PROCESS)
     if (RefPtr modelElement = dynamicDowncast<WebCore::HTMLModelElement>(hitTestNode))
         info.isInteractiveModel = modelElement->model() && modelElement->supportsStageModeInteraction();
+#endif
+
+#if ENABLE(MODEL_ELEMENT)
+    if (RefPtr modelElement = dynamicDowncast<WebCore::HTMLModelElement>(hitTestNode); modelElement && !modelElement->currentSrc().isEmpty())
+        info.modelURL = modelElement->currentSrc();
 #endif
 
 #if ENABLE(PDF_PLUGIN) && PLATFORM(IOS_FAMILY)

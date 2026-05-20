@@ -28,11 +28,18 @@
 
 #if ENABLE(WEBXR_LAYERS)
 
+#include "FloatSize.h"
 #include "GraphicsContextGL.h"
+#include "PlatformXR.h"
 #include "WebGLOpaqueTexture.h"
 #include "WebGLRenderingContextBase.h"
 #include "WebXROpaqueFramebuffer.h"
+#include "WebXRSession.h"
 #include "WebXRWebGLSwapchain.h"
+#include "XRLayerInit.h"
+#include "XRLayerLayout.h"
+#include "XRProjectionLayerInit.h"
+#include "XRTextureType.h"
 
 #include <wtf/TZoneMallocInlines.h>
 
@@ -42,9 +49,10 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(XRWebGLLayerBacking);
 
 using GL = GraphicsContextGL;
 
-XRWebGLLayerBacking::XRWebGLLayerBacking(PlatformXR::LayerHandle handle, std::unique_ptr<WebXRWebGLSwapchain>&& colorSwapchain, std::unique_ptr<WebXRWebGLSwapchain>&& depthSwapchain)
+XRWebGLLayerBacking::XRWebGLLayerBacking(PlatformXR::LayerHandle handle, std::unique_ptr<WebXRWebGLSwapchain>&& colorSwapchain, std::unique_ptr<WebXRWebGLSwapchain>&& depthSwapchain, uint32_t colorTextureArrayLength)
     : m_colorSwapchain(WTF::move(colorSwapchain))
     , m_depthSwapchain(WTF::move(depthSwapchain))
+    , m_colorTextureArrayLength(colorTextureArrayLength)
 {
     setHandle(handle);
 }
@@ -61,8 +69,7 @@ uint32_t XRWebGLLayerBacking::colorTextureHeight() const
 
 uint32_t XRWebGLLayerBacking::colorTextureArrayLength() const
 {
-    // FIXME: Support texture arrays for multiview.
-    return 1;
+    return m_colorTextureArrayLength;
 };
 
 std::optional<uint32_t> XRWebGLLayerBacking::depthTextureWidth() const
@@ -109,16 +116,105 @@ void XRWebGLLayerBacking::endFrame(PlatformXR::DeviceLayer& layerData)
 
 RefPtr<WebGLOpaqueTexture> XRWebGLLayerBacking::currentColorTexture() const
 {
-    return WebGLOpaqueTexture::create(*m_colorSwapchain->context(), m_colorSwapchain->currentTexture());
+    if (auto texture = m_colorSwapchain->currentTexture())
+        return WebGLOpaqueTexture::create(*m_colorSwapchain->context(), texture, m_colorSwapchain->textureTarget());
+    return nullptr;
 }
 
 RefPtr<WebGLOpaqueTexture> XRWebGLLayerBacking::currentDepthTexture() const
 {
-    return WebGLOpaqueTexture::create(*m_depthSwapchain->context(), m_depthSwapchain->currentTexture());
+    if (auto texture = m_depthSwapchain->currentTexture())
+        return WebGLOpaqueTexture::create(*m_depthSwapchain->context(), texture, m_depthSwapchain->textureTarget());
+    return nullptr;
 }
 
-// Based on https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/modules/xr/xr_webgl_binding.cc
-XRWebGLLayerBacking::SwapchainFormats XRWebGLLayerBacking::swapchainFormatsForLayerFormat(GCGLenum layerFormat)
+static std::pair<IntSize, PlatformXR::LayerLayout> computeNonProjectionLayerSize(uint32_t viewPixelWidth, uint32_t viewPixelHeight, XRLayerLayout layout)
+{
+    switch (layout) {
+    case XRLayerLayout::Mono:
+        return { IntSize { static_cast<int>(viewPixelWidth), static_cast<int>(viewPixelHeight) }, PlatformXR::LayerLayout::Mono };
+    case XRLayerLayout::Stereo:
+    case XRLayerLayout::StereoLeftRight:
+        return { IntSize { static_cast<int>(viewPixelWidth * 2), static_cast<int>(viewPixelHeight) }, PlatformXR::LayerLayout::StereoLeftRight };
+    case XRLayerLayout::StereoTopBottom:
+        return { IntSize { static_cast<int>(viewPixelWidth), static_cast<int>(viewPixelHeight * 2) }, PlatformXR::LayerLayout::StereoTopBottom };
+    default:
+    case XRLayerLayout::Default:
+        ASSERT_NOT_REACHED_WITH_MESSAGE("Default layout is not supported for non-projection Layers");
+        return { IntSize(), PlatformXR::LayerLayout::Mono };
+    };
+}
+
+static uint32_t computeArrayLength(bool useTextureArray, uint32_t textureArrayLength)
+{
+    return useTextureArray ? textureArrayLength : 1;
+}
+
+ExceptionOr<XRWebGLLayerBacking::XRLayerSwapchains> XRWebGLLayerBacking::createCompositionLayerSwapchains(WebXRSession& session, WebGLRenderingContextBase& context, PlatformXR::CompositionLayerType layerType, const XRLayerInit& init)
+{
+    auto device = session.device();
+    if (!device)
+        return Exception { ExceptionCode::OperationError, "Cannot create a composition layer without a valid device."_s };
+
+    auto [layerSize, layerLayout] = computeNonProjectionLayerSize(init.viewPixelWidth, init.viewPixelHeight, init.layout);
+
+    auto layerInfo = device->createCompositionLayer(layerType, layerSize, layerLayout);
+    if (!layerInfo)
+        return Exception { ExceptionCode::OperationError, "Unable to create a composition layer."_s };
+
+    bool useTextureArray = init.textureType == XRTextureType::TextureArray;
+    GCGLenum colorTextureType = useTextureArray ? GL::TEXTURE_2D_ARRAY : GL::TEXTURE_2D;
+    uint32_t arrayLength = computeArrayLength(useTextureArray, static_cast<uint32_t>(session.views().size()));
+
+    return XRWebGLLayerBacking::createColorAndDepthSwapchains(context, layerInfo->handle, init.colorFormat, init.depthFormat, layerSize, init.clearOnAccess, layerInfo->numImages, arrayLength, colorTextureType);
+}
+
+ExceptionOr<XRWebGLLayerBacking::XRLayerSwapchains> XRWebGLLayerBacking::createProjectionLayerSwapchains(WebXRSession& session, WebGLRenderingContextBase& context, const XRProjectionLayerInit& init)
+{
+    constexpr double MinTextureScalingFactor = 0.2;
+    auto device = session.device();
+    if (!device)
+        return Exception { ExceptionCode::OperationError, "Cannot create a projection layer without a valid device."_s };
+
+    double clampedScaleFactor = std::clamp(init.scaleFactor, MinTextureScalingFactor, device->maxFramebufferScalingFactor());
+    FloatSize recommendedSize = session.recommendedWebGLFramebufferResolution();
+    IntSize size = expandedIntSize(recommendedSize.scaled(static_cast<float>(clampedScaleFactor)));
+
+    auto layerInfo = device->createLayerProjection(size.width(), size.height(), true);
+    if (!layerInfo)
+        return Exception { ExceptionCode::OperationError, "Unable to create a projection layer."_s };
+
+    bool useTextureArray = init.textureType == XRTextureType::TextureArray;
+    GCGLenum colorTextureType = useTextureArray ? GL::TEXTURE_2D_ARRAY : GL::TEXTURE_2D;
+    uint32_t arrayLength = computeArrayLength(useTextureArray, static_cast<uint32_t>(session.views().size()));
+
+    return XRWebGLLayerBacking::createColorAndDepthSwapchains(context, layerInfo->handle, init.colorFormat, init.depthFormat, size, init.clearOnAccess, layerInfo->numImages, arrayLength, colorTextureType);
+}
+
+ExceptionOr<XRWebGLLayerBacking::XRLayerSwapchains> XRWebGLLayerBacking::createColorAndDepthSwapchains(WebGLRenderingContextBase& context, PlatformXR::LayerHandle handle, GCGLenum colorFormat, std::optional<GCGLenum> depthFormat, IntSize size, bool clearOnAccess, size_t numImages, uint32_t arrayLength, GCGLenum colorTextureType)
+{
+    std::unique_ptr<WebXRWebGLSwapchain> colorSwapchain;
+    std::unique_ptr<WebXRWebGLSwapchain> depthSwapchain;
+
+    bool useTextureArray = colorTextureType == GL::TEXTURE_2D_ARRAY;
+    if (useTextureArray) {
+        auto colorFormats = swapchainFormatsForLayerFormat(colorFormat);
+        colorSwapchain = WebXRWebGLTextureArraySwapchain::create(context, WebXRSwapchain::SwapchainTargetFlags::Color, colorFormats.internalFormat, clearOnAccess, numImages, arrayLength);
+    } else
+        colorSwapchain = WebXRWebGLSharedImageSwapchain::create(context, WebXRSwapchain::SwapchainTargetFlags::Color, colorFormat, size, clearOnAccess, numImages);
+
+    if (!colorSwapchain)
+        return Exception { ExceptionCode::OperationError, "Failed to create a WebGL swapchain."_s };
+
+    if (depthFormat && *depthFormat) {
+        IntSize depthSize = useTextureArray ? IntSize(size.width() / static_cast<int>(arrayLength), size.height()) : size;
+        depthSwapchain = createDepthSwapchain(context, *depthFormat, depthSize, clearOnAccess, numImages, arrayLength, colorTextureType);
+    }
+
+    return XRLayerSwapchains { handle, WTF::move(colorSwapchain), WTF::move(depthSwapchain), arrayLength };
+}
+
+SwapchainFormats swapchainFormatsForLayerFormat(GCGLenum layerFormat)
 {
     switch (layerFormat) {
     case GL::RGBA:
@@ -151,15 +247,40 @@ XRWebGLLayerBacking::SwapchainFormats XRWebGLLayerBacking::swapchainFormatsForLa
     };
 }
 
-bool XRWebGLLayerBacking::formatHasStencil(GCGLenum layerFormat)
+std::unique_ptr<WebXRWebGLSwapchain> XRWebGLLayerBacking::createDepthSwapchain(WebGLRenderingContextBase& context, GCGLenum depthFormat, IntSize size, bool clearOnAccess, size_t imageCount, uint32_t arrayLength, GCGLenum textureType)
 {
-    switch (layerFormat) {
-    case GL::DEPTH_STENCIL:
-    case GL::DEPTH24_STENCIL8:
-        return true;
-    default:
-        return false;
+    ASSERT(depthFormat);
+
+    auto formatHasStencil = [](GCGLenum format) {
+        switch (format) {
+        case GL::DEPTH_STENCIL:
+        case GL::DEPTH24_STENCIL8:
+            return true;
+        default:
+            return false;
+        };
     };
+
+    auto formats = swapchainFormatsForLayerFormat(depthFormat);
+    WebXRSwapchain::SwapchainTargets targets = { WebXRSwapchain::SwapchainTargetFlags::Depth };
+    if (formatHasStencil(depthFormat))
+        targets.add(WebXRSwapchain::SwapchainTargetFlags::Stencil);
+    WebXRWebGLStaticImageSwapchain::StaticImageAttributes attributes = {
+        .format = formats.format,
+        .internalFormat = formats.internalFormat,
+        .size = size,
+        .clearOnAccess = clearOnAccess,
+        .targets = targets,
+        .imageCount = imageCount,
+        .arrayLength = arrayLength,
+        .textureType = textureType,
+    };
+    return WebXRWebGLStaticImageSwapchain::create(context, attributes);
+}
+
+bool XRWebGLLayerBacking::allColorTexturesAreBound() const
+{
+    return m_colorSwapchain->allTexturesAreBound();
 }
 
 } // namespace WebCore

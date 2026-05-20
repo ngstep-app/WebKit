@@ -46,6 +46,7 @@
 #include <WebCore/PlatformPlaybackSessionInterface.h>
 #include <WebCore/ScrollTypes.h>
 #include <WebCore/ShareableBitmap.h>
+#include <WebCore/TextAnimationTypes.h>
 #include <WebCore/TextIndicator.h>
 #include <WebCore/UserInterfaceLayoutDirection.h>
 #include <WebKit/WKDragDestinationAction.h>
@@ -56,6 +57,7 @@
 #include <wtf/BlockPtr.h>
 #include <wtf/CheckedPtr.h>
 #include <wtf/CompletionHandler.h>
+#include <wtf/Deque.h>
 #include <wtf/RetainPtr.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/WeakObjCPtr.h>
@@ -141,6 +143,7 @@ struct DataDetectorElementInfo;
 struct ExceptionData;
 struct ShareDataWithParsedURL;
 struct TextAnimationData;
+struct TextEffectData;
 struct TextRecognitionResult;
 
 #if HAVE(TRANSLATION_UI_SERVICES) && ENABLE(CONTEXT_MENUS)
@@ -597,6 +600,7 @@ public:
 
     NSDragOperation dragSourceOperationMask(NSDraggingSession *, NSDraggingContext);
     void draggingSessionEnded(NSDraggingSession *, NSPoint, NSDragOperation);
+    void cancelDrag();
 
     NSString *fileNameForFilePromiseProvider(NSFilePromiseProvider *, NSString *fileType);
     void writeToURLForFilePromiseProvider(NSFilePromiseProvider *, NSURL *, void(^)(NSError *));
@@ -627,6 +631,9 @@ public:
     ViewGestureController& ensureGestureController();
 #if HAVE(APPKIT_GESTURES_SUPPORT)
     WKAppKitGestureController *appKitGestureController() const LIFETIME_BOUND { return m_appKitGestureController.get(); }
+    void setTextSelectionDragGesture(NSGestureRecognizer *, void (^completionHandler)(NSDraggingSession *));
+    void invalidateCachedPositionInformation();
+    void positionInformationDidChange(const InteractionInformationAtPosition&);
 #endif
     void NODELETE setAllowsBackForwardNavigationGestures(bool);
     bool allowsBackForwardNavigationGestures() const { return m_allowsBackForwardNavigationGestures; }
@@ -696,7 +703,7 @@ public:
     NSRect unionRectInVisibleSelectedRangeInScreen() const;
     NSRect documentVisibleRectInScreen() const;
 
-    bool NODELETE isContentRichlyEditable() const;
+    bool isContentRichlyEditable() const;
 
 #if ENABLE(MULTI_REPRESENTATION_HEIC)
     void insertMultiRepresentationHEIC(NSData *, NSString *);
@@ -707,9 +714,9 @@ public:
     bool NODELETE hasFlagsChangedEventMonitor();
 
     void mouseMoved(NSEvent *);
-    void mouseDown(NSEvent *, WebMouseEventInputSource);
-    void mouseUp(NSEvent *, WebMouseEventInputSource);
-    void mouseDragged(NSEvent *, WebMouseEventInputSource);
+    void mouseDown(NSEvent *, WebEventInputSource, WebCore::PlatformMouseEvent::CanInitiateDrag = WebCore::PlatformMouseEvent::CanInitiateDrag::Yes);
+    void mouseUp(NSEvent *, WebEventInputSource, WebCore::PlatformMouseEvent::CanInitiateDrag = WebCore::PlatformMouseEvent::CanInitiateDrag::Yes);
+    void mouseDragged(NSEvent *, WebEventInputSource, WebCore::PlatformMouseEvent::CanInitiateDrag = WebCore::PlatformMouseEvent::CanInitiateDrag::Yes);
     void mouseEntered(NSEvent *);
     void mouseExited(NSEvent *);
     void otherMouseDown(NSEvent *);
@@ -751,7 +758,7 @@ public:
     NSTouchBar *makeTouchBar();
     void updateTouchBar();
     NSTouchBar *currentTouchBar() const LIFETIME_BOUND { return m_currentTouchBar.get(); }
-    NSCandidateListTouchBarItem *NODELETE candidateListTouchBarItem() const;
+    NSCandidateListTouchBarItem *candidateListTouchBarItem() const;
 #if ENABLE(WEB_PLAYBACK_CONTROLS_MANAGER)
     WebCore::PlatformPlaybackSessionInterface* playbackSessionInterface() const;
     bool isPictureInPictureActive();
@@ -765,7 +772,7 @@ public:
 #endif
     void nowPlayingMediaTitleAndArtist(void(^completionHandler)(NSString *, NSString *));
 
-    NSTouchBar *NODELETE textTouchBar() const;
+    NSTouchBar *textTouchBar() const;
     void dismissTextTouchBarPopoverItemWithIdentifier(NSString *);
 
     bool clientWantsMediaPlaybackControlsView() const { return m_clientWantsMediaPlaybackControlsView; }
@@ -877,6 +884,9 @@ public:
 
 #if HAVE(APPKIT_GESTURES_SUPPORT)
     void addTextSelectionManager();
+    bool isTextSelectedAtPoint(NSPoint);
+    void beginSuppressingSingleClickGestureForTextSelection();
+    void endSuppressingSingleClickGestureForTextSelection();
 #endif
 
 private:
@@ -886,7 +896,7 @@ private:
     void updateMediaTouchBar();
 
     bool useMediaPlaybackControlsView() const;
-    bool NODELETE isRichlyEditableForTouchBar() const;
+    bool isRichlyEditableForTouchBar() const;
 
 #if ENABLE(IMAGE_ANALYSIS_ENHANCEMENTS)
     void installImageAnalysisOverlayView(RetainPtr<VKCImageAnalysis>&&);
@@ -943,15 +953,15 @@ private:
     Vector<WebCore::KeypressCommand> collectKeyboardLayoutCommandsForEvent(NSEvent *);
     void interpretKeyEvent(NSEvent *, void(^completionHandler)(BOOL handled, const Vector<WebCore::KeypressCommand>&));
 
-    void nativeMouseEventHandler(NSEvent *, WebMouseEventInputSource);
-    void nativeMouseEventHandlerInternal(NSEvent *, WebMouseEventInputSource);
+    void nativeMouseEventHandler(NSEvent *, WebEventInputSource, WebCore::PlatformMouseEvent::CanInitiateDrag = WebCore::PlatformMouseEvent::CanInitiateDrag::Yes);
+    void nativeMouseEventHandlerInternal(NSEvent *, WebEventInputSource, WebCore::PlatformMouseEvent::CanInitiateDrag = WebCore::PlatformMouseEvent::CanInitiateDrag::Yes);
 
     void scheduleMouseDidMoveOverElement(NSEvent *);
 
     void mouseMovedInternal(NSEvent *);
-    void mouseDownInternal(NSEvent *, WebMouseEventInputSource);
-    void mouseUpInternal(NSEvent *, WebMouseEventInputSource);
-    void mouseDraggedInternal(NSEvent *, WebMouseEventInputSource);
+    void mouseDownInternal(NSEvent *, WebEventInputSource, WebCore::PlatformMouseEvent::CanInitiateDrag = WebCore::PlatformMouseEvent::CanInitiateDrag::Yes);
+    void mouseUpInternal(NSEvent *, WebEventInputSource, WebCore::PlatformMouseEvent::CanInitiateDrag = WebCore::PlatformMouseEvent::CanInitiateDrag::Yes);
+    void mouseDraggedInternal(NSEvent *, WebEventInputSource, WebCore::PlatformMouseEvent::CanInitiateDrag = WebCore::PlatformMouseEvent::CanInitiateDrag::Yes);
 
     void handleProcessSwapOrExit();
 
@@ -984,7 +994,7 @@ private:
     int32_t processImageAnalyzerRequest(CocoaImageAnalyzerRequest *, CompletionHandler<void(RetainPtr<CocoaImageAnalysis>&&, NSError *)>&&);
 #endif
 
-    std::optional<EditorState::PostLayoutData> NODELETE postLayoutDataForContentEditable();
+    std::optional<EditorState::PostLayoutData> postLayoutDataForContentEditable();
 
     WeakObjCPtr<WKWebView> m_view;
     const UniqueRef<PageClient> m_pageClient;
@@ -1116,9 +1126,9 @@ ALLOW_DEPRECATED_DECLARATIONS_END
     // that has been already sent to WebCore.
     RetainPtr<NSEvent> m_keyDownEventBeingResent;
 
-    std::optional<Vector<WebCore::KeypressCommand>> m_collectedKeypressCommands;
     std::optional<NSRange> m_stagedMarkedRange;
-    Vector<CompletionHandler<void()>> m_interpretKeyEventHoldingTank;
+    Deque<Vector<WebCore::KeypressCommand>> m_collectedKeypressCommands;
+    Deque<Function<void()>> m_interpretKeyEventHoldingTank;
 
     String m_lastStringForCandidateRequest;
     NSInteger m_lastCandidateRequestSequenceNumber;

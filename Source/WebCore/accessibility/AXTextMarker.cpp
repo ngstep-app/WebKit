@@ -569,12 +569,10 @@ String AXTextMarkerRange::toString(IncludeListMarkerText includeListMarkerText, 
 #if ENABLE(ACCESSIBILITY_ISOLATED_TREE)
     if (!isMainThread()) {
         // Traverses from m_start to m_end, collecting all text along the way.
-        auto start = m_start.toTextRunMarker();
-        if (!start.isValid())
+        auto markers = toValidTextRunMarkers();
+        if (!markers)
             return emptyString();
-        auto end = m_end.toTextRunMarker();
-        if (!end.isValid())
-            return emptyString();
+        auto& [start, end] = *markers;
 
         StringBuilder result;
         if (includeListMarkerText == IncludeListMarkerText::Yes)
@@ -613,7 +611,13 @@ String AXTextMarkerRange::toString(IncludeListMarkerText includeListMarkerText, 
         RefPtr current = findObjectWithRuns(*start.isolatedObject(), AXDirection::Next, std::nullopt, emitAuxiliaryText);
         while (current && current->objectID() != end.objectID()) {
             result.append(current->textRuns()->toStringView());
-            current = findObjectWithRuns(*current, AXDirection::Next, std::nullopt, emitAuxiliaryText);
+            RefPtr next = findObjectWithRuns(*current, AXDirection::Next, std::nullopt, emitAuxiliaryText);
+            if (next == current) [[unlikely]] {
+                // findObjectWithRuns returned its input. Would loop forever.
+                AX_ASSERT_NOT_REACHED();
+                break;
+            }
+            current = WTF::move(next);
         }
         result.append(end.runs()->substring(0, end.offset()));
         return result.toString();
@@ -728,9 +732,20 @@ int AXTextMarker::lineIndex() const
 
     unsigned index = 0;
     while (currentLineID && currentLineID != targetLineID) {
-        currentMarker = currentMarker.nextLineEnd();
-        currentLineID = currentMarker.lineID();
+        auto newMarker = currentMarker.nextLineEnd();
+        auto newLineID = newMarker.lineID();
         ++index;
+
+        if (currentLineID == newLineID && currentMarker == newMarker) {
+            // nextLineEnd() returned its input, so break. The line walk would loop
+            // forever otherwise, causing a hang. This indicates a bug elsewhere
+            // (e.g. a sibling lineID collision the caller couldn't disambiguate).
+            AX_ASSERT_NOT_REACHED();
+            break;
+        }
+
+        currentMarker = WTF::move(newMarker);
+        currentLineID = newLineID;
     }
     return index;
 }
@@ -907,6 +922,12 @@ unsigned AXTextMarker::offsetFromRoot() const
                 RefPtr nextObject = currentObject->nextInPreOrder();
                 current = nextObject ? AXTextMarker { *nextObject, 0 } : AXTextMarker();
             }
+
+            if (previous == current) [[unlikely]] {
+                // Advancement returned its input. Would loop forever.
+                AX_ASSERT_NOT_REACHED();
+                break;
+            }
         }
         applyNewlineOffset();
 
@@ -928,11 +949,16 @@ AXTextMarker AXTextMarker::nextMarkerFromOffset(unsigned offset, ForceSingleOffs
 
     auto marker = *this;
     while (offset) {
-        if (auto newMarker = marker.findMarker(AXDirection::Next, CoalesceObjectBreaks::No, IgnoreBRs::No, stopAtID, forceSingleOffsetMovement))
-            marker = WTF::move(newMarker);
-        else
+        auto newMarker = marker.findMarker(AXDirection::Next, CoalesceObjectBreaks::No, IgnoreBRs::No, stopAtID, forceSingleOffsetMovement);
+        if (!newMarker)
             break;
-
+        if (newMarker == marker) [[unlikely]] {
+            // findMarker returned its input. Would loop until offset reaches 0,
+            // returning a wildly wrong marker.
+            AX_ASSERT_NOT_REACHED();
+            break;
+        }
+        marker = WTF::move(newMarker);
         --offset;
     }
     return marker;
@@ -960,6 +986,11 @@ AXTextMarker AXTextMarker::findLastBefore(std::optional<AXID> stopAtID) const
         RefPtr newObject = findObjectWithRuns(*lastObjectWithRuns, AXDirection::Next, stopAtID);
         if (!newObject)
             break;
+        if (newObject == lastObjectWithRuns) [[unlikely]] {
+            // findObjectWithRuns returned its input. Would loop forever.
+            AX_ASSERT_NOT_REACHED();
+            break;
+        }
         lastObjectWithRuns = WTF::move(newObject);
     }
 
@@ -1019,16 +1050,25 @@ static FloatRect viewportRelativeFrameFromRuns(Ref<AXIsolatedObject> object, uns
     return viewportRelativeFrameFromRuns(object, offset, runs->totalLength());
 }
 
+std::optional<std::pair<AXTextMarker, AXTextMarker>> AXTextMarkerRange::toValidTextRunMarkers() const
+{
+    auto start = m_start.toTextRunMarker();
+    if (!start.isValid())
+        return std::nullopt;
+    auto end = m_end.toTextRunMarker();
+    if (!end.isValid())
+        return std::nullopt;
+    return { { WTF::move(start), WTF::move(end) } };
+}
+
 FloatRect AXTextMarkerRange::viewportRelativeFrame() const
 {
     AX_ASSERT(!isMainThread());
 
-    auto start = m_start.toTextRunMarker();
-    if (!start.isValid())
+    auto markers = toValidTextRunMarkers();
+    if (!markers)
         return { };
-    auto end = m_end.toTextRunMarker();
-    if (!end.isValid())
-        return { };
+    auto& [start, end] = *markers;
 
     if (*start.objectID() == *end.objectID()) {
         // The range is self-contained.
@@ -1042,7 +1082,13 @@ FloatRect AXTextMarkerRange::viewportRelativeFrame() const
     RefPtr current = start.isolatedObject();
     while (current && current->objectID() != *end.objectID()) {
         result.unite(viewportRelativeFrameFromRuns(*current, /* offset */ 0));
-        current = findObjectWithRuns(*current, AXDirection::Next, /* stopAtID */ *end.objectID());
+        RefPtr next = findObjectWithRuns(*current, AXDirection::Next, /* stopAtID */ *end.objectID());
+        if (next == current) [[unlikely]] {
+            // findObjectWithRuns returned its input. Would loop forever.
+            AX_ASSERT_NOT_REACHED();
+            break;
+        }
+        current = WTF::move(next);
     }
     result.unite(viewportRelativeFrameFromRuns(*end.isolatedObject(), /* start */ 0, /* end */ end.offset()));
 
@@ -1478,7 +1524,13 @@ AXTextMarker AXTextMarker::toTextRunMarker(std::optional<AXID> stopAtID) const
         if (precedingOffset + totalLength >= offset())
             break;
         precedingOffset += totalLength;
-        current = findObjectWithRuns(*current, AXDirection::Next, stopAtID);
+        RefPtr next = findObjectWithRuns(*current, AXDirection::Next, stopAtID);
+        if (next == current) [[unlikely]] {
+            // findObjectWithRuns returned its input. Would loop forever.
+            AX_ASSERT_NOT_REACHED();
+            break;
+        }
+        current = WTF::move(next);
     }
 
     if (!current)
@@ -1655,7 +1707,7 @@ AXIsolatedObject* findObjectWithRuns(AXIsolatedObject& start, AXDirection direct
                 exitObject(*parent);
                 current = parent;
             }
-            return downcast<AXIsolatedObject>(next.get());
+            return downcast<AXIsolatedObject>(next.unsafeGet());
         };
 
         RefPtr current = nextInPreOrder(start);
@@ -1679,7 +1731,7 @@ AXIsolatedObject* findObjectWithRuns(AXIsolatedObject& start, AXDirection direct
             const auto& children = sibling->childrenIncludingIgnored(/* updateChildrenIfNeeded */ true);
             if (children.size())
                 return downcast<AXIsolatedObject>(sibling->deepestLastChildIncludingIgnored(/* updateChildrenIfNeeded */ true));
-            return downcast<AXIsolatedObject>(sibling.get());
+            return downcast<AXIsolatedObject>(sibling.unsafeGet());
         }
         return object.parentObject();
     };

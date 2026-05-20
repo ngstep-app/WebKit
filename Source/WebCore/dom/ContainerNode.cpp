@@ -31,6 +31,7 @@
 #include "CommonAtomStrings.h"
 #include "CommonVM.h"
 #include "ContainerNodeAlgorithms.h"
+#include "CustomElementReactionQueue.h"
 #include "DocumentInlines.h"
 #include "DocumentQuirks.h"
 #include "Editor.h"
@@ -50,7 +51,7 @@
 #include "LabelsNodeList.h"
 #include "LocalFrameView.h"
 #include "MutationEvent.h"
-#include "NodeInlines.h"
+#include "Node.h"
 #include "NodeRareData.h"
 #include "NodeRenderStyle.h"
 #include "RadioNodeList.h"
@@ -71,6 +72,7 @@
 #include "TemplateContentDocumentFragment.h"
 #include <algorithm>
 #include <wtf/TZoneMallocInlines.h>
+#include "AsyncNodeDeletionQueueInlines.h"
 
 namespace WebCore {
 
@@ -399,23 +401,26 @@ static ALWAYS_INLINE void executeNodeInsertionWithScriptAssertion(ContainerNode&
 
     NodeVector postInsertionNotificationTargets;
     {
-        WidgetHierarchyUpdatesSuspensionScope suspendWidgetHierarchyUpdates;
-        ScriptDisallowedScope::InMainThread scriptDisallowedScope;
-        Style::ChildChangeInvalidation styleInvalidation(containerNode, childChange);
+        ChildListMutationScope mutation(containerNode);
+        {
+            WidgetHierarchyUpdatesSuspensionScope suspendWidgetHierarchyUpdates;
+            ScriptDisallowedScope::InMainThread scriptDisallowedScope;
+            Style::ChildChangeInvalidation styleInvalidation(containerNode, childChange);
 
-        if (containerNode.isShadowRoot() || containerNode.isInShadowTree()) [[unlikely]]
-            containerNode.containingShadowRoot()->resolveSlotsBeforeNodeInsertionOrRemoval();
+            if (containerNode.isShadowRoot() || containerNode.isInShadowTree()) [[unlikely]]
+                containerNode.containingShadowRoot()->resolveSlotsBeforeNodeInsertionOrRemoval();
 
-        for (auto& child : children) {
-            doNodeInsertion(child);
-            ChildListMutationScope(containerNode).childAdded(child);
-            notifyChildNodeInserted(containerNode, child, postInsertionNotificationTargets);
+            for (auto& child : children) {
+                doNodeInsertion(child);
+                mutation.childAdded(child);
+                notifyChildNodeInserted(containerNode, child, postInsertionNotificationTargets);
+            }
         }
-    }
-    ASSERT(postInsertionNotificationTargets.isEmpty() || children[0]->isConnected());
+        ASSERT(postInsertionNotificationTargets.isEmpty() || children[0]->isConnected());
 
-    // FIXME: Move childrenChanged into ScriptDisallowedScope block.
-    containerNode.childrenChanged(childChange);
+        // FIXME: Move childrenChanged into ScriptDisallowedScope block.
+        containerNode.childrenChanged(childChange);
+    }
 
     ASSERT(ScriptDisallowedScope::InMainThread::isEventDispatchAllowedInSubtree(containerNode));
     for (auto& target : postInsertionNotificationTargets)
@@ -533,11 +538,11 @@ static inline bool NODELETE isChildTypeAllowed(ContainerNode& newParent, Node& c
 
 static bool containsIncludingHostElements(const Node& possibleAncestor, const Node& node)
 {
-    RefPtr<const Node> currentNode = node;
+    const Node* currentNode = &node;
     do {
         if (currentNode == &possibleAncestor)
             return true;
-        RefPtr<const ContainerNode> parent = currentNode->parentNode();
+        const ContainerNode* parent = currentNode->parentNode();
         if (!parent) {
             if (auto* shadowRoot = dynamicDowncast<ShadowRoot>(*currentNode))
                 parent = shadowRoot->host();
@@ -670,7 +675,6 @@ ExceptionOr<void> ContainerNode::insertBefore(Node& newChild, RefPtr<Node>&& ref
 
     InspectorInstrumentation::willInsertDOMNode(protect(document()), *this);
 
-    ChildListMutationScope mutation(*this);
     executeNodeInsertionWithScriptAssertion(*this, targets, next.ptr(), ChildChange::Source::API, ReplacedAllChildren::No, [&](Node& child) {
         child.setTreeScopeRecursively(treeScope());
         insertBeforeCommon(next, child);
@@ -1004,7 +1008,6 @@ ExceptionOr<void> ContainerNode::appendChildWithoutPreInsertionValidityCheck(Nod
 
     InspectorInstrumentation::willInsertDOMNode(protect(document()), *this);
 
-    ChildListMutationScope mutation(*this);
     executeNodeInsertionWithScriptAssertion(*this, targets, nullptr, ChildChange::Source::API, ReplacedAllChildren::No, [&](Node& child) {
         child.setTreeScopeRecursively(treeScope());
         appendChildCommon(child);
@@ -1045,7 +1048,6 @@ ExceptionOr<void> ContainerNode::insertChildrenBeforeWithoutPreInsertionValidity
 
     InspectorInstrumentation::willInsertDOMNode(protect(document()), *this);
 
-    ChildListMutationScope mutation(*this);
     executeNodeInsertionWithScriptAssertion(*this, newChildren, refChild.get(), ChildChange::Source::API, ReplacedAllChildren::No, [&](auto& child) {
         child->setTreeScopeRecursively(treeScope());
         if (refChild)
@@ -1357,7 +1359,6 @@ ExceptionOr<void> ContainerNode::append(FixedVector<NodeOrString>&& vector)
         return checkResult;
 
     Ref protectedThis { *this };
-    ChildListMutationScope mutation(*this);
     if (auto appendResult = insertChildrenBeforeWithoutPreInsertionValidityCheck(WTF::move(newChildren)); appendResult.hasException())
         return appendResult;
 
@@ -1379,7 +1380,6 @@ ExceptionOr<void> ContainerNode::prepend(FixedVector<NodeOrString>&& vector)
         return checkResult;
 
     Ref protectedThis { *this };
-    ChildListMutationScope mutation(*this);
     if (auto appendResult = insertChildrenBeforeWithoutPreInsertionValidityCheck(WTF::move(newChildren), nextChild.get()); appendResult.hasException())
         return appendResult;
 
@@ -1423,6 +1423,111 @@ void ContainerNode::replaceChildrenWithoutValidityCheck(NodeVector&& newChildren
     RELEASE_ASSERT(!appendResult.hasException());
     rebuildSVGExtensionsElementsIfNecessary();
     dispatchSubtreeModifiedEvent();
+}
+
+// https://dom.spec.whatwg.org/#dom-parentnode-movebefore
+ExceptionOr<void> ContainerNode::moveBefore(Node& node, RefPtr<Node>&& refChild)
+{
+    if (refChild == &node)
+        refChild = node.nextSibling();
+
+    // From https://dom.spec.whatwg.org/#move
+    if (&shadowIncludingRoot() != &node.shadowIncludingRoot())
+        return Exception { ExceptionCode::HierarchyRequestError };
+
+    if (containsIncludingHostElements(node, *this))
+        return Exception { ExceptionCode::HierarchyRequestError };
+
+    if (refChild && refChild->parentNode() != this)
+        return Exception { ExceptionCode::NotFoundError };
+
+    if (!node.isElementNode() && !node.isCharacterDataNode())
+        return Exception { ExceptionCode::HierarchyRequestError };
+
+    if (is<Text>(node) && is<Document>(*this))
+        return Exception { ExceptionCode::HierarchyRequestError };
+
+    if (is<Document>(*this) && is<Element>(node)) {
+        bool hasElementChild = childElementCount() > 0;
+        bool childIsDoctype = refChild && refChild->isDocumentTypeNode();
+
+        if (hasElementChild || childIsDoctype)
+            return Exception { ExceptionCode::HierarchyRequestError };
+
+        if (refChild) {
+            for (auto* followingSibling = refChild.get(); followingSibling; followingSibling = followingSibling->nextSibling()) {
+                if (followingSibling->isDocumentTypeNode())
+                    return Exception { ExceptionCode::HierarchyRequestError };
+            }
+        }
+    }
+
+    RefPtr oldParent = node.parentNode();
+    ASSERT(oldParent);
+
+    RefPtr oldPreviousSibling = node.previousSibling();
+    RefPtr oldNextSibling = node.nextSibling();
+
+    // FIXME(281223): Run NodeIterator and live range pre-remove steps.
+
+    auto removalChildChange = makeChildChangeForRemoval(node, ChildChange::Source::API);
+
+    {
+        WidgetHierarchyUpdatesSuspensionScope suspendWidgetHierarchyUpdates;
+        ScriptDisallowedScope::InMainThread scriptDisallowedScope;
+
+        if (oldNextSibling) {
+            oldNextSibling->setPreviousSibling(oldPreviousSibling.get());
+            node.setNextSibling(nullptr);
+        } else {
+            ASSERT(oldParent->lastChild() == &node);
+            oldParent->setLastChild(oldPreviousSibling.get());
+        }
+
+        if (oldPreviousSibling) {
+            oldPreviousSibling->setNextSibling(oldNextSibling.get());
+            node.setPreviousSibling(nullptr);
+        } else {
+            ASSERT(oldParent->firstChild() == &node);
+            oldParent->setFirstChild(oldNextSibling.get());
+        }
+
+        node.updateAncestorConnectedSubframeCountForRemoval();
+        node.setParentNode(nullptr);
+
+        // FIXME(281223): Handle slot assignments and live ranges.
+
+        if (refChild)
+            insertBeforeCommon(*refChild, node);
+        else
+            appendChildCommon(node);
+
+        node.setTreeScopeRecursively(treeScope());
+        node.updateAncestorConnectedSubframeCountForInsertion();
+    }
+
+    auto newParentIsConnected = isConnected();
+
+    // FIXME(281223): Need to recurse into shadow trees.
+    for (RefPtr inclusiveDescendant = &node; inclusiveDescendant; inclusiveDescendant = NodeTraversal::next(*inclusiveDescendant, &node)) {
+        bool isSubtreeRoot = inclusiveDescendant.get() == &node;
+
+        inclusiveDescendant->movingSteps(isSubtreeRoot, *oldParent);
+
+        if (newParentIsConnected) {
+            if (RefPtr element = dynamicDowncast<Element>(*inclusiveDescendant); element && element->isDefinedCustomElement())
+                CustomElementReactionQueue::enqueueConnectedMoveCallbackIfNeeded(*element);
+        }
+    }
+
+    // FIXME: Add a new type for ChildChange.
+
+    oldParent->childrenChanged(removalChildChange);
+    childrenChanged(makeChildChangeForInsertion(*this, node, refChild, ChildChange::Source::API, ReplacedAllChildren::No));
+
+    // FIXME(281223): Queue tree mutation records.
+
+    return { };
 }
 
 HTMLCollection* ContainerNode::cachedHTMLCollection(CollectionType type)

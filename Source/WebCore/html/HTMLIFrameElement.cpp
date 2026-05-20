@@ -37,6 +37,7 @@
 #include "LocalFrame.h"
 #include "NodeName.h"
 #include "RenderIFrame.h"
+#include "RenderStyle+GettersInlines.h"
 #include "ScriptController.h"
 #include "ScriptableDocumentParser.h"
 #include "Settings.h"
@@ -45,6 +46,7 @@
 #include <JavaScriptCore/ConsoleTypes.h>
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/text/MakeString.h>
+#include "FrameDestructionObserverInlines.h"
 
 namespace WebCore {
 
@@ -218,7 +220,7 @@ bool HTMLIFrameElement::shouldLoadFrameLazily()
     Ref document = this->document();
     if (!document->settings().lazyIframeLoadingEnabled() || document->quirks().shouldDisableLazyIframeLoadingQuirk())
         return false;
-    URL completeURL = document->completeURL(frameURL());
+    URL completeURL = document->encodingParseURL(frameURL());
     auto referrerPolicy = referrerPolicyFromAttribute();
     if (!m_lazyLoadFrameObserver) {
         if (isFrameLazyLoadable(document, completeURL, attributeWithoutSynchronization(HTMLNames::loadingAttr))) {

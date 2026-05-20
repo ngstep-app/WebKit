@@ -50,6 +50,10 @@ extension WKRKEntity {
     private var backingDuration: TimeInterval? = nil
     @nonobjc
     private var backingPlaybackRate: Float = 1.0
+    @nonobjc
+    private var backingAnimation: AnimationResource? = nil
+    @nonobjc
+    private var backingCurrentTime: TimeInterval = 0
 
     private static var defaultEnvironmentResource: EnvironmentResource?
 
@@ -65,7 +69,8 @@ extension WKRKEntity {
     class func load(from data: Data, withAttributionTaskID attributionTaskId: String?, entityMemoryLimit: Int) async -> WKRKEntity? {
         #if canImport(RealityKit, _version: "403.0.3")
         do {
-            var loadOptions = Entity.__LoadOptions()
+            // FIXME: https://bugs.webkit.org/show_bug.cgi?id=313180
+            var loadOptions = unsafe Entity.__LoadOptions()
             if let attributionTaskId {
                 loadOptions.memoryAttributionID = attributionTaskId
             }
@@ -90,11 +95,13 @@ extension WKRKEntity {
 
     @nonobjc
     convenience init(_ rkEntity: Entity) {
-        self.init(coreEntity: rkEntity.coreEntity)
+        // FIXME: https://bugs.webkit.org/show_bug.cgi?id=313180
+        unsafe self.init(coreEntity: rkEntity.coreEntity)
     }
 
     init(coreEntity: REEntityRef) {
-        entity = Entity.fromCore(coreEntity)
+        // FIXME: https://bugs.webkit.org/show_bug.cgi?id=313180
+        entity = unsafe Entity.fromCore(coreEntity)
     }
 
     var name: String {
@@ -168,8 +175,7 @@ extension WKRKEntity {
             animationPlaybackController?.speed ?? backingPlaybackRate
         }
         set {
-            // FIXME (280081): Support negative playback rate
-            backingPlaybackRate = max(newValue, 0)
+            backingPlaybackRate = newValue
             guard let animationPlaybackController else {
                 return
             }
@@ -183,6 +189,17 @@ extension WKRKEntity {
             animationPlaybackController?.isPaused ?? true
         }
         set {
+            if animationPlaybackController == nil {
+                guard !newValue, let animation = backingAnimation else {
+                    return
+                }
+                let controller = entity.playAnimation(animation, startsPaused: false)
+                controller.speed = backingPlaybackRate
+                animationPlaybackController = controller
+                animationPlaybackStateDidUpdate()
+                return
+            }
+
             guard let animationPlaybackController, animationPlaybackController.isPaused != newValue else {
                 return
             }
@@ -198,11 +215,21 @@ extension WKRKEntity {
 
     var currentTime: TimeInterval {
         get {
-            animationPlaybackController?.time ?? 0
+            animationPlaybackController?.time ?? backingCurrentTime
         }
 
         set {
-            guard let animationPlaybackController, let duration = backingDuration else {
+            guard let duration = backingDuration else {
+                return
+            }
+
+            if animationPlaybackController == nil, let animation = backingAnimation {
+                let controller = entity.playAnimation(animation, startsPaused: true)
+                controller.speed = backingPlaybackRate
+                animationPlaybackController = controller
+            }
+
+            guard let animationPlaybackController else {
                 return
             }
 
@@ -220,6 +247,7 @@ extension WKRKEntity {
             return
         }
 
+        backingAnimation = animation
         animationPlaybackController = entity.playAnimation(animation, startsPaused: !autoplay)
         guard let animationPlaybackController else {
             Logger.realityKitEntity.error("Cannot play entity animation")
@@ -244,8 +272,14 @@ extension WKRKEntity {
                 return
             }
 
-            let startsPaused = !self.loop
-            let animationController = self.entity.playAnimation(animation, startsPaused: startsPaused)
+            guard self.loop else {
+                self.backingCurrentTime = self.backingDuration ?? 0
+                self.animationPlaybackController = nil
+                self.animationPlaybackStateDidUpdate()
+                return
+            }
+
+            let animationController = self.entity.playAnimation(animation, startsPaused: false)
             animationController.speed = self.backingPlaybackRate
             self.animationPlaybackController = animationController
             self.animationPlaybackStateDidUpdate()
@@ -323,7 +357,8 @@ extension WKRKEntity {
         }
 
         guard
-            let context = CGContext(
+            // FIXME: https://bugs.webkit.org/show_bug.cgi?id=313180
+            let context = unsafe CGContext(
                 data: nil,
                 width: targetWidth,
                 height: targetHeight,
@@ -366,8 +401,10 @@ extension WKRKEntity {
             )
             let environment = try await EnvironmentResource(cube: textureResource, options: .init())
 
-            if let coreEnvironmentResourceAsset = environment.coreIBLAsset?.__as(REAssetRef.self) {
-                attributionHandler(coreEnvironmentResourceAsset)
+            // FIXME: https://bugs.webkit.org/show_bug.cgi?id=313180
+            if let coreEnvironmentResourceAsset = unsafe environment.coreIBLAsset?.__as(REAssetRef.self) {
+                // FIXME: https://bugs.webkit.org/show_bug.cgi?id=313180
+                unsafe attributionHandler(coreEnvironmentResourceAsset)
             }
 
             applyIBL(environment)
@@ -386,7 +423,14 @@ extension WKRKEntity {
             return
         }
 
-        let defaultEnvironmentResource = EnvironmentResource.defaultObject()
+        guard
+            let defaultEnvironmentResource = try? EnvironmentResource.load(
+                named: "studio_lighting_objectmode_v3",
+                in: Bundle(identifier: "com.apple.WebKit")
+            )
+        else {
+            fatalError("Could not open studio_lighting_objectmode_v3")
+        }
         WKRKEntity.defaultEnvironmentResource = defaultEnvironmentResource
         applyIBL(defaultEnvironmentResource)
         #else
@@ -401,7 +445,8 @@ extension WKRKEntity {
 
     @objc(setParentCoreEntity:preservingWorldTransform:)
     func setParentCore(_ coreEntity: REEntityRef, preservingWorldTransform: Bool) {
-        let parentEntity = Entity.fromCore(coreEntity)
+        // FIXME: https://bugs.webkit.org/show_bug.cgi?id=313180
+        let parentEntity = unsafe Entity.fromCore(coreEntity)
         entity.setParent(parentEntity, preservingWorldTransform: preservingWorldTransform)
     }
 

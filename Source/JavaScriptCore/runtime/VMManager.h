@@ -254,14 +254,7 @@ public:
         Mode worldMode;
         VM* targetVM;
 
-        void dump(PrintStream& out) const
-        {
-            out.print("VMManager::Info(numberOfVMs:", numberOfVMs);
-            out.print(", numberOfActiveVMs:", numberOfActiveVMs);
-            out.print(", numberOfStoppedVMs:", numberOfStoppedVMs);
-            out.print(", worldMode:", worldMode);
-            out.print(", targetVM:", RawPointer(targetVM), ")");
-        }
+        void dump(PrintStream& out) const;
     };
 
     JS_EXPORT_PRIVATE static Info info();
@@ -284,7 +277,7 @@ public:
     void notifyVMDestruction(VM&);
     void notifyVMActivation(VM&);
     void notifyVMDeactivation(VM&);
-    void notifyVMStop(VM&, StopTheWorldEvent);
+    JS_EXPORT_PRIVATE void notifyVMStop(VM&, StopTheWorldEvent);
 
     void handleVMDestructionWhileWorldStopped(VM&);
 

@@ -251,7 +251,8 @@ private:
 
 inline bool HTMLTreeBuilder::isParsingTemplateContents() const
 {
-    return m_tree.openElements().hasTemplateInHTMLScope();
+    return m_tree.openElements().containsTemplateElement()
+        && m_tree.openElements().hasTemplateInHTMLScope();
 }
 
 inline bool HTMLTreeBuilder::isParsingFragmentOrTemplateContents() const
@@ -344,10 +345,16 @@ void HTMLTreeBuilder::constructTree(AtomHTMLToken&& token)
     else
         processToken(WTF::move(token));
 
-    bool inForeignContent = !m_tree.isEmpty()
-        && !isInHTMLNamespace(adjustedCurrentStackItem())
-        && !HTMLElementStack::isHTMLIntegrationPoint(m_tree.currentStackItem())
-        && !HTMLElementStack::isMathMLTextIntegrationPoint(m_tree.currentStackItem());
+    // Use the adjusted current node for all checks, matching shouldProcessTokenInForeignContent().
+    // When fragment-parsing with only one element on the stack, the adjusted current node is the
+    // context element, not the DocumentFragment.
+    bool inForeignContent = false;
+    if (!m_tree.isEmpty()) {
+        auto& adjustedCurrentNode = adjustedCurrentStackItem();
+        inForeignContent = !isInHTMLNamespace(adjustedCurrentNode)
+            && !HTMLElementStack::isHTMLIntegrationPoint(adjustedCurrentNode)
+            && !HTMLElementStack::isMathMLTextIntegrationPoint(adjustedCurrentNode);
+    }
 
     m_parser->tokenizer().setForceNullCharacterReplacement(m_insertionMode == InsertionMode::Text || inForeignContent);
     m_parser->tokenizer().setShouldAllowCDATA(inForeignContent);
@@ -493,7 +500,7 @@ static MemoryCompactLookupOnlyRobinHoodHashMap<AtomString, QualifiedName> create
 {
     MemoryCompactLookupOnlyRobinHoodHashMap<AtomString, QualifiedName> map;
 
-    const auto svgAttrs = std::to_array<QualifiedName>({
+    const auto svgAttrs = WTF::toArray<QualifiedName>({
         SVGNames::attributeNameAttr,
         SVGNames::attributeTypeAttr,
         SVGNames::baseFrequencyAttr,
@@ -593,7 +600,7 @@ static MemoryCompactLookupOnlyRobinHoodHashMap<AtomString, QualifiedName> create
     };
 
     AtomString xlinkName("xlink"_s);
-    const auto xLinkAttrs = std::to_array<QualifiedName>({
+    const auto xLinkAttrs = WTF::toArray<QualifiedName>({
         XLinkNames::actuateAttr,
         XLinkNames::arcroleAttr,
         XLinkNames::hrefAttr,
@@ -605,7 +612,7 @@ static MemoryCompactLookupOnlyRobinHoodHashMap<AtomString, QualifiedName> create
     for (auto name : xLinkAttrs)
         addNameWithPrefix(map, name, xlinkName);
 
-    const auto xmlAttrs = std::to_array<QualifiedName>({
+    const auto xmlAttrs = WTF::toArray<QualifiedName>({
         XMLNames::langAttr,
         XMLNames::spaceAttr,
     });
@@ -795,18 +802,11 @@ void HTMLTreeBuilder::processStartTagForInBody(AtomHTMLToken&& token)
         m_tree.insertFormattingElement(WTF::move(token));
         return;
     case TagName::applet:
-    case TagName::embed:
     case TagName::object:
     case TagName::marquee:
         m_tree.reconstructTheActiveFormattingElements();
-        if (token.tagName() == TagName::embed) {
-            m_tree.reconstructTheActiveFormattingElements();
-            m_tree.insertSelfClosingHTMLElement(WTF::move(token));
-        } else {
-            m_tree.reconstructTheActiveFormattingElements();
-            m_tree.insertHTMLElement(WTF::move(token));
-            m_tree.activeFormattingElements().appendMarker();
-        }
+        m_tree.insertHTMLElement(WTF::move(token));
+        m_tree.activeFormattingElements().appendMarker();
         m_framesetOk = false;
         return;
     case TagName::table:
@@ -825,6 +825,7 @@ void HTMLTreeBuilder::processStartTagForInBody(AtomHTMLToken&& token)
         [[fallthrough]];
     case TagName::area:
     case TagName::br:
+    case TagName::embed:
     case TagName::img:
     case TagName::keygen:
     case TagName::wbr:
@@ -1920,18 +1921,20 @@ void HTMLTreeBuilder::processEndTagForInCell(AtomHTMLToken&& token)
     ASSERT(token.type() == HTMLToken::Type::EndTag);
     switch (token.tagName()) {
     case TagName::th:
-    case TagName::td:
-        if (!m_tree.openElements().inTableScope(elementNameForTag(Namespace::HTML, token.tagName()))) {
+    case TagName::td: {
+        auto elementName = elementNameForTag(Namespace::HTML, token.tagName());
+        if (!m_tree.openElements().inTableScope(elementName)) {
             parseError(token);
             return;
         }
         m_tree.generateImpliedEndTags();
-        if (m_tree.currentStackItem().elementName() != elementNameForTag(Namespace::HTML, token.tagName()))
+        if (m_tree.currentStackItem().elementName() != elementName)
             parseError(token);
-        m_tree.openElements().popUntilPopped(elementNameForTag(Namespace::HTML, token.tagName()));
+        m_tree.openElements().popUntilPopped(elementName);
         m_tree.activeFormattingElements().clearToLastMarker();
         m_insertionMode = InsertionMode::InRow;
         return;
+    }
     case TagName::body:
     case TagName::caption:
     case TagName::col:
@@ -2003,16 +2006,18 @@ void HTMLTreeBuilder::processEndTagForInBody(AtomHTMLToken&& token)
     case TagName::search:
     case TagName::section:
     case TagName::summary:
-    case TagName::ul:
-        if (!m_tree.openElements().inScope(elementNameForTag(Namespace::HTML, token.tagName()))) {
+    case TagName::ul: {
+        auto elementName = elementNameForTag(Namespace::HTML, token.tagName());
+        if (!m_tree.openElements().inScope(elementName)) {
             parseError(token);
             return;
         }
         m_tree.generateImpliedEndTags();
-        if (m_tree.currentStackItem().elementName() != elementNameForTag(Namespace::HTML, token.tagName()))
+        if (m_tree.currentStackItem().elementName() != elementName)
             parseError(token);
-        m_tree.openElements().popUntilPopped(elementNameForTag(Namespace::HTML, token.tagName()));
+        m_tree.openElements().popUntilPopped(elementName);
         return;
+    }
     case TagName::form:
         if (!isParsingTemplateContents()) {
             RefPtr<Element> formElement = m_tree.takeForm();
@@ -2059,16 +2064,18 @@ void HTMLTreeBuilder::processEndTagForInBody(AtomHTMLToken&& token)
         m_tree.openElements().popUntilPopped(HTML::li);
         return;
     case TagName::dd:
-    case TagName::dt:
-        if (!m_tree.openElements().inScope(elementNameForTag(Namespace::HTML, token.tagName()))) {
+    case TagName::dt: {
+        auto elementName = elementNameForTag(Namespace::HTML, token.tagName());
+        if (!m_tree.openElements().inScope(elementName)) {
             parseError(token);
             return;
         }
-        m_tree.generateImpliedEndTagsWithExclusion(elementNameForTag(Namespace::HTML, token.tagName()));
-        if (m_tree.currentStackItem().elementName() != elementNameForTag(Namespace::HTML, token.tagName()))
+        m_tree.generateImpliedEndTagsWithExclusion(elementName);
+        if (m_tree.currentStackItem().elementName() != elementName)
             parseError(token);
-        m_tree.openElements().popUntilPopped(elementNameForTag(Namespace::HTML, token.tagName()));
+        m_tree.openElements().popUntilPopped(elementName);
         return;
+    }
     case TagName::h1:
     case TagName::h2:
     case TagName::h3:
@@ -2102,17 +2109,19 @@ void HTMLTreeBuilder::processEndTagForInBody(AtomHTMLToken&& token)
         return;
     case TagName::applet:
     case TagName::marquee:
-    case TagName::object:
-        if (!m_tree.openElements().inScope(elementNameForTag(Namespace::HTML, token.tagName()))) {
+    case TagName::object: {
+        auto elementName = elementNameForTag(Namespace::HTML, token.tagName());
+        if (!m_tree.openElements().inScope(elementName)) {
             parseError(token);
             return;
         }
         m_tree.generateImpliedEndTags();
-        if (m_tree.currentStackItem().elementName() != elementNameForTag(Namespace::HTML, token.tagName()))
+        if (m_tree.currentStackItem().elementName() != elementName)
             parseError(token);
-        m_tree.openElements().popUntilPopped(elementNameForTag(Namespace::HTML, token.tagName()));
+        m_tree.openElements().popUntilPopped(elementName);
         m_tree.activeFormattingElements().clearToLastMarker();
         return;
+    }
     case TagName::br:
         parseError(token);
         processFakeStartTag(TagName::br);

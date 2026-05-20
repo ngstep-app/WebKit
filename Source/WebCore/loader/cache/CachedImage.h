@@ -68,6 +68,7 @@ public:
 
     void setContainerContextForClient(const CachedImageClient&, const LayoutSize&, float, const URL&);
     bool usesImageContainerSize() const { return m_image && m_image->usesContainerSize(); }
+    bool imageHasNaturalAspectRatio() const { return m_image && m_image->hasNaturalAspectRatio(); }
     bool imageHasRelativeWidth() const { return m_image && m_image->hasRelativeWidth(); }
     bool imageHasRelativeHeight() const { return m_image && m_image->hasRelativeHeight(); }
 
@@ -78,10 +79,10 @@ public:
         UsedSize,
         IntrinsicSize
     };
-    WEBCORE_EXPORT FloatSize imageSizeForRenderer(const RenderElement* renderer, SizeType = UsedSize) const;
+    WEBCORE_EXPORT FloatSize imageSizeForRenderer(const RenderElement*) const;
     // This method takes a zoom multiplier that can be used to increase the natural size of the image by the zoom.
-    LayoutSize imageSizeForRenderer(const RenderElement*, float multiplier, SizeType = UsedSize) const; // returns the size of the complete image.
-    LayoutSize unclampedImageSizeForRenderer(const RenderElement* renderer, float multiplier, SizeType = UsedSize) const;
+    LayoutSize imageSizeForRenderer(const RenderElement*, float multiplier, SizeType = UsedSize, float density = 1.0f) const;
+    LayoutSize unclampedImageSizeForRenderer(const RenderElement*, float multiplier, SizeType = UsedSize, float density = 1.0f) const;
     void computeIntrinsicDimensions(float& intrinsicWidth, float& intrinsicHeight, FloatSize& intrinsicRatio);
 
     bool hasHDRContent() const;
@@ -105,6 +106,8 @@ public:
     bool allowsAnimation(const Image&) const;
 
 private:
+    FloatSize internalImageSizeForRenderer(const RenderElement*, float multiplier, SizeType, float density) const;
+
     void clear();
 
     void setBodyDataFrom(const CachedResource&) final;

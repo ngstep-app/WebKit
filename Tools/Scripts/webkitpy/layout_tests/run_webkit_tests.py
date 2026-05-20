@@ -31,6 +31,7 @@
 import logging
 import optparse
 import os
+import sys
 import traceback
 
 from webkitpy.common.host import Host
@@ -97,8 +98,6 @@ def main(argv, stdout, stderr):
         stackSizeInBytes = int(1.5 * 1024 * 1024)
         options.additional_env_var.append('JSC_maxPerThreadStackUsage=' + str(stackSizeInBytes))
         options.additional_env_var.append('__XPC_JSC_maxPerThreadStackUsage=' + str(stackSizeInBytes))
-        options.additional_env_var.append('JSC_useSharedArrayBuffer=1')
-        options.additional_env_var.append('__XPC_JSC_useSharedArrayBuffer=1')
         options.additional_env_var.append('JSC_useRecursiveJSONParse=0')
         options.additional_env_var.append('__XPC_JSC_useRecursiveJSONParse=0')
         run_details = run(port, options, args, stderr)
@@ -385,6 +384,7 @@ def parse_args(args):
             "--prefer-integrated-gpu", action="store_true", default=False,
             help=("Prefer using the lower-power integrated GPU on a dual-GPU system. Note that other running applications and the tests themselves can override this request.")),
         optparse.make_option("--show-window", action="store_true", default=False, help="Make the test runner window visible during testing."),
+        optparse.make_option("--show-cursor", action="store_true", default=False, help="Show the cursor overlay in the test runner window during testing (for debugging). Use with --show-window"),
         optparse.make_option("--self-compare-with-header", help="Run all tests as A/B tests between the default configuration and the given test features header (ignoring expected results)."),
     ]))
 
@@ -566,6 +566,12 @@ def run(port, options, args, logging_stream):
                 _log.debug('Enabled coredumps for test run')
             except (ModuleNotFoundError, ValueError, OSError) as e:
                 _log.error('Failed to enable coredumps: %s' % str(e))
+        if sys.platform.startswith('linux'):
+            try:
+                from webkitpy.port.linux_get_crash_log import GDBCrashLogStartupHandler
+                GDBCrashLogStartupHandler()
+            except (OSError, ImportError) as e:
+                _log.error(f'Failed to initialize crash log handler: {e}')
 
         _set_up_derived_options(port, options)
         manager = Manager(port, options, printer)

@@ -103,6 +103,19 @@ public:
     AXObjectRareData& ensureRareData();
     bool needsRareData() const { return isTable() || isExposedTableRow(); }
 
+    // Bit flags stored in the uint16_t portion of m_rareDataWithBitfields.
+    static constexpr uint16_t ignoreARIAHiddenBit = 1 << 0;
+    bool shouldIgnoreARIAHidden() const { return m_rareDataWithBitfields.type() & ignoreARIAHiddenBit; }
+    void setShouldIgnoreARIAHidden(bool value)
+    {
+        auto bits = m_rareDataWithBitfields.type();
+        if (value)
+            bits |= ignoreARIAHiddenBit;
+        else
+            bits &= ~ignoreARIAHiddenBit;
+        m_rareDataWithBitfields.setType(bits);
+    }
+
     bool hasDirtySubtree() const { return m_subtreeDirty; }
 
     bool isInDescriptionListDetail() const;
@@ -305,7 +318,7 @@ public:
 
     bool supportsARIAOwns() const override { return false; }
 
-    String explicitPopupValue() const final;
+    AccessibilityPopupValue popupValue() const final;
     bool hasDatalist() const;
     bool supportsHasPopup() const final;
     bool pressedIsPresent() const final;
@@ -454,6 +467,8 @@ public:
     String brailleLabel() const override { return getAttribute(HTMLNames::aria_braillelabelAttr); }
     String brailleRoleDescription() const override { return getAttribute(HTMLNames::aria_brailleroledescriptionAttr); }
     String embeddedImageDescription() const final;
+    FloatSize imageDataSize() const final;
+    RefPtr<SharedBuffer> imageData(const AXImageDataParameters&) const final;
     std::optional<AccessibilityChildrenVector> imageOverlayElements() override { return std::nullopt; }
     String extendedDescription() const final;
 
@@ -471,6 +486,11 @@ public:
     String ariaRoleDescription() const final { return getAttributeTrimmed(HTMLNames::aria_roledescriptionAttr); };
 
     inline AXObjectCache* axObjectCache() const;
+
+    // This exists to enable an optimization in ownerParentObject(), which is called as part of parentObject(),
+    // one of our hottest functions. If no object has an owns-relationship (which is the most common case -- at
+    // the time of writing, 86% of all page loads don't use aria-owns a single time), we can fast-path exit ownerParentObject().
+    inline bool anyObjectHasAriaOwns() const;
 
     static AccessibilityObject* anchorElementForNode(Node&);
     static AccessibilityObject* headingElementForNode(Node*);
@@ -555,10 +575,14 @@ public:
 
     void performDismissActionIgnoringResult() final { performDismissAction(); }
     bool press() override;
+    bool syncPress() override { return press(); }
+    bool performShowMenuAction();
 
     std::optional<AccessibilityOrientation> explicitOrientation() const override { return std::nullopt; }
     void increment() override { }
     void decrement() override { }
+    void syncIncrement() override { increment(); }
+    void syncDecrement() override { decrement(); }
     virtual bool toggleDetailsAncestor() { return false; }
     // Reveals details elements and hidden="until-found" elements.
     virtual void revealAncestors() { }
@@ -953,7 +977,7 @@ protected:
     bool allowsTextRanges() const;
     unsigned getLengthForTextRange() const;
 
-#ifndef NDEBUG
+#if ASSERT_ENABLED
     void verifyChildrenIndexInParent() const final { return AXCoreObject::verifyChildrenIndexInParent(m_children); }
 #endif
     void NODELETE resetChildrenIndexInParent() const;

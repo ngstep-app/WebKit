@@ -392,7 +392,7 @@ static void* lib##Library() \
     namespace functionNamespace { \
     extern void* lib##Library(bool isOptional = false); \
     bool is##lib##LibraryAvailable(); \
-    inline bool is##lib##LibaryAvailable() { \
+    inline bool is##lib##LibraryAvailable() { \
         return lib##Library(true) != nullptr; \
     } \
     }
@@ -682,7 +682,7 @@ static void* lib##Library() \
     } \
     \
     resultType softLink_##framework##_##functionName parameterDeclarations; \
-    resultType softLink_##framework##_##functionName parameterDeclarations \
+    export resultType softLink_##framework##_##functionName parameterDeclarations \
     { \
         ASSERT(softLink##framework##functionName); \
         return softLink##framework##functionName parameterNames; \

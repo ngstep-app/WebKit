@@ -728,6 +728,12 @@ cl_int ValidateGetDeviceIDs(cl_platform_id platform,
         return CL_INVALID_DEVICE_TYPE;
     }
 
+    // CL_DEVICE_NOT_FOUND if no OpenCL devices that matched device_type were found.
+    if (!platform->cast<cl::Platform>().hasDeviceType(device_type))
+    {
+        return CL_DEVICE_NOT_FOUND;
+    }
+
     // CL_INVALID_VALUE if num_entries is equal to zero and devices is not NULL
     // or if both num_devices and devices are NULL.
     if ((num_entries == 0u && devices != nullptr) || (num_devices == nullptr && devices == nullptr))
@@ -2525,6 +2531,18 @@ cl_int ValidateEnqueueNDRangeKernel(cl_command_queue command_queue,
         }
     }
 
+    cl_ulong maxLocalMemSize = 0;
+    if (IsError(queue.getDevice().getInfo(cl::DeviceInfo::LocalMemSize, sizeof(maxLocalMemSize),
+                                          &maxLocalMemSize, nullptr)))
+    {
+        return CL_INVALID_VALUE;
+    }
+    if (krnl.getImpl().getLocalMemSizeUsed(queue.getDevice()) > maxLocalMemSize)
+    {
+        ERR() << "Kernel exceeds the maximum local mem size capability";
+        return CL_OUT_OF_RESOURCES;
+    }
+
     return CL_SUCCESS;
 }
 
@@ -2751,6 +2769,19 @@ cl_int ValidateCreateCommandQueue(cl_context context,
                                     CL_QUEUE_PROFILING_ENABLE))
     {
         return CL_INVALID_VALUE;
+    }
+
+    // CL_INVALID_QUEUE_PROPERTIES if values specified in properties are valid but are not supported
+    // by the device.
+    cl_command_queue_properties supportedQueueProperties;
+    angle::Result getInfoResult = device->cast<Device>().getInfo(
+        DeviceInfo::QueueOnHostProperties, sizeof(cl_command_queue_properties),
+        &supportedQueueProperties, nullptr);
+    ASSERT(!IsError(getInfoResult));
+
+    if (properties.hasOtherBitsThan(supportedQueueProperties))
+    {
+        return CL_INVALID_QUEUE_PROPERTIES;
     }
 
     return CL_SUCCESS;
@@ -3147,6 +3178,12 @@ cl_int ValidateCreateImage(cl_context context,
     }
     const Context &ctx = context->cast<Context>();
 
+    // CL_INVALID_OPERATION if there are no devices in context that support images.
+    if (!ctx.supportsImages())
+    {
+        return CL_INVALID_OPERATION;
+    }
+
     // CL_INVALID_VALUE if values specified in flags are not valid.
     if (!ValidateMemoryFlags(flags, ctx.getPlatform()))
     {
@@ -3223,10 +3260,38 @@ cl_int ValidateCreateImage(cl_context context,
         default:
             return CL_INVALID_IMAGE_DESCRIPTOR;
     }
+
+    // CL_INVALID_IMAGE_SIZE if image dimensions specified in image_desc exceed the maximum
+    // image dimensions described in the Device Queries table for all devices in context.
+    const DevicePtrs &devices = ctx.getDevices();
+    if (std::find_if(devices.cbegin(), devices.cend(), [&](const DevicePtr &ptr) {
+            return ptr->supportsNativeImageDimensions(*image_desc);
+        }) == devices.cend())
+    {
+        return CL_INVALID_IMAGE_SIZE;
+    }
+    unsigned int maxDeviceImagePitchAlignment = 0u;
+    for (const DevicePtr &device : devices)
+    {
+        maxDeviceImagePitchAlignment =
+            std::max(maxDeviceImagePitchAlignment, device->getInfo().imagePitchAlignment);
+    }
+
+    // CL_INVALID_OPERATION if no devices in context support creating a 2D image from a
+    // buffer.
+    const bool isImage2dFromBuffer = image_desc->image_type == CL_MEM_OBJECT_IMAGE2D &&
+                                     image_desc->buffer != NULL &&
+                                     Buffer::IsValid(image_desc->buffer);
+    if (isImage2dFromBuffer && !ctx.supportsImage2DFromBuffer())
+    {
+        return CL_INVALID_OPERATION;
+    }
+
     if (image_desc->image_row_pitch != 0u)
     {
-        // image_row_pitch must be 0 if host_ptr is NULL.
-        if (host_ptr == nullptr)
+        // image_row_pitch must be 0 if host_ptr is NULL, and the image is not a 2D image created
+        // from a buffer
+        if (host_ptr == nullptr && image_desc->buffer == nullptr)
         {
             return CL_INVALID_IMAGE_DESCRIPTOR;
         }
@@ -3240,6 +3305,14 @@ cl_int ValidateCreateImage(cl_context context,
         if ((image_desc->image_row_pitch % elemSize) != 0u)
         {
             return CL_INVALID_IMAGE_DESCRIPTOR;
+        }
+        // CL_INVALID_IMAGE_FORMAT_DESCRIPTOR
+        // if image is being created from buffer, image_row_pitch
+        // must be a multiple of the maximum of the CL_DEVICE_IMAGE_PITCH_ALIGNMENT value of all
+        // devices in the context that supports images.
+        if (isImage2dFromBuffer && image_desc->image_row_pitch % maxDeviceImagePitchAlignment != 0u)
+        {
+            return CL_INVALID_IMAGE_FORMAT_DESCRIPTOR;
         }
     }
     if (image_desc->image_slice_pitch != 0u)
@@ -3279,29 +3352,34 @@ cl_int ValidateCreateImage(cl_context context,
         return CL_INVALID_IMAGE_DESCRIPTOR;
     }
 
-    // CL_INVALID_OPERATION if there are no devices in context that support images.
-    if (!ctx.supportsImages())
-    {
-        return CL_INVALID_OPERATION;
-    }
-
-    // Returns CL_INVALID_OPERATION if no devices in context support creating a 2D image from a
+    // CL_INVALID_IMAGE_FORMAT_DESCRIPTOR if a 2D image is created from a buffer and the row pitch
+    // and base address alignment does not follow the rules described for creating a 2D image from a
     // buffer.
-    const bool isImage2dFromBuffer =
-        image_desc->image_type == CL_MEM_OBJECT_IMAGE2D && image_desc->mem_object != NULL;
-    if (isImage2dFromBuffer && !ctx.supportsImage2DFromBuffer())
+    if (isImage2dFromBuffer && (image_desc->image_row_pitch * image_desc->image_height) >
+                                   Buffer::Cast(image_desc->buffer)->getSize())
     {
-        return CL_INVALID_OPERATION;
+        return CL_INVALID_IMAGE_FORMAT_DESCRIPTOR;
     }
 
-    // CL_INVALID_IMAGE_SIZE if image dimensions specified in image_desc exceed the maximum
-    // image dimensions described in the Device Queries table for all devices in context.
-    const DevicePtrs &devices = ctx.getDevices();
-    if (std::find_if(devices.cbegin(), devices.cend(), [&](const DevicePtr &ptr) {
-            return ptr->supportsNativeImageDimensions(*image_desc);
-        }) == devices.cend())
+    // CL_INVALID_IMAGE_DESCRIPTOR
+    // if 2D image created from another image object, the values in
+    // image descriptor except for mem_object must match the image descriptor information associated
+    // with mem_object
+    if (image_desc->mem_object != nullptr && Image::IsValid(image_desc->mem_object))
     {
-        return CL_INVALID_IMAGE_SIZE;
+        const ImageDescriptor imageDesc = {FromCLenum<MemObjectType>(image_desc->image_type),
+                                           image_desc->image_width,
+                                           image_desc->image_height,
+                                           image_desc->image_depth,
+                                           image_desc->image_array_size,
+                                           image_desc->image_row_pitch,
+                                           image_desc->image_slice_pitch,
+                                           image_desc->num_mip_levels,
+                                           image_desc->num_samples};
+        if (imageDesc != Image::Cast(image_desc->mem_object)->getDescriptor())
+        {
+            return CL_INVALID_IMAGE_DESCRIPTOR;
+        }
     }
 
     // CL_INVALID_HOST_PTR
@@ -3793,6 +3871,12 @@ cl_int ValidateCreateCommandQueueWithProperties(cl_context context,
     // CL_INVALID_VALUE if values specified in properties are not valid.
     if (properties != nullptr)
     {
+        cl_command_queue_properties supportedQueueProperties;
+        angle::Result getInfoResult = device->cast<Device>().getInfo(
+            DeviceInfo::QueueOnHostProperties, sizeof(cl_command_queue_properties),
+            &supportedQueueProperties, nullptr);
+        ASSERT(!IsError(getInfoResult));
+
         bool isQueueOnDevice  = false;
         bool hasQueueSize     = false;
         bool hasQueuePriority = false;
@@ -3817,6 +3901,14 @@ cl_int ValidateCreateCommandQueueWithProperties(cl_context context,
                     {
                         return CL_INVALID_VALUE;
                     }
+
+                    // CL_INVALID_QUEUE_PROPERTIES if values specified in properties are valid but
+                    // are not supported by the device.
+                    if (props.hasOtherBitsThan(supportedQueueProperties))
+                    {
+                        return CL_INVALID_QUEUE_PROPERTIES;
+                    }
+
                     isQueueOnDevice = props.intersects(CL_QUEUE_ON_DEVICE);
                     break;
                 }
@@ -4110,6 +4202,36 @@ cl_int ValidateGetKernelSubGroupInfo(cl_kernel kernel,
         return CL_INVALID_OPERATION;
     }
 
+    // CL_INVALID_VALUE if the size in bytes specified by param_value_size is less than
+    // size of the return type specified in the Kernel Object Sub-group Queries table
+    // and param_value is not NULL.
+    size_t maxWorkItemDimensions = 0;
+    angle::Result getInfoResult  = device->cast<Device>().getInfo(
+        DeviceInfo::MaxWorkItemDimensions, sizeof(size_t), &maxWorkItemDimensions, nullptr);
+    ASSERT(!IsError(getInfoResult));  // MaxWorkItemDimensions is always handled
+    switch (param_name)
+    {
+        case KernelSubGroupInfo::SubGroupCountForNdrange:
+        case KernelSubGroupInfo::MaxSubGroupSizeForNdrange:
+            if (param_value_size < sizeof(size_t))
+            {
+                return CL_INVALID_VALUE;
+            }
+            break;
+        case KernelSubGroupInfo::LocalSizeForSubGroupCount:
+        {
+            const size_t dims     = param_value_size / sizeof(size_t);
+            const bool isMultiple = (param_value_size % sizeof(size_t) == 0);
+            if (!param_value || !isMultiple || dims > maxWorkItemDimensions)
+            {
+                return CL_INVALID_VALUE;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+
     switch (param_name)
     {
         case KernelSubGroupInfo::SubGroupCountForNdrange:
@@ -4132,15 +4254,8 @@ cl_int ValidateGetKernelSubGroupInfo(cl_kernel kernel,
             }
             else
             {
-                const size_t dims            = input_value_size / sizeof(size_t);
-                const bool isMultiple        = (input_value_size % sizeof(size_t) == 0);
-                size_t maxWorkItemDimensions = 0;
-                angle::Result getInfoResult =
-                    device->cast<Device>().getInfo(DeviceInfo::MaxWorkItemDimensions,
-                                                   sizeof(size_t), &maxWorkItemDimensions, nullptr);
-                // MaxWorkItemDimensions is always handled
-                ASSERT(!IsError(getInfoResult));
-
+                const size_t dims     = input_value_size / sizeof(size_t);
+                const bool isMultiple = (input_value_size % sizeof(size_t) == 0);
                 if (!isMultiple || dims == 0 || dims > maxWorkItemDimensions)
                 {
                     // CL_INVALID_VALUE if param_name is CL_KERNEL_MAX_SUB_GROUP_SIZE_FOR_NDRANGE,

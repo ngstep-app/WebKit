@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024-2025 Samuel Weinig <sam@webkit.org>
+ * Copyright (C) 2024-2026 Samuel Weinig <sam@webkit.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -29,8 +29,6 @@
 #include <WebCore/CSSValueTypes.h>
 #include <optional>
 #include <tuple>
-#include <utility>
-#include <wtf/StdLibExtras.h>
 
 namespace WebCore {
 
@@ -105,22 +103,6 @@ template<typename> struct ToStyle;
 
 // Specialize `TreatAsNonConverting` for `Constant<C>`, to indicate that its type does not change from the CSS representation.
 template<CSSValueID C> inline constexpr bool TreatAsNonConverting<Constant<C>> = true;
-
-// Specialize `TreatAsNonConverting` for `CustomIdentifier`, to indicate that its type does not change from the CSS representation.
-template<> inline constexpr bool TreatAsNonConverting<CustomIdentifier> = true;
-
-// Specialize `TreatAsNonConverting` for `PropertyIdentifier`, to indicate that its type does not change from the CSS representation.
-template<> inline constexpr bool TreatAsNonConverting<PropertyIdentifier> = true;
-
-// Specialize `TreatAsNonConverting` for `WTF::AtomString`, to indicate that its type does not change from the CSS representation.
-template<> inline constexpr bool TreatAsNonConverting<WTF::AtomString> = true;
-
-// Specialize `TreatAsNonConverting` for `WTF::String`, to indicate that its type does not change from the CSS representation.
-template<> inline constexpr bool TreatAsNonConverting<WTF::String> = true;
-
-// Specialize `TreatAsNonConverting` for `WTF::URL`, to indicate that its type does not change from the CSS representation.
-template<> inline constexpr bool TreatAsNonConverting<WTF::URL> = true;
-
 
 // MARK: - Conversion from "Style to "CSS"
 
@@ -386,6 +368,24 @@ template<typename CSSType, size_t inlineCapacity> struct ToStyle<CommaSeparatedV
     }
 };
 
+// MARK: - Conversion from "CSS" to "Style" when lacking BuilderState or CSSToLengthConversionData. Should not be used for new code and should be phased out.
+
+// All leaf types must implement the following:
+//
+//    template<> struct WebCore::Style::DeprecatedToStyle<StyleType> {
+//        StyleType operator()(const CSSType&);
+//    };
+
+template<typename> struct DeprecatedToStyle;
+
+struct DeprecatedToStyleInvoker {
+    template<typename CSSType, typename... Rest> decltype(auto) operator()(const CSSType& cssType, Rest&&... rest) const
+    {
+        return DeprecatedToStyle<CSSType>{}(cssType, std::forward<Rest>(rest)...);
+    }
+};
+inline constexpr DeprecatedToStyleInvoker deprecatedToStyle{};
+
 // MARK: - Conversion directly from "Style to "Ref<CSSValue>"
 
 // All leaf types must implement the following:
@@ -515,25 +515,24 @@ template<typename StyleType> inline constexpr CSSValueConversionInvoker<StyleTyp
 // All leaf types must implement the following:
 //
 //    template<> struct WebCore::Style::DeprecatedCSSValueConversion<StyleType> {
-//                   std::optional<StyleType> operator()(const RefPtr<Element>&&, const CSSValue&);
-//                   std::optional<StyleType> operator()(const RefPtr<Element>&&, const CSSPrimitiveValue&);
-//        [optional] std::optional<StyleType> operator()(const RefPtr<Element>&&, [std::derived_from<CSSValue>]);
+//                   std::optional<StyleType> operator()(const CSSValue&);
+//        [optional] std::optional<StyleType> operator()([std::derived_from<CSSValue>]);
 //    };
 
 template<typename StyleType> struct DeprecatedCSSValueConversion;
 
 template<typename StyleType> struct DeprecatedCSSValueConversionInvoker {
-    template<typename... Rest> std::optional<StyleType> operator()(const RefPtr<Element>& element, const CSSValue& value, Rest&&... rest) const
+    template<typename... Rest> std::optional<StyleType> operator()(const CSSValue& value, Rest&&... rest) const
     {
-        return DeprecatedCSSValueConversion<StyleType>{}(element, value, std::forward<Rest>(rest)...);
+        return DeprecatedCSSValueConversion<StyleType>{}(value, std::forward<Rest>(rest)...);
     }
-    template<typename... Rest> std::optional<StyleType> operator()(const RefPtr<Element>& element, const CSSPrimitiveValue& value, Rest&&... rest) const
+    template<typename... Rest> std::optional<StyleType> operator()(const CSSPrimitiveValue& value, Rest&&... rest) const
     {
-        return DeprecatedCSSValueConversion<StyleType>{}(element, value, std::forward<Rest>(rest)...);
+        return DeprecatedCSSValueConversion<StyleType>{}(value, std::forward<Rest>(rest)...);
     }
-    template<typename... Rest> std::optional<StyleType> operator()(const RefPtr<Element>& element, std::derived_from<CSSValue> auto const& value, Rest&&... rest) const
+    template<typename... Rest> std::optional<StyleType> operator()(std::derived_from<CSSValue> auto const& value, Rest&&... rest) const
     {
-        return DeprecatedCSSValueConversion<StyleType>{}(element, value, std::forward<Rest>(rest)...);
+        return DeprecatedCSSValueConversion<StyleType>{}(value, std::forward<Rest>(rest)...);
     }
 };
 template<typename StyleType> inline constexpr DeprecatedCSSValueConversionInvoker<StyleType> deprecatedToStyleFromCSSValue{};
@@ -580,7 +579,7 @@ struct SerializeInvoker {
         Serialize<StyleType>{}(builder, context, style, value, std::forward<Rest>(rest)...);
     }
 
-    template<typename StyleType, typename... Rest> [[nodiscard]] String operator()(const CSS::SerializationContext& context, const RenderStyle& style, const StyleType& value, Rest&&... rest) const
+    template<typename StyleType, typename... Rest> [[nodiscard]] WTF::String operator()(const CSS::SerializationContext& context, const RenderStyle& style, const StyleType& value, Rest&&... rest) const
     {
         StringBuilder builder;
         this->operator()(builder, context, style, value, std::forward<Rest>(rest)...);
@@ -1237,6 +1236,24 @@ template<typename... StyleTypes> struct Blending<Variant<StyleTypes...>> {
                 RELEASE_ASSERT_NOT_REACHED();
             }
         ), a, b);
+    }
+};
+
+// Specialization for `ValueOrKeyword`, constrained to types whose value is blendable.
+template<ValueOrKeywordDerived T> requires HasBlendWithoutRenderStyleAndWithBlendingContext<typename T::Value> struct Blending<T> {
+    auto canBlend(const T& a, const T& b) -> bool
+    {
+        if (a.isKeyword() || b.isKeyword())
+            return false;
+        return WebCore::Style::canBlend(*a.tryValue(), *b.tryValue());
+    }
+    auto blend(const T& a, const T& b, const auto& context) -> T
+    {
+        if (context.isDiscrete) {
+            ASSERT(!context.progress || context.progress == 1);
+            return context.progress ? b : a;
+        }
+        return T { WebCore::Style::blend(*a.tryValue(), *b.tryValue(), context) };
     }
 };
 

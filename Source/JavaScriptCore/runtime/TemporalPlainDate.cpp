@@ -29,6 +29,7 @@
 
 #include "DateConstructor.h"
 #include "IntlObjectInlines.h"
+#include "Rounding.h"
 #include "JSCInlines.h"
 #include "LazyPropertyInlines.h"
 #include "TemporalDuration.h"
@@ -64,7 +65,7 @@ void TemporalPlainDate::finishCreation(VM& vm)
     m_calendar.initLater(
         [] (const auto& init) {
             VM& vm = init.vm;
-            auto* plainDate = jsCast<TemporalPlainDate*>(init.owner);
+            auto* plainDate = init.owner;
             auto* globalObject = plainDate->realm();
             auto* calendar = TemporalCalendar::create(vm, globalObject->calendarStructure(), iso8601CalendarID());
             init.set(calendar);
@@ -76,7 +77,7 @@ void TemporalPlainDate::visitChildrenImpl(JSCell* cell, Visitor& visitor)
 {
     Base::visitChildren(cell, visitor);
 
-    auto* thisObject = jsCast<TemporalPlainDate*>(cell);
+    auto* thisObject = uncheckedDowncast<TemporalPlainDate>(cell);
     thisObject->m_calendar.visit(visitor);
 }
 
@@ -161,16 +162,16 @@ TemporalPlainDate* TemporalPlainDate::from(JSGlobalObject* globalObject, JSValue
 
     if (itemValue.isObject()) {
         if (itemValue.inherits<TemporalPlainDate>())
-            return jsCast<TemporalPlainDate*>(itemValue);
+            return uncheckedDowncast<TemporalPlainDate>(itemValue);
 
         if (itemValue.inherits<TemporalPlainDateTime>())
-            return TemporalPlainDate::create(vm, globalObject->plainDateStructure(), jsCast<TemporalPlainDateTime*>(itemValue)->plainDate());
+            return TemporalPlainDate::create(vm, globalObject->plainDateStructure(), uncheckedDowncast<TemporalPlainDateTime>(itemValue)->plainDate());
 
         JSObject* calendar = TemporalCalendar::getTemporalCalendarWithISODefault(globalObject, itemValue);
         RETURN_IF_EXCEPTION(scope, { });
 
         // FIXME: Implement after fleshing out Temporal.Calendar.
-        if (!calendar->inherits<TemporalCalendar>() || !jsCast<TemporalCalendar*>(calendar)->isISO8601()) {
+        if (!calendar->inherits<TemporalCalendar>() || !uncheckedDowncast<TemporalCalendar>(calendar)->isISO8601()) {
             throwRangeError(globalObject, scope, "unimplemented: from non-ISO8601 calendar"_s);
             return { };
         }
@@ -526,7 +527,7 @@ ISO8601::Duration TemporalPlainDate::since(JSGlobalObject* globalObject, Tempora
 
     auto [smallestUnit, largestUnit, roundingMode, increment] = extractDifferenceOptions(globalObject, optionsValue, UnitGroup::Date, TemporalUnit::Day, TemporalUnit::Day);
     RETURN_IF_EXCEPTION(scope, { });
-    roundingMode = negateTemporalRoundingMode(roundingMode);
+    roundingMode = TemporalCore::negateTemporalRoundingMode(roundingMode);
 
     RELEASE_AND_RETURN(scope, differenceTemporalPlainDate(globalObject,
         DifferenceOperation::Since, other, smallestUnit, largestUnit, roundingMode, increment));

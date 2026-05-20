@@ -35,7 +35,6 @@
 #include "ObjectConstructor.h"
 #include <wtf/ASCIICType.h>
 #include <wtf/Range.h>
-#include <wtf/dtoa.h>
 #include <wtf/text/FastCharacterComparison.h>
 #include <wtf/text/MakeString.h>
 
@@ -183,15 +182,9 @@ ALWAYS_INLINE Identifier LiteralParser<CharType, reviverMode>::makeIdentifier(VM
 template<typename CharType, JSONReviverMode reviverMode>
 ALWAYS_INLINE JSString* LiteralParser<CharType, reviverMode>::makeJSString(VM& vm, typename Lexer::LiteralParserTokenPtr token)
 {
-    constexpr unsigned maxAtomizeStringLength = 10;
-    if (token->stringIs8Bit) {
-        if (token->stringOrIdentifierLength > maxAtomizeStringLength)
-            return jsNontrivialString(vm, String({ token->stringStart8, token->stringOrIdentifierLength }));
-        return jsString(vm, Identifier::fromString(vm, token->string8()).releaseImpl());
-    }
-    if (token->stringOrIdentifierLength > maxAtomizeStringLength)
-        return jsNontrivialString(vm, String({ token->stringStart16, token->stringOrIdentifierLength }));
-    return jsString(vm, Identifier::fromString(vm, token->string16()).releaseImpl());
+    if (token->stringIs8Bit)
+        return vm.jsonAtomStringCache.makeJSString(token->string8());
+    return vm.jsonAtomStringCache.makeJSString(token->string16());
 }
 
 [[maybe_unused]] static ALWAYS_INLINE bool NODELETE cannotBeIdentPartOrEscapeStart(Latin1Character)

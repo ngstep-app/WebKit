@@ -29,10 +29,8 @@
 #include "RenderImageResource.h"
 
 #include "CachedImage.h"
-#include "Image.h"
 #include "NullGraphicsContext.h"
 #include "RenderElement.h"
-#include "RenderImage.h"
 #include "RenderStyle+GettersInlines.h"
 #include "StyleCachedImage.h"
 #include "StyleInvalidImage.h"
@@ -62,9 +60,11 @@ void RenderImageResource::initialize(RenderElement& renderer)
 
 void RenderImageResource::willBeDestroyed()
 {
-    image()->stopAnimation();
+    RefPtr cachedImage = this->cachedImage();
     if (m_styleImage && m_renderer)
         m_styleImage->removeClient(*m_renderer);
+    if (cachedImage && m_renderer && !cachedImage->isVisibleInViewport(m_renderer->document()))
+        image()->stopAnimation();
 }
 
 void RenderImageResource::clearCachedImage()
@@ -144,10 +144,7 @@ LayoutSize RenderImageResource::imageSize(float multiplier, CachedImage::SizeTyp
 {
     if (!m_styleImage)
         return { };
-    auto size = LayoutSize(m_styleImage->imageSize(m_renderer.get(), multiplier, type));
-    if (auto* renderImage = dynamicDowncast<RenderImage>(m_renderer.get()))
-        size.scale(renderImage->imageDevicePixelRatio());
-    return size;
+    return LayoutSize(m_styleImage->imageSize(m_renderer.get(), multiplier, type));
 }
 
 } // namespace WebCore

@@ -200,7 +200,8 @@ void SourceBufferPrivateGStreamer::flush(TrackID trackId)
     if (!player)
         return;
     GST_DEBUG_OBJECT(player->pipeline(), "Source element has emitted tracks, let it handle the flush, which may cause a pipeline flush as well. trackId = '%" PRIu64 "'", track->id());
-    webKitMediaSrcFlush(player->webKitMediaSrc(), track->id());
+    if (auto source = player->webKitMediaSrc())
+        webKitMediaSrcFlush(source, track->id());
 }
 
 void SourceBufferPrivateGStreamer::enqueueSample(Ref<MediaSample>&& sample, TrackID trackId)
@@ -477,24 +478,6 @@ void SourceBufferPrivateGStreamer::detach()
 
     if (RefPtr mediaSource = m_mediaSource.get())
         downcast<MediaSourcePrivateGStreamer>(mediaSource)->detach();
-}
-
-void SourceBufferPrivateGStreamer::willSeek()
-{
-    ALWAYS_LOG(LOGIDENTIFIER);
-    m_seeking = true;
-}
-
-bool SourceBufferPrivateGStreamer::isSeeking() const
-{
-    return m_seeking;
-}
-
-void SourceBufferPrivateGStreamer::seekToTime(const MediaTime& time)
-{
-    m_seeking = false;
-    // WebKit now has the samples to complete the seek and is about to enqueue them.
-    SourceBufferPrivate::seekToTime(time);
 }
 
 #undef GST_CAT_DEFAULT

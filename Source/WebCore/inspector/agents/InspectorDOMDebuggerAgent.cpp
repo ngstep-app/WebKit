@@ -37,6 +37,7 @@
 #include "InspectorDOMAgent.h"
 #include "InstrumentingAgents.h"
 #include "JSDOMGlobalObject.h"
+#include "JSDOMWrapperCache.h"
 #include "JSEvent.h"
 #include "JSEventListener.h"
 #include "RegisteredEventListener.h"
@@ -63,7 +64,8 @@ InspectorDOMDebuggerAgent::InspectorDOMDebuggerAgent(WebAgentContext& context, I
     , m_backendDispatcher(Inspector::DOMDebuggerBackendDispatcher::create(context.backendDispatcher, this))
     , m_injectedScriptManager(context.injectedScriptManager)
 {
-    m_debuggerAgent->addListener(*this);
+    if (m_debuggerAgent)
+        m_debuggerAgent->addListener(*this);
 }
 
 InspectorDOMDebuggerAgent::~InspectorDOMDebuggerAgent() = default;
@@ -117,7 +119,8 @@ void InspectorDOMDebuggerAgent::willDestroyFrontendAndBackend(Inspector::Disconn
 
 void InspectorDOMDebuggerAgent::discardAgent()
 {
-    m_debuggerAgent->removeListener(*this);
+    if (m_debuggerAgent)
+        m_debuggerAgent->removeListener(*this);
     m_debuggerAgent = nullptr;
 }
 

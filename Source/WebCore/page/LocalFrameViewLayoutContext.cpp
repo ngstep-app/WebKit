@@ -29,10 +29,13 @@
 #include "DebugPageOverlays.h"
 #include "Document.h"
 #include "DocumentEnums.h"
+#include "DocumentQuirks.h"
+#include "FrameInlines.h"
 #include "InspectorInstrumentation.h"
 #include "LayoutBoxGeometry.h"
 #include "LayoutContext.h"
 #include "LayoutDisallowedScope.h"
+#include "LayoutIntegrationInlineContent.h"
 #include "LayoutIntegrationLineLayout.h"
 #include "LayoutState.h"
 #include "LayoutTreeBuilder.h"
@@ -47,9 +50,10 @@
 #include "RenderLayerCompositor.h"
 #include "RenderLayoutState.h"
 #include "RenderObjectInlines.h"
-#include "RenderStyle.h"
 #include "RenderStyle+GettersInlines.h"
+#include "RenderStyle.h"
 #include "RenderView.h"
+#include "SVGTextFragment.h"
 #include "ScriptDisallowedScope.h"
 #include "Settings.h"
 #include "StyleScope.h"
@@ -64,15 +68,6 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(LocalFrameViewLayoutContext);
 
 UpdateScrollInfoAfterLayoutTransaction::UpdateScrollInfoAfterLayoutTransaction() = default;
 UpdateScrollInfoAfterLayoutTransaction::~UpdateScrollInfoAfterLayoutTransaction() = default;
-
-static bool isObjectAncestorContainerOf(RenderElement& ancestor, RenderElement& descendant)
-{
-    for (CheckedPtr renderer = &descendant; renderer; renderer = renderer->container()) {
-        if (renderer == &ancestor)
-            return true;
-    }
-    return false;
-}
 
 #ifndef NDEBUG
 class RenderTreeNeedsLayoutChecker {
@@ -155,6 +150,11 @@ LocalFrameViewLayoutContext::LocalFrameViewLayoutContext(LocalFrameView& frameVi
 }
 
 LocalFrameViewLayoutContext::~LocalFrameViewLayoutContext() = default;
+
+void LocalFrameViewLayoutContext::setSubtreeScrollbarChangesState(std::optional<SubtreeScrollbarChangesState> state)
+{
+    m_subtreeScrollbarChangesState = state;
+}
 
 UpdateScrollInfoAfterLayoutTransaction& LocalFrameViewLayoutContext::updateScrollInfoAfterLayoutTransaction()
 {
@@ -307,7 +307,7 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
         protect(view())->didLayout(layoutRoot, canDeferUpdateLayerPositions);
         runOrScheduleAsynchronousTasks(canDeferUpdateLayerPositions);
     }
-    InspectorInstrumentation::didLayout(frame, layoutAreas);
+    InspectorInstrumentation::didLayout(frame, *layoutRoot, layoutAreas);
     DebugPageOverlays::didLayout(frame);
 }
 
@@ -383,7 +383,7 @@ void LocalFrameViewLayoutContext::flushUpdateLayerPositions()
     if (!view)
         return;
 
-    auto repaintRectEnvironment = RepaintRectEnvironment { view->page().deviceScaleFactor(), protect(document())->printing(), protect(this->view())->useFixedLayout() };
+    auto repaintRectEnvironment = RepaintRectEnvironment { view->page().deviceScaleFactor(), document()->printing(), this->view().useFixedLayout() };
     bool environmentChanged = repaintRectEnvironment != m_lastRepaintRectEnvironment;
 
     auto updateLayerPositions = *std::exchange(m_pendingUpdateLayerPositions, std::nullopt);
@@ -403,7 +403,7 @@ bool LocalFrameViewLayoutContext::updateCompositingLayersAfterStyleChange()
     if (needsLayout() || isInLayout())
         return false;
 
-    auto repaintRectEnvironment = RepaintRectEnvironment { view->page().deviceScaleFactor(), protect(document())->printing(), protect(this->view())->useFixedLayout() };
+    auto repaintRectEnvironment = RepaintRectEnvironment { view->page().deviceScaleFactor(), document()->printing(), this->view().useFixedLayout() };
     bool environmentChanged = repaintRectEnvironment != m_lastRepaintRectEnvironment;
 
     view->layer()->updateLayerPositionsAfterStyleChange(environmentChanged);
@@ -584,14 +584,14 @@ void LocalFrameViewLayoutContext::scheduleSubtreeLayout(RenderElement& layoutRoo
         return;
     }
 
-    if (isObjectAncestorContainerOf(*subtreeLayoutRoot, layoutRoot)) {
+    if (subtreeLayoutRoot->isAncestorContainerOfRenderer(layoutRoot)) {
         // Keep the current root.
         layoutRoot.markContainingBlocksForLayout(subtreeLayoutRoot);
         ASSERT(!subtreeLayoutRoot->container() || is<RenderView>(subtreeLayoutRoot->container()) || !subtreeLayoutRoot->container()->needsLayout());
         return;
     }
 
-    if (isObjectAncestorContainerOf(layoutRoot, *subtreeLayoutRoot)) {
+    if (layoutRoot.isAncestorContainerOfRenderer(*subtreeLayoutRoot)) {
         // Re-root at newRelayoutRoot.
         subtreeLayoutRoot->markContainingBlocksForLayout(&layoutRoot);
         setSubtreeLayoutRoot(layoutRoot);
@@ -805,12 +805,38 @@ bool LocalFrameViewLayoutContext::DetachedRendererList::append(RenderPtr<RenderO
         return false;
     }
 
-    static constexpr int maximumNumberOfDetachedRenderers = 5000;
+    static constexpr unsigned maximumNumberOfDetachedRenderers = 5000;
     if (m_renderers.size() == maximumNumberOfDetachedRenderers)
         clear();
 
     m_renderers.append(detachedRenderer.release());
     return true;
+}
+
+LocalFrameViewLayoutContext::DetachedInlineContentList::~DetachedInlineContentList() = default;
+
+void LocalFrameViewLayoutContext::DetachedInlineContentList::append(std::unique_ptr<LayoutIntegration::InlineContent>&& content)
+{
+    static constexpr unsigned maximumNumberOfDeferredInlineContent = 5000;
+    if (m_inlineContent.size() == maximumNumberOfDeferredInlineContent)
+        clear();
+
+    m_inlineContent.append(WTF::move(content));
+}
+
+void LocalFrameViewLayoutContext::DetachedInlineContentList::clear()
+{
+    m_inlineContent.clear();
+}
+
+void LocalFrameViewLayoutContext::detachInlineContent(std::unique_ptr<LayoutIntegration::InlineContent>&& content) const
+{
+    m_detachedInlineContent.append(WTF::move(content));
+}
+
+void LocalFrameViewLayoutContext::deleteDetachedInlineContentNow() const
+{
+    m_detachedInlineContent.clear();
 }
 
 void LocalFrameViewLayoutContext::setBoxNeedsTransformUpdateAfterContainerLayout(RenderBox& box, RenderBlock& container)

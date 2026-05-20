@@ -151,6 +151,8 @@ public:
 
     bool NODELETE isDeferred() const;
 
+    static bool isSupportedImageSourceType(const String& typeAttribute);
+
     bool isDroppedImagePlaceholder() const { return m_isDroppedImagePlaceholder; }
     void setIsDroppedImagePlaceholder() { m_isDroppedImagePlaceholder = true; }
 
@@ -206,7 +208,7 @@ private:
 
     bool NODELETE isURLAttribute(const Attribute&) const override;
     bool NODELETE attributeContainsURL(const Attribute&) const override;
-    String completeURLsInAttributeValue(const URL& base, const Attribute&, ResolveURLs = ResolveURLs::Yes) const override;
+    String completeURLsInAttributeValue(const URL& base, const Attribute&, ResolveURLs = ResolveURLs::YesExcludingURLsForPrivacy) const override;
     Attribute replaceURLsInAttributeValue(const Attribute&, const CSS::SerializationContext&) const override;
 
     bool isDraggableIgnoringAttributes() const final { return true; }
@@ -241,8 +243,6 @@ private:
 
     void copyNonAttributePropertiesFromElement(const Element&) final;
 
-    float effectiveImageDevicePixelRatio() const;
-    
 #if ENABLE(SERVICE_CONTROLS)
     bool childShouldCreateRenderer(const Node&) const override;
 #endif

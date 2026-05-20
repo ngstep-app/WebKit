@@ -84,7 +84,7 @@ RemoteGPU::~RemoteGPU() = default;
 void RemoteGPU::initialize()
 {
     assertIsMainRunLoop();
-    protect(m_workQueue)->dispatch([protectedThis = Ref { *this }]() mutable {
+    protect(m_workQueue)->dispatch([protectedThis = protect(*this)]() mutable {
         protectedThis->workQueueInitialize();
     });
 }
@@ -93,7 +93,7 @@ void RemoteGPU::stopListeningForIPC()
 {
     assertIsMainRunLoop();
     Ref workQueue = m_workQueue;
-    workQueue->dispatch([protectedThis = Ref { *this }]() {
+    workQueue->dispatch([protectedThis = protect(*this)]() {
         protectedThis->workQueueUninitialize();
     });
     workQueue->stopAndWaitForCompletion();
@@ -114,7 +114,7 @@ void RemoteGPU::workQueueInitialize()
     // (because the callbacks handle resource cleanup, etc.).
     // The retain cycle is broken in workQueueUninitialize().
     auto gpuProcessConnection = m_gpuConnectionToWebProcess.get();
-    auto backing = WebCore::WebGPU::create([protectedThis = Ref { *this }](WebCore::WebGPU::WorkItem&& workItem) {
+    auto backing = WebCore::WebGPU::create([protectedThis = protect(*this)](WebCore::WebGPU::WorkItem&& workItem) {
         protect(protectedThis->m_workQueue)->dispatch(WTF::move(workItem));
     }, gpuProcessConnection ? &gpuProcessConnection->webProcessIdentity() : nullptr);
 #else
@@ -135,7 +135,7 @@ void RemoteGPU::workQueueUninitialize()
     streamConnection->invalidate();
     m_streamConnection = nullptr;
     protect(m_objectHeap)->clear();
-    Ref { m_modelObjectHeap }->clear();
+    protect(m_modelObjectHeap)->clear();
     m_backing = nullptr;
 }
 
@@ -163,7 +163,7 @@ void RemoteGPU::requestAdapter(const WebGPU::RequestAdapterOptions& options, Web
         return;
     }
 
-    backing->requestAdapter(*convertedOptions, [callback = WTF::move(callback), objectHeap, streamConnection = Ref { *m_streamConnection }, identifier, gpuConnectionToWebProcess = m_gpuConnectionToWebProcess.get(), gpu = Ref { *this }] (RefPtr<WebCore::WebGPU::Adapter>&& adapter) mutable {
+    backing->requestAdapter(*convertedOptions, [callback = WTF::move(callback), objectHeap, streamConnection = protect(*m_streamConnection), identifier, gpuConnectionToWebProcess = m_gpuConnectionToWebProcess.get(), gpu = protect(*this)] (RefPtr<WebCore::WebGPU::Adapter>&& adapter) mutable {
         if (!adapter) {
             callback(std::nullopt);
             return;
@@ -198,7 +198,6 @@ void RemoteGPU::requestAdapter(const WebGPU::RequestAdapterOptions& options, Web
             limits->maxBufferSize(),
             limits->maxVertexAttributes(),
             limits->maxVertexBufferArrayStride(),
-            limits->maxInterStageShaderComponents(),
             limits->maxInterStageShaderVariables(),
             limits->maxColorAttachments(),
             limits->maxColorAttachmentBytesPerSample(),
@@ -274,11 +273,11 @@ void RemoteGPU::paintNativeImageToImageBuffer(WebCore::NativeImage& nativeImage,
 Vector<UniqueRef<WebCore::IOSurface>> RemoteGPU::createRenderBuffers(unsigned width, unsigned height, const WebCore::ProcessIdentity& processIdentity)
 {
     const auto colorFormat = WebCore::IOSurface::Format::RGBA16F;
-    const auto colorSpace = WebCore::DestinationColorSpace::LinearDisplayP3();
+    const auto colorSpace = WebCore::DestinationColorSpace::ExtendedLinearDisplayP3();
 
     Vector<UniqueRef<WebCore::IOSurface>> ioSurfaces;
 
-    constexpr auto surfaceCount = 3;
+    constexpr auto surfaceCount = 2;
     for (auto i = 0; i < surfaceCount; ++i) {
         if (auto buffer = WebCore::IOSurface::create(nullptr, WebCore::IntSize(width, height), colorSpace, WebCore::IOSurface::Name::WebGPU, colorFormat)) {
             buffer->setOwnershipIdentity(processIdentity);
@@ -318,13 +317,36 @@ void RemoteGPU::createModelBacking(unsigned width, unsigned height, const WebMod
 #if ENABLE(GPU_PROCESS_MODEL)
     assertIsCurrent(workQueue());
 
+    constexpr auto max2dTextureSize = 16384;
+    MESSAGE_CHECK(width <= max2dTextureSize && height <= max2dTextureSize);
+    auto& inputSpecularTexture = specularTexture;
+    auto& inputDiffuseTexture = diffuseTexture;
+    {
+#define loadData(...) { }
+        WEBMODEL_WEB_MODEL_PLAYER_DECLARE_DIFFUSE_AND_SPECULAR_TEXTURES
+#undef loadData
+#define equalIgnoringDataContents(a, b, dataSize) \
+            a.data.size() == dataSize && \
+            a.width == b.width && \
+            a.height == b.height && \
+            a.depth == b.depth && \
+            a.textureType == b.textureType && \
+            a.pixelFormat == b.pixelFormat && \
+            a.mipmapLevelCount == b.mipmapLevelCount && \
+            a.arrayLength == b.arrayLength && \
+            a.textureUsage == b.textureUsage
+
+        MESSAGE_CHECK(equalIgnoringDataContents(inputDiffuseTexture, diffuseTexture, 49152));
+        MESSAGE_CHECK(equalIgnoringDataContents(inputSpecularTexture, specularTexture, 1048572));
+#undef equalIgnoringDataContents
+    }
     Ref objectHeap = m_modelObjectHeap.get();
 
     auto gpuProcessConnection = m_gpuConnectionToWebProcess.get();
     MESSAGE_CHECK(gpuProcessConnection);
 
     auto mesh = createModelBackingInternal(width, height, diffuseTexture, specularTexture, gpuProcessConnection->webProcessIdentity(), WTF::move(callback));
-    auto remoteMesh = RemoteMesh::create(*m_gpuConnectionToWebProcess.get(), *this, *mesh, objectHeap, Ref { *m_streamConnection }, identifier);
+    auto remoteMesh = RemoteMesh::create(*m_gpuConnectionToWebProcess.get(), *this, *mesh, objectHeap, protect(*m_streamConnection), identifier);
     objectHeap->addObject(identifier, remoteMesh);
 #else
     UNUSED_PARAM(width);

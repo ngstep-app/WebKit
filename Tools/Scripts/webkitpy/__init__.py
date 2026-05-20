@@ -130,6 +130,7 @@ if sys.platform == 'linux':
     AutoInstall.register(Package('websocket', Version(1, 8, 0), pypi_name='websocket-client'))
     AutoInstall.register(Package('selenium', Version(4, 24, 0), wheel=True, implicit_deps=['websocket']))
     AutoInstall.register(Package('filetype', Version(1, 2, 0), wheel=True))
+    AutoInstall.register(Package('inotify_simple', Version(2, 0, 1), wheel=True))
 else:
     AutoInstall.register(Package('selenium', Version(4, 12, 0), wheel=True))
 
@@ -140,6 +141,7 @@ AutoInstall.register(Package('zipp', Version(1, 2, 0)))
 AutoInstall.register(Package('zope.interface', Version(7, 0, 1), aliases=['zope'], pypi_name='zope-interface', wheel=True))
 AutoInstall.register(Package('webkitscmpy', Version(4, 0, 0)), local=True)
 AutoInstall.register(Package('webkitbugspy', Version(0, 3, 1)), local=True)
+AutoInstall.register(Package('webkitexpectationspy', Version(1, 0, 0)), local=True)
 AutoInstall.register(Package('yaml', Version(6, 0, 2), pypi_name='PyYAML'))
 
 import webkitscmpy

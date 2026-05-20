@@ -28,6 +28,7 @@
 #if ENABLE(PDFJS)
 
 #include "DocumentLoader.h"
+#include "DocumentSettingsValues.h"
 #include "EventListener.h"
 #include "EventNames.h"
 #include "FrameDestructionObserverInlines.h"
@@ -46,6 +47,9 @@
 #include "Settings.h"
 #include "UserScriptTypes.h"
 #include "WindowPostMessageOptions.h"
+#include <JavaScriptCore/JSArrayBuffer.h>
+#include <JavaScriptCore/JSGlobalObjectInlines.h>
+#include <JavaScriptCore/JSString.h>
 #include <JavaScriptCore/ObjectConstructor.h>
 #include <wtf/TZoneMallocInlines.h>
 
@@ -188,7 +192,7 @@ void PDFDocument::postMessageToIframe(const String& name, JSC::JSObject* data)
     auto& vm = globalObject->vm();
     JSC::JSLockHolder lock(vm);
 
-    JSC::JSObject* message = constructEmptyObject(globalObject);
+    JSC::JSObject* message = JSC::constructEmptyObject(globalObject);
     message->putDirect(vm, vm.propertyNames->message, JSC::jsNontrivialString(vm, name));
     if (data)
         message->putDirect(vm, JSC::Identifier::fromString(vm, "data"_s), data);

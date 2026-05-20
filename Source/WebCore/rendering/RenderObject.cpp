@@ -49,9 +49,10 @@
 #include "LegacyRenderSVGRoot.h"
 #include "LocalFrame.h"
 #include "LocalFrameView.h"
-#include "NodeInlines.h"
+#include "Editing.h"
 #include "OutlinePainter.h"
 #include "Page.h"
+#include "PlatformRenderTheme.h"
 #include "PseudoElement.h"
 #include "ReferencedSVGResources.h"
 #include "RenderChildIterator.h"
@@ -78,6 +79,7 @@
 #include "RenderScrollbarPart.h"
 #include "RenderTableRow.h"
 #include "RenderTextControl.h"
+#include "RenderTextFragment.h"
 #include "RenderTheme.h"
 #include "RenderTreeBuilder.h"
 #include "RenderView.h"
@@ -272,7 +274,7 @@ RenderObject::FragmentedFlowState RenderObject::computedFragmentedFlowState(cons
         inheritedFlowState = renderer.parent()->fragmentedFlowState();
     else if (isAnyOf<RenderSVGBlock, RenderSVGInline, LegacyRenderSVGModelObject>(renderer)) {
         // containingBlock() skips svg boundary (SVG root is a RenderReplaced).
-        if (CheckedPtr svgRoot = SVGRenderSupport::findTreeRootObject(downcast<RenderElement>(renderer)))
+        if (auto* svgRoot = SVGRenderSupport::findTreeRootObject(downcast<RenderElement>(renderer)))
             inheritedFlowState = svgRoot->fragmentedFlowState();
     } else if (CheckedPtr container = renderer.container())
         inheritedFlowState = container->fragmentedFlowState();
@@ -517,7 +519,7 @@ static inline bool isLayoutBoundary(const RenderElement& renderer)
         return true;
 
     auto& style = renderer.style();
-    if (CheckedPtr textControl = dynamicDowncast<RenderTextControl>(renderer)) {
+    if (auto* textControl = dynamicDowncast<RenderTextControl>(renderer)) {
         if (!textControl->isFlexItem() && !textControl->isGridItem() && style.fieldSizing() != FieldSizing::Content) {
             // Flexing type of layout systems may compute different size than what input's preferred width is which won't happen unless they run their layout as well.
             return true;
@@ -651,8 +653,10 @@ RenderElement* RenderObject::markContainingBlocksForLayout(RenderElement* layout
     return { };
 }
 
-void RenderObject::setNeedsPreferredWidthsUpdate(MarkingBehavior markParents)
+void RenderObject::setNeedsPreferredWidthsUpdate(MarkingBehavior markParents, const RenderBlock* ancestorUpdateBoundary)
 {
+    ASSERT_IMPLIES(ancestorUpdateBoundary, markParents == MarkingBehavior::MarkContainingBlockChain);
+
     if (needsPreferredLogicalWidthsUpdate() && (!hasRareData() || !rareData().preferredLogicalWidthsNeedUpdateIsMarkOnlyThis)) {
         // Both this and our ancestor chain are already marked dirty.
         return;
@@ -664,22 +668,24 @@ void RenderObject::setNeedsPreferredWidthsUpdate(MarkingBehavior markParents)
         return;
     }
 
-    if (markParents == MarkOnlyThis) {
+    if (markParents == MarkingBehavior::MarkOnlyThis) {
         ensureRareData().preferredLogicalWidthsNeedUpdateIsMarkOnlyThis = true;
         return;
     }
 
-    invalidateContainerPreferredLogicalWidths();
+    invalidateContainerPreferredLogicalWidths(ancestorUpdateBoundary);
     if (hasRareData())
         ensureRareData().preferredLogicalWidthsNeedUpdateIsMarkOnlyThis = false;
 }
 
-void RenderObject::invalidateContainerPreferredLogicalWidths()
+void RenderObject::invalidateContainerPreferredLogicalWidths(const RenderBlock* ancestorUpdateBoundary)
 {
     // In order to avoid pathological behavior when inlines are deeply nested, we do include them
     // in the chain that we mark dirty (even though they're kind of irrelevant).
     CheckedPtr ancestor = isRenderTableCell() ? containingBlock() : container();
     while (ancestor) {
+        if (ancestor.get() == ancestorUpdateBoundary)
+            break;
         if (ancestor->needsPreferredLogicalWidthsUpdate() && (!ancestor->hasRareData() || !ancestor->rareData().preferredLogicalWidthsNeedUpdateIsMarkOnlyThis))
             break;
         // Don't invalidate the outermost object of an unrooted subtree. That object will be
@@ -809,7 +815,7 @@ void RenderObject::collectSelectionGeometries(Vector<SelectionGeometry>& geometr
     }
 
     for (auto& quad : quads)
-        geometries.append(SelectionGeometry(quad, HTMLElement::selectionRenderingBehavior(protect(node()).get()), isHorizontalWritingMode(), protect(view())->pageNumberForBlockProgressionOffset(quad.enclosingBoundingBox().x())));
+        geometries.append(SelectionGeometry(quad, HTMLElement::selectionRenderingBehavior(node()), isHorizontalWritingMode(), view().pageNumberForBlockProgressionOffset(quad.enclosingBoundingBox().x())));
 }
 
 IntRect RenderObject::absoluteBoundingBoxRect(bool useTransforms, bool* wasFixed) const
@@ -931,8 +937,8 @@ void RenderObject::propagateRepaintToParentWithOutlineAutoIfNeeded(const RenderL
     for (CheckedPtr renderer = this; renderer; renderer = renderer->parent()) {
         CheckedPtr originalRenderer = renderer;
         if (CheckedPtr previousMultiColumnSet = dynamicDowncast<RenderMultiColumnSet>(renderer->previousSibling()); previousMultiColumnSet && !renderer->isRenderMultiColumnSet() && !renderer->isLegend()) {
-            CheckedPtr enclosingMultiColumnFlow = previousMultiColumnSet->multiColumnFlow();
-            CheckedPtr renderMultiColumnPlaceholder = enclosingMultiColumnFlow->findColumnSpannerPlaceholder(downcast<RenderBox>(*renderer));
+            auto* enclosingMultiColumnFlow = previousMultiColumnSet->multiColumnFlow();
+            auto* renderMultiColumnPlaceholder = enclosingMultiColumnFlow->findColumnSpannerPlaceholder(downcast<RenderBox>(*renderer));
             ASSERT(renderMultiColumnPlaceholder);
             renderer = WTF::move(renderMultiColumnPlaceholder);
         }
@@ -1453,8 +1459,8 @@ void RenderObject::outputRenderSubTreeAndMark(TextStream& stream, const RenderOb
 FloatPoint RenderObject::localToAbsolute(const FloatPoint& localPoint, OptionSet<MapCoordinatesMode> mode, bool* wasFixed) const
 {
     TransformState transformState(TransformState::ApplyTransformDirection, localPoint);
-    mapLocalToContainer(nullptr, transformState, mode | ApplyContainerFlip, wasFixed);
-    
+    mapLocalToContainer(nullptr, transformState, mode | MapCoordinatesMode::ApplyContainerFlip, wasFixed);
+
     return transformState.mappedPoint();
 }
 
@@ -1463,7 +1469,7 @@ FloatPoint RenderObject::localToAbsolute(const FloatPoint& localPoint, OptionSet
 TransformState RenderObject::viewTransitionTransform() const
 {
     TransformState transformState(TransformState::ApplyTransformDirection, FloatPoint { });
-    OptionSet<MapCoordinatesMode> mode { UseTransforms, ApplyContainerFlip };
+    OptionSet<MapCoordinatesMode> mode { MapCoordinatesMode::UseTransforms, MapCoordinatesMode::ApplyContainerFlip };
     mapLocalToContainer(nullptr, transformState, mode, nullptr);
     return transformState;
 }
@@ -1496,10 +1502,10 @@ void RenderObject::mapLocalToContainer(const RenderLayerModelObject* ancestorCon
     // FIXME: this should call offsetFromContainer to share code, but I'm not sure it's ever called.
     LayoutPoint centerPoint(transformState.mappedPoint());
     if (auto* parentAsBox = dynamicDowncast<RenderBox>(*parent)) {
-        if (mode.contains(ApplyContainerFlip)) {
+        if (mode.contains(MapCoordinatesMode::ApplyContainerFlip)) {
             if (parentAsBox->writingMode().isBlockFlipped())
                 transformState.move(parentAsBox->flipForWritingMode(LayoutPoint(transformState.mappedPoint())) - centerPoint);
-            mode.remove(ApplyContainerFlip);
+            mode.remove(MapCoordinatesMode::ApplyContainerFlip);
         }
         transformState.move(-toLayoutSize(parentAsBox->scrollPosition()));
     }
@@ -1535,6 +1541,13 @@ void RenderObject::getTransformFromContainer(const LayoutSize& offsetInContainer
     CheckedPtr<RenderLayer> layer;
     if (hasLayer() && (layer = downcast<RenderLayerModelObject>(*this).layer()) && layer->transform())
         transform.multiply(layer->currentTransform());
+    else if (document().settings().layerBasedSVGEngineEnabled()) {
+        // Non-layered SVG elements: use the renderer's cached local SVG transform.
+        if (auto* svgModel = dynamicDowncast<RenderSVGModelObject>(*this)) {
+            if (auto svgTransform = svgModel->localTransform(); !svgTransform.isIdentity())
+                transform.multiply(TransformationMatrix(svgTransform));
+        }
+    }
 
     CheckedPtr perspectiveObject = parent();
 
@@ -1554,8 +1567,8 @@ void RenderObject::getTransformFromContainer(const LayoutSize& offsetInContainer
 
 void RenderObject::pushOntoTransformState(TransformState& transformState, OptionSet<MapCoordinatesMode> mode, const RenderLayerModelObject* repaintContainer, const RenderElement* container, const LayoutSize& offsetInContainer, bool containerSkipped) const
 {
-    bool preserve3D = mode.contains(UseTransforms) && participatesInPreserve3D();
-    if (mode.contains(UseTransforms) && shouldUseTransformFromContainer(container)) {
+    bool preserve3D = mode.contains(MapCoordinatesMode::UseTransforms) && participatesInPreserve3D();
+    if (mode.contains(MapCoordinatesMode::UseTransforms) && shouldUseTransformFromContainer(container)) {
         TransformationMatrix matrix;
         getTransformFromContainer(offsetInContainer, matrix);
         transformState.applyTransform(matrix, preserve3D ? TransformState::AccumulateTransform : TransformState::FlattenTransform);
@@ -1575,15 +1588,15 @@ FloatQuad RenderObject::localToContainerQuad(const FloatQuad& localQuad, const R
     // Track the point at the center of the quad's bounding box. As mapLocalToContainer() calls offsetFromContainer(),
     // it will use that point as the reference point to decide which column's transform to apply in multiple-column blocks.
     TransformState transformState(TransformState::ApplyTransformDirection, localQuad.boundingBox().center(), localQuad);
-    mapLocalToContainer(container, transformState, mode | ApplyContainerFlip, wasFixed);
-    
+    mapLocalToContainer(container, transformState, mode | MapCoordinatesMode::ApplyContainerFlip, wasFixed);
+
     return transformState.mappedQuad();
 }
 
 FloatPoint RenderObject::localToContainerPoint(const FloatPoint& localPoint, const RenderLayerModelObject* container, OptionSet<MapCoordinatesMode> mode, bool* wasFixed) const
 {
     TransformState transformState(TransformState::ApplyTransformDirection, localPoint);
-    mapLocalToContainer(container, transformState, mode | ApplyContainerFlip, wasFixed);
+    mapLocalToContainer(container, transformState, mode | MapCoordinatesMode::ApplyContainerFlip, wasFixed);
 
     return transformState.mappedPoint();
 }
@@ -1702,6 +1715,16 @@ RenderElement* RenderObject::container(const RenderLayerModelObject* repaintCont
 {
     repaintContainerSkipped = false;
     return containerForElement(*this, repaintContainer, &repaintContainerSkipped);
+}
+
+bool RenderObject::isAncestorContainerOfRenderer(const RenderObject& descendant) const
+{
+    for (CheckedPtr renderer = &descendant; renderer; renderer = renderer->container()) {
+        if (renderer == this)
+            return true;
+    }
+
+    return false;
 }
 
 bool RenderObject::isSelectionBorder() const
@@ -1828,22 +1851,22 @@ bool RenderObject::isComposited() const
 bool RenderObject::hitTest(const HitTestRequest& request, HitTestResult& result, const HitTestLocation& locationInContainer, const LayoutPoint& accumulatedOffset, HitTestFilter hitTestFilter)
 {
     bool inside = false;
-    if (hitTestFilter != HitTestSelf) {
+    if (hitTestFilter != HitTestFilter::Self) {
         // First test the foreground layer (lines and inlines).
-        inside = nodeAtPoint(request, result, locationInContainer, accumulatedOffset, HitTestForeground);
+        inside = nodeAtPoint(request, result, locationInContainer, accumulatedOffset, HitTestAction::Foreground);
 
         // Test floats next.
         if (!inside)
-            inside = nodeAtPoint(request, result, locationInContainer, accumulatedOffset, HitTestFloat);
+            inside = nodeAtPoint(request, result, locationInContainer, accumulatedOffset, HitTestAction::Float);
 
         // Finally test to see if the mouse is in the background (within a child block's background).
         if (!inside)
-            inside = nodeAtPoint(request, result, locationInContainer, accumulatedOffset, HitTestChildBlockBackgrounds);
+            inside = nodeAtPoint(request, result, locationInContainer, accumulatedOffset, HitTestAction::ChildBlockBackgrounds);
     }
 
     // See if the mouse is inside us but not any of our descendants
-    if (hitTestFilter != HitTestDescendants && !inside)
-        inside = nodeAtPoint(request, result, locationInContainer, accumulatedOffset, HitTestBlockBackground);
+    if (hitTestFilter != HitTestFilter::Descendants && !inside)
+        inside = nodeAtPoint(request, result, locationInContainer, accumulatedOffset, HitTestAction::BlockBackground);
 
     return inside;
 }
@@ -1914,7 +1937,7 @@ PositionWithAffinity RenderObject::createPositionWithAffinity(int offset, Affini
     if (RefPtr node = nonPseudoNode()) {
         if (!node->hasEditableStyle()) {
             // If it can be found, we prefer a visually equivalent position that is editable. 
-            Position position = makeDeprecatedLegacyPosition(node.get(), offset);
+            Position position = makeDeprecatedLegacyPosition(node.get(), convertOffsetInTextFragmentToNodeOffset(*this, offset));
             Position candidate = position.downstream(CanCrossEditingBoundary);
             if (candidate.deprecatedNode()->hasEditableStyle())
                 return PositionWithAffinity(candidate, affinity);
@@ -1923,7 +1946,7 @@ PositionWithAffinity RenderObject::createPositionWithAffinity(int offset, Affini
                 return PositionWithAffinity(candidate, affinity);
         }
         // FIXME: Eliminate legacy editing positions
-        return PositionWithAffinity(makeDeprecatedLegacyPosition(node.get(), offset), affinity);
+        return PositionWithAffinity(makeDeprecatedLegacyPosition(node.get(), convertOffsetInTextFragmentToNodeOffset(*this, offset)), affinity);
     }
 
     // We don't want to cross the boundary between editable and non-editable
@@ -1978,7 +2001,7 @@ const RenderStyle& RenderObject::outlineStyleForRepaint() const
 
 CursorDirective RenderObject::getCursor(const LayoutPoint&, Cursor&) const
 {
-    return SetCursorBasedOnStyle;
+    return CursorDirective::SetCursorBasedOnStyle;
 }
 
 bool RenderObject::useDarkAppearance() const
@@ -2179,7 +2202,34 @@ static Vector<FloatRect> absoluteRectsForRangeInText(const SimpleRange& range, T
         offsetRange.start--;
     if (offsetRange.end < node.data().length() && offsetRange.end && U16_IS_TRAIL(node.data()[offsetRange.end]) && U16_IS_LEAD(node.data()[offsetRange.end - 1]))
         offsetRange.end++;
-    auto textQuads = renderer->absoluteQuadsForRange(offsetRange.start, offsetRange.end, behavior);
+
+    Vector<FloatQuad> textQuads;
+    auto handleFirstLetterQuads = [&] {
+        CheckedPtr textFragmentWithRemainingTextAfterFirstLetter = dynamicDowncast<RenderTextFragment>(*renderer);
+        if (!textFragmentWithRemainingTextAfterFirstLetter || !textFragmentWithRemainingTextAfterFirstLetter->firstLetter())
+            return false;
+
+        auto remainingTextStart = textFragmentWithRemainingTextAfterFirstLetter->start();
+        if (offsetRange.start < remainingTextStart) {
+            if (CheckedPtr firstLetterRenderer = dynamicDowncast<RenderText>(textFragmentWithRemainingTextAfterFirstLetter->firstLetter()->firstChild())) {
+                auto firstLetterEnd = std::min(offsetRange.end, remainingTextStart);
+                textQuads.appendVector(firstLetterRenderer->absoluteQuadsForRange(offsetRange.start, firstLetterEnd, behavior));
+            }
+            offsetRange.start = 0;
+            offsetRange.end = offsetRange.end > remainingTextStart ? offsetRange.end - remainingTextStart : 0;
+            return true;
+        }
+
+        ASSERT(offsetRange.start >= remainingTextStart);
+        ASSERT(offsetRange.end >= remainingTextStart);
+        offsetRange.start -= remainingTextStart;
+        offsetRange.end -= remainingTextStart;
+        return true;
+    };
+
+    auto hasFirstLetter = handleFirstLetterQuads();
+    if (!hasFirstLetter || offsetRange.start < offsetRange.end)
+        textQuads.appendVector(renderer->absoluteQuadsForRange(offsetRange.start, offsetRange.end, behavior));
 
     if (behavior.contains(RenderObject::BoundingRectBehavior::RespectClipping)) {
         auto absoluteClippedOverflowRect = renderer->absoluteClippedOverflowRectForRepaint();
@@ -2229,7 +2279,7 @@ static Vector<FloatRect> borderAndTextRects(const SimpleRange& range, Coordinate
 {
     Vector<FloatRect> rects;
 
-    protect(range.start.document())->updateLayoutIgnorePendingStylesheets();
+    range.start.document().updateLayoutIgnorePendingStylesheets();
 
     bool useVisibleBounds = behavior.contains(RenderObject::BoundingRectBehavior::UseVisibleBounds);
 
@@ -2594,7 +2644,7 @@ static bool NODELETE shouldRenderSelectionOnSeparateLine(const RenderObject* cur
 
 static bool NODELETE hasAncestorWithSelectionOnSeparateLine(RenderObject* descendant, const RenderObject* stayWithin)
 {
-    for (CheckedPtr current = descendant; current; current = current->parent()) {
+    for (auto* current = descendant; current; current = current->parent()) {
         if (current->isOutOfFlowPositioned())
             return true;
         if (current->isRenderMultiColumnFlow())
@@ -2694,8 +2744,8 @@ auto RenderObject::collectSelectionGeometriesInternal(const SimpleRange& range) 
     // The range could span nodes with different writing modes.
     // If this is the case, we use the writing mode of the common ancestor.
     if (containsDifferentWritingModes) {
-        if (RefPtr ancestor = commonInclusiveAncestor<ComposedTree>(range)) {
-            if (CheckedPtr renderer = ancestor->renderer())
+        if (auto* ancestor = commonInclusiveAncestor<ComposedTree>(range)) {
+            if (auto* renderer = ancestor->renderer())
                 hasFlippedWritingMode = renderer->writingMode().isBlockFlipped();
         }
     }

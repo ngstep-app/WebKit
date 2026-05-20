@@ -78,17 +78,20 @@ namespace JSC {
     macro(resolvePromise) \
     macro(rejectPromise) \
     macro(fulfillPromise) \
+    macro(markPromiseAsHandled) \
+    macro(isPromiseStatePending) \
     macro(resolvePromiseWithFirstResolvingFunctionCallCheck) \
     macro(rejectPromiseWithFirstResolvingFunctionCallCheck) \
     macro(fulfillPromiseWithFirstResolvingFunctionCallCheck) \
+    macro(newResolvedPromise) \
+    macro(newRejectedPromise) \
     macro(resolveWithInternalMicrotaskForAsyncAwait) \
     macro(asyncGeneratorQueueEnqueue) \
     macro(asyncGeneratorQueueDequeueResolve) \
     macro(asyncGeneratorQueueDequeueReject) \
     macro(driveAsyncFunction) \
     macro(newHandledRejectedPromise) \
-    macro(promiseEmptyOnFulfilled) \
-    macro(promiseEmptyOnRejected) \
+    macro(promiseReturnUndefinedOnFulfilled) \
     macro(promiseResolve) \
     macro(promiseReject) \
     macro(performPromiseThen) \
@@ -140,10 +143,7 @@ namespace JSC {
     macro(isResizableOrGrowableSharedTypedArrayView) \
     macro(isDetached) \
     macro(typedArrayFromFast) \
-    macro(isBoundFunction) \
-    macro(hasInstanceBoundFunction) \
     macro(instanceOf) \
-    macro(isArraySlow) \
     macro(isArray) \
     macro(sameValue) \
     macro(regExpCreate) \
@@ -185,18 +185,19 @@ namespace JSC {
     macro(regExpSplitFast) \
     macro(stringIncludesInternal) \
     macro(stringIndexOfInternal) \
-    macro(stringSplitFast) \
     macro(stringSubstring) \
     macro(handleNegativeProxyHasTrapResult) \
     macro(handlePositiveProxySetTrapResult) \
     macro(handleProxyGetTrapResult) \
     macro(importModule) \
     macro(moduleFetchFailureKind) \
+    macro(moduleFailureModuleRecord) \
+    macro(moduleFailureModuleKey) \
+    macro(moduleFailureModuleType) \
+    macro(moduleFailureKind) \
     macro(copyDataProperties) \
     macro(cloneObject) \
     macro(meta) \
-    macro(webAssemblyCompileStreamingInternal) \
-    macro(webAssemblyInstantiateStreamingInternal) \
     macro(instanceFieldInitializer) \
     macro(privateBrand) \
     macro(privateClassBrand) \

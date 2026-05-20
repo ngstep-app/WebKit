@@ -25,6 +25,7 @@
 
 #include "config.h"
 #include "JITPlan.h"
+#include "DFGCommon.h"
 
 #if ENABLE(JIT)
 
@@ -39,7 +40,7 @@
 #include <wtf/CompilationThread.h>
 #include <wtf/StringPrintStream.h>
 #include <wtf/SystemTracing.h>
-#include <wtf/text/StringConcatenate.h>
+#include <wtf/text/MakeString.h>
 
 namespace JSC {
 

@@ -62,6 +62,7 @@ public:
     virtual ~RemoteMeshProxy();
 
     RemoteGPUProxy& root() const { return m_root; }
+    static bool supportsTransform(const WebCore::TransformationMatrix&);
 
 private:
     friend class ModelDowncastConvertToBackingContext;
@@ -88,33 +89,34 @@ private:
         return protect(root().streamClientConnection())->sendWithAsyncReply(WTF::move(message), WTF::move(completionHandler), backing());
     }
 
-    void update(const WebModel::UpdateMeshDescriptor&) final;
-    void updateTexture(const WebModel::UpdateTextureDescriptor&) final;
-    void updateMaterial(const WebModel::UpdateMaterialDescriptor&) final;
+    void update(Vector<WebModel::UpdateMeshDescriptor>&&) final;
+    void updateTexture(Vector<WebModel::UpdateTextureDescriptor>&&) final;
+    void updateMaterial(Vector<WebModel::UpdateMaterialDescriptor>&&) final;
 #if PLATFORM(COCOA)
     std::pair<simd_float4, simd_float4> getCenterAndExtents() const final;
     void sizeDidChange(unsigned, unsigned, CompletionHandler<void(Vector<MachSendRight>&&)>&&) final;
 #endif
     void play(bool) final;
 
-    void render() final;
+    void render(uint32_t textureIndex, Function<void(bool)>&&) final;
     void setLabelInternal(const String&) final;
     void setEntityTransform(const WebModel::Float4x4&) final;
     void NODELETE setEntityTransformInternal(const WebModel::Float4x4&);
 #if PLATFORM(COCOA)
     std::optional<WebModel::Float4x4> entityTransform() const final;
 #endif
-    bool supportsTransform(const WebCore::TransformationMatrix&) const final;
     void setScale(float) final;
     void setFOV(float);
     void setBackgroundColor(const WebModel::Float3&) final;
     void setViewportSize(float, float) final;
     void setStageMode(WebCore::StageModeOperation) final;
+    void processRemovals(Vector<WebModel::TypedResourceId>&& meshRemovals, Vector<WebModel::TypedResourceId>&& materialRemovals, Vector<WebModel::TypedResourceId>&& textureRemovals, CompletionHandler<void(bool)>&&) final;
 #if ENABLE(GPU_PROCESS_MODEL)
     void computeTransform();
     void setRotation(float yaw, float pitch, float roll) final;
 #endif
-    void setEnvironmentMap(const WebModel::ImageAsset&) final;
+    void setEnvironmentMap(const WebModel::UpdateTextureDescriptor&) final;
+    void updateContentsHeadroom(float) final;
 
     const WebModelIdentifier m_backing;
     const Ref<ModelConvertToBackingContext> m_convertToBackingContext;
@@ -129,6 +131,7 @@ private:
     float m_viewportWidth { 0.f };
     float m_viewportHeight { 0.f };
     WebCore::StageModeOperation m_stageMode;
+    bool m_entityTransformSetByScript { false };
 #endif
 };
 

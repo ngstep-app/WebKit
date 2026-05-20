@@ -207,7 +207,11 @@ void BrowsingContextGroup::removeFrameProcess(FrameProcess& process)
 
 void BrowsingContextGroup::addPage(WebPageProxy& page)
 {
-    ASSERT(!m_pages.contains(page));
+    if (m_pages.contains(page)) {
+        // This only happens when restoring a page from a suspended BCG, which holds exactly this one page.
+        ASSERT(!hasMultiplePages());
+        return;
+    }
     m_pages.add(page);
     auto& set = m_remotePages.ensure(page, [] {
         return HashSet<Ref<RemotePageProxy>> { };
@@ -246,8 +250,18 @@ void BrowsingContextGroup::addRemotePage(WebPageProxy& page, Ref<RemotePageProxy
 void BrowsingContextGroup::removePage(WebPageProxy& page)
 {
     m_pages.remove(page);
+    closeRemotePagesForPage(page);
+}
+
+void BrowsingContextGroup::closeRemotePagesForPage(WebPageProxy& page)
+{
     for (auto& remotePage : m_remotePages.take(page))
-        remotePage->disconnect();
+        protect(remotePage)->disconnect();
+}
+
+bool BrowsingContextGroup::hasMultiplePages() const
+{
+    return m_pages.computeSize() > 1;
 }
 
 void BrowsingContextGroup::forEachRemotePage(const WebPageProxy& page, Function<void(RemotePageProxy&)>&& function)
@@ -264,9 +278,9 @@ RefPtr<RemotePageProxy> BrowsingContextGroup::remotePageInProcess(const WebPageP
     auto it = m_remotePages.find(page);
     if (it == m_remotePages.end())
         return nullptr;
-    for (Ref remotePage : it->value) {
+    for (auto& remotePage : it->value) {
         if (remotePage->process().coreProcessIdentifier() == process.coreProcessIdentifier())
-            return remotePage;
+            return remotePage.ptr();
     }
     return nullptr;
 }
@@ -288,7 +302,7 @@ void BrowsingContextGroup::transitionPageToRemotePage(WebPageProxy& page, const 
         return HashSet<Ref<RemotePageProxy>> { };
     }).iterator->value;
 
-    Ref newRemotePage = RemotePageProxy::create(page, protect(page.legacyMainFrameProcess()), openerSite, &page.messageReceiverRegistration(), page.webPageIDInMainFrameProcess());
+    Ref newRemotePage = RemotePageProxy::create(page, protect(page.legacyMainFrameProcess()), openerSite, nullptr, page.webPageIDInMainFrameProcess());
 #if ASSERT_ENABLED
     for (auto& existingPage : set) {
         ASSERT(existingPage->process().coreProcessIdentifier() != newRemotePage->process().coreProcessIdentifier() || existingPage->site() != newRemotePage->site());

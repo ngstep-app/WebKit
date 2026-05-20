@@ -39,8 +39,10 @@
 #include "RemotePageFullscreenManagerProxy.h"
 #include "RemotePageScreenOrientationManagerProxy.h"
 #include "RemotePageVisitedLinkStoreRegistration.h"
+#include "RemotePageWebAuthenticatorCoordinatorProxy.h"
 #include "RemotePageWebDeviceOrientationUpdateProviderProxy.h"
 #include "UserMediaProcessManager.h"
+#include "WebAuthenticatorCoordinatorProxy.h"
 #include "WebBackForwardList.h"
 #include "WebBackForwardListMessages.h"
 #include "WebFrameProxy.h"
@@ -133,6 +135,9 @@ void RemotePageProxy::disconnect()
     m_visitedLinkStoreRegistration = nullptr;
     m_messageReceiverRegistration.stopReceivingMessages();
     m_screenOrientationManager = nullptr;
+#if ENABLE(WEB_AUTHN)
+    m_webAuthenticatorCoordinator = nullptr;
+#endif
 #if ASSERT_ENABLED
     m_disconnected = true;
 #endif
@@ -168,6 +173,11 @@ void RemotePageProxy::injectPageIntoNewProcess()
     if (RefPtr screenOrientationManager = page->screenOrientationManager())
         m_screenOrientationManager = RemotePageScreenOrientationManagerProxy::create(m_webPageID, screenOrientationManager.get(), m_process);
 
+#if ENABLE(WEB_AUTHN)
+    if (RefPtr authenticatorCoordinator = page->webAuthenticatorCoordinatorProxy())
+        m_webAuthenticatorCoordinator = RemotePageWebAuthenticatorCoordinatorProxy::create(m_webPageID, authenticatorCoordinator.get(), m_process);
+#endif
+
     m_visitedLinkStoreRegistration = makeUnique<RemotePageVisitedLinkStoreRegistration>(*page, m_process);
 
     RefPtr websitePolicies = page->mainFrameWebsitePolicies();
@@ -175,7 +185,7 @@ void RemotePageProxy::injectPageIntoNewProcess()
         Messages::WebProcess::CreateWebPage(
             m_webPageID,
             page->creationParametersForRemotePage(m_process, drawingArea.get(), RemotePageParameters {
-                URL(page->pageLoadState().url()),
+                page->pageLoadState().url(),
                 protect(page->mainFrame())->frameTreeCreationParameters(),
                 websitePolicies ? std::make_optional(websitePolicies->dataForProcess(m_process)) : std::nullopt
             })
@@ -217,6 +227,10 @@ void RemotePageProxy::didReceiveMessage(IPC::Connection& connection, IPC::Decode
     }
     if (decoder.messageName() == Messages::WebPageProxy::SetNetworkRequestsInProgress::name()) {
         IPC::handleMessage<Messages::WebPageProxy::SetNetworkRequestsInProgress>(connection, decoder, this, &RemotePageProxy::setNetworkRequestsInProgress);
+        return;
+    }
+    if (decoder.messageName() == Messages::WebPageProxy::SetCanShortCircuitHorizontalWheelEvents::name()) {
+        IPC::handleMessage<Messages::WebPageProxy::SetCanShortCircuitHorizontalWheelEvents>(connection, decoder, this, &RemotePageProxy::setCanShortCircuitHorizontalWheelEvents);
         return;
     }
 #if HAVE(VISIBILITY_PROPAGATION_VIEW)
@@ -289,6 +303,20 @@ void RemotePageProxy::setNetworkRequestsInProgress(bool hasNetworkRequestsInProg
     page->networkRequestsInProgressDidChange();
 }
 
+void RemotePageProxy::setCanShortCircuitHorizontalWheelEvents(bool canShortCircuitHorizontalWheelEvents)
+{
+    if (m_canShortCircuitHorizontalWheelEvents == canShortCircuitHorizontalWheelEvents)
+        return;
+
+    m_canShortCircuitHorizontalWheelEvents = canShortCircuitHorizontalWheelEvents;
+
+    RefPtr page = m_page.get();
+    if (!page || page->isClosed())
+        return;
+
+    page->updateCanShortCircuitHorizontalWheelEvents();
+}
+
 void RemotePageProxy::setDrawingArea(DrawingAreaProxy* drawingArea)
 {
     RefPtr page = m_page.get();
@@ -310,7 +338,7 @@ void RemotePageProxy::setDrawingArea(DrawingAreaProxy* drawingArea)
         Messages::WebProcess::CreateWebPage(
             m_webPageID,
             page->creationParametersForRemotePage(m_process, *drawingArea, RemotePageParameters {
-                URL(page->pageLoadState().url()),
+                page->pageLoadState().url(),
                 mainFrame->frameTreeCreationParameters(),
                 websitePolicies ? std::make_optional(websitePolicies->dataForProcess(m_process)) : std::nullopt
             })
@@ -327,6 +355,13 @@ void RemotePageProxy::setCurrentOrientation(WebCore::ScreenOrientationType orien
     if (RefPtr manager = page->screenOrientationManager())
         manager->setCurrentOrientation(orientation);
 }
+
+#if ENABLE(DEVICE_ORIENTATION)
+void RemotePageProxy::clearDeviceOrientationAndMotionPermissions()
+{
+    m_process->send(Messages::WebPage::ClearDeviceOrientationAndMotionPermissions(), m_webPageID);
+}
+#endif
 
 #if HAVE(VISIBILITY_PROPAGATION_VIEW)
 void RemotePageProxy::didCreateContextInWebProcessForVisibilityPropagation(LayerHostingContextID contextID)

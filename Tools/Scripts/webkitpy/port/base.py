@@ -132,6 +132,23 @@ class Port(object):
     def determine_driver_name(cls, options):
         return (getattr(options, 'driver_names', []) or cls.DRIVER_NAMES)[0]
 
+    @staticmethod
+    def test_name_and_variant(test_name):
+        """Splits a test name into the filename part and the variant part."""
+        if '?' in test_name:
+            name, sep, variant = test_name.partition('?')
+            return (name, sep + variant)
+
+        if '#' in test_name:
+            name, sep, variant = test_name.partition('#')
+            return (name, sep + variant)
+
+        return (test_name, '')
+
+    @staticmethod
+    def sanitized_variant(variant):
+        return re.sub(r'[|* <>:/%]', '_', variant)
+
     def __init__(self, host, port_name, options=None, **kwargs):
 
         # This value may be different from cls.port_name by having version modifiers
@@ -155,7 +172,12 @@ class Port(object):
         self._executive = host.executive
         self._filesystem = host.filesystem
         self._webkit_finder = WebKitFinder(host.filesystem)
-        self._config = port_config.Config(self._executive, self._filesystem, self.port_name)
+        self._config = port_config.Config(
+            self._executive,
+            self._filesystem,
+            self.port_name,
+            use_cmake=bool(getattr(self._options, 'use_cmake', False)),
+        )
         self.pretty_patch = PrettyPatch(self._executive, self.path_from_webkit_base(), self._filesystem)
 
         self._http_server = None
@@ -287,6 +309,14 @@ class Port(object):
             if filter_fn(shard):
                 return group
         return None
+
+    def filter_api_tests_by_allowlist(self, tests):
+        """Split API tests into allowlisted (parallel) and non-allowlisted (system) groups.
+
+        Default implementation: all tests are allowlisted (no system shard).
+        Override in platform-specific ports to implement allowlist filtering.
+        """
+        return tests, []
 
     def check_build(self):
         """This routine is used to ensure that the build is up to date
@@ -426,17 +456,13 @@ class Port(object):
         baseline_search_path = self.baseline_search_path(device_type=device_type) + [self.layout_tests_dir()]
         fs = self._filesystem
 
-        variant = ''
-        if '?' in test_name:
-            (test_name, variant) = test_name.split('?', 1)
-        if '#' in test_name:
-            (test_name, variant) = test_name.split('#', 1)
+        (test_name, variant) = Port.test_name_and_variant(test_name)
 
         baseline_ext_parts = fs.splitext(test_name)
 
         baseline_name_root = baseline_ext_parts[0]
         if len(variant):
-            baseline_name_root += "_" + re.sub(r'[|* <>:]', '_', variant)
+            baseline_name_root += "_" + Port.sanitized_variant(variant[1:])
         baseline_name_root += '-expected'
 
         baselines = []
@@ -1258,6 +1284,65 @@ class Port(object):
 
     def path_to_api_test_binaries(self):
         return {binary: self.path_to_api_test(binary) for binary in self.API_TEST_BINARY_NAMES}
+
+    def api_test_expectations_dir(self):
+        return self._filesystem.join(self.path_from_webkit_base(), 'TestExpectations')
+
+    def _apple_api_test_expectations_path(self, platform):
+        if not port_config.apple_additions():
+            return None
+        internal_base = port_config.apple_additions().layout_tests_path()
+        parent = self._filesystem.dirname(internal_base)
+        return self._filesystem.join(parent, 'APITestExpectationsForUnreleasedSoftware', platform)
+
+    def api_test_expectations_files(self):
+        files = []
+        base = self.api_test_expectations_dir()
+
+        files.append(self._filesystem.join(base, 'apitests'))
+
+        for platform_entry in self._api_test_platform_cascade():
+            if isinstance(platform_entry, tuple):
+                public_name, internal_name = platform_entry
+            else:
+                public_name = platform_entry
+                internal_name = None
+
+            files.append(self._filesystem.join(base, 'platform', public_name, 'apitests'))
+
+            if internal_name and port_config.apple_additions():
+                internal_path = self._apple_api_test_expectations_path(internal_name)
+                if internal_path:
+                    files.append(self._filesystem.join(internal_path, 'apitests'))
+
+        return files
+
+    def api_test_version_order(self):
+        return []
+
+    def api_test_current_configuration(self):
+        config = {}
+        config['platform'] = self.port_name.split('-')[0] if self.port_name else None
+
+        configuration = self.get_option('configuration')
+        if configuration:
+            config['style'] = configuration.lower()
+
+        if hasattr(self, 'architecture') and self.architecture():
+            config['architecture'] = self.architecture()
+
+        return config
+
+    def _api_test_platform_cascade(self):
+        cascade = []
+        port_name = self.port_name
+        if 'mac' in port_name:
+            cascade.append('mac')
+        elif 'ios' in port_name:
+            cascade.append('ios')
+            if 'simulator' in port_name:
+                cascade.append('ios-simulator')
+        return cascade
 
     def _webkit_baseline_path(self, platform):
         """Return the  full path to the top of the baseline tree for a

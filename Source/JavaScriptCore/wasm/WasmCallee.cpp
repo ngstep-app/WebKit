@@ -28,6 +28,7 @@
 
 #if ENABLE(WEBASSEMBLY)
 
+#include "CalleeBits.h"
 #include "InPlaceInterpreter.h"
 #include "JSCJSValueInlines.h"
 #include "JSToWasm.h"
@@ -56,13 +57,26 @@ WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(Callee);
 WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(JITCallee);
 WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(JSToWasmCallee);
 WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(WasmToJSCallee);
-WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(JSToWasmICCallee);
-WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(OptimizingJITCallee);
-WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(OMGCallee);
-WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(OMGOSREntryCallee);
-WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(BBQCallee);
+WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(RestoreFrameCallee);
 WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(IPIntCallee);
 WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(WasmBuiltinCallee);
+
+#if ENABLE(JIT)
+WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(JSToWasmICCallee);
+#endif
+
+#if ENABLE(WEBASSEMBLY_BBQJIT) || ENABLE(WEBASSEMBLY_OMGJIT)
+WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(OptimizingJITCallee);
+#endif
+
+#if ENABLE(WEBASSEMBLY_BBQJIT)
+WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(BBQCallee);
+#endif
+
+#if ENABLE(WEBASSEMBLY_OMGJIT)
+WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(OMGCallee);
+WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(OMGOSREntryCallee);
+#endif
 
 Callee::Callee(Wasm::CompilationMode compilationMode)
     : NativeCallee(NativeCallee::Category::Wasm, ImplementationVisibility::Private)
@@ -130,6 +144,9 @@ inline void Callee::runWithDowncast(const Func& func)
     case CompilationMode::WasmBuiltinMode:
         func(uncheckedDowncast<WasmBuiltinCallee>(this));
         break;
+    case CompilationMode::RestoreFrameMode:
+        func(uncheckedDowncast<RestoreFrameCallee>(this));
+        break;
     }
 }
 
@@ -182,6 +199,17 @@ std::tuple<void*, void*> Callee::range() const
     });
     return result;
 }
+
+#if ENABLE(JIT)
+Box<PCToCodeOriginMap> Callee::pcToCodeOriginMap() const
+{
+    Box<PCToCodeOriginMap> result;
+    runWithDowncast([&](auto* derived) {
+        result = derived->pcToCodeOriginMapImpl();
+    });
+    return result;
+}
+#endif
 
 const RegisterAtOffsetList* Callee::calleeSaveRegisters()
 {
@@ -247,21 +275,40 @@ WasmToJSCallee& WasmToJSCallee::singleton()
     return callee.get().get();
 }
 
-IPIntCallee::IPIntCallee(FunctionIPIntMetadataGenerator& generator, FunctionSpaceIndex index, std::pair<const Name*, RefPtr<NameSection>>&& name)
+EncodedJSValue g_restoreFrameCalleeBoxed { };
+
+RestoreFrameCallee::RestoreFrameCallee()
+    : Callee(Wasm::CompilationMode::RestoreFrameMode)
+{
+    NativeCalleeRegistry::singleton().registerCallee(this);
+}
+
+RestoreFrameCallee& RestoreFrameCallee::singleton()
+{
+    static LazyNeverDestroyed<Ref<RestoreFrameCallee>> callee;
+    static std::once_flag onceKey;
+    std::call_once(onceKey, [&]() {
+        callee.construct(adoptRef(*new RestoreFrameCallee));
+        g_restoreFrameCalleeBoxed = CalleeBits::encodeNativeCallee(&callee.get().get());
+    });
+    return callee.get().get();
+}
+
+IPIntCallee::IPIntCallee(FunctionIPIntMetadataGenerator& generator, FunctionSpaceIndex index, const RTT& signatureRTT, std::pair<const Name*, RefPtr<NameSection>>&& name)
     : Callee(Wasm::CompilationMode::IPIntMode, index, WTF::move(name))
     , m_functionIndex(generator.m_functionIndex)
     , m_bytecode(generator.m_bytecode.data() + generator.m_bytecodeOffset)
     , m_bytecodeEnd(m_bytecode + (generator.m_bytecode.size() - generator.m_bytecodeOffset - 1))
     , m_metadata(WTF::move(generator.m_metadata))
-    , m_argumINTBytecode(WTF::move(generator.m_argumINTBytecode))
-    , m_uINTBytecode(WTF::move(generator.m_uINTBytecode))
+    , m_localInitBytecode(WTF::move(generator.m_localInitBytecode))
+    , m_signatureRTT(&signatureRTT)
     , m_callTargets(WTF::move(generator.m_callTargets))
-    , m_topOfReturnStackFPOffset(generator.m_topOfReturnStackFPOffset)
     , m_localSizeToAlloc(roundUpToMultipleOf<2>(generator.m_numLocals))
     , m_numRethrowSlotsToAlloc(generator.m_numAlignedRethrowSlots)
     , m_numLocals(generator.m_numLocals)
     , m_numArgumentsOnStack(generator.m_numArgumentsOnStack)
     , m_maxFrameSizeInV128(generator.m_maxFrameSizeInV128)
+    , m_maxCalleeStackSize(generator.m_maxCalleeStackSize)
     , m_tierUpCounter(WTF::move(generator.m_tierUpCounter))
 {
     if (size_t count = generator.m_exceptionHandlers.size()) {
@@ -302,6 +349,12 @@ void IPIntCallee::setEntrypoint(CodePtr<WasmEntryPtrTag> entrypoint)
     ASSERT(!m_entrypoint);
     m_entrypoint = entrypoint;
     NativeCalleeRegistry::singleton().registerCallee(this);
+}
+
+void IPIntCallee::setEntrypointWithoutRegistration(CodePtr<WasmEntryPtrTag> entrypoint)
+{
+    ASSERT(!m_entrypoint);
+    m_entrypoint = entrypoint;
 }
 
 const RegisterAtOffsetList* IPIntCallee::calleeSaveRegistersImpl()
@@ -472,12 +525,11 @@ Box<PCToCodeOriginMap> OptimizingJITCallee::materializePCToOriginMap(B3::PCToOri
 
 #endif
 
-JSToWasmCallee::JSToWasmCallee(TypeIndex typeIndex, bool)
+JSToWasmCallee::JSToWasmCallee(Ref<const RTT>&& rtt, bool)
     : Callee(Wasm::CompilationMode::JSToWasmMode)
-    , m_typeIndex(typeIndex)
+    , m_rtt(WTF::move(rtt))
 {
-    const TypeDefinition& signature = TypeInformation::get(typeIndex).expand();
-    CallInformation wasmFrameConvention = wasmCallingConvention().callInformationFor(signature, CallRole::Caller);
+    CallInformation wasmFrameConvention = wasmCallingConvention().callInformationFor(m_rtt.get(), CallRole::Caller);
 
     RegisterAtOffsetList savedResultRegisters = wasmFrameConvention.computeResultsOffsetList();
     size_t totalFrameSize = wasmFrameConvention.headerAndArgumentStackSizeInBytes;

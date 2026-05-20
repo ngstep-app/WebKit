@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include "EditorState.h"
 #include "MessageReceiver.h"
 #include "NavigationActionData.h"
 #include "ProcessActivityGroup.h"
@@ -69,6 +70,7 @@ class RemotePagePlaybackSessionManagerProxy;
 class RemotePageScreenOrientationManagerProxy;
 class RemotePageVideoPresentationManagerProxy;
 class RemotePageVisitedLinkStoreRegistration;
+class RemotePageWebAuthenticatorCoordinatorProxy;
 class UserData;
 class WebFrameProxy;
 class WebPageProxy;
@@ -118,13 +120,20 @@ public:
     void setCurrentOrientation(WebCore::ScreenOrientationType);
 
     bool hasNetworkRequestsInProgress() const { return m_hasNetworkRequestsInProgress; }
+    bool canShortCircuitHorizontalWheelEvents() const { return m_canShortCircuitHorizontalWheelEvents; }
 
     void disconnect();
+
+#if ENABLE(DEVICE_ORIENTATION)
+    void clearDeviceOrientationAndMotionPermissions();
+#endif
 
 #if HAVE(VISIBILITY_PROPAGATION_VIEW)
     void didCreateContextInWebProcessForVisibilityPropagation(LayerHostingContextID);
     LayerHostingContextID contextIDForVisibilityPropagationInWebProcess() const { return m_contextIDForVisibilityPropagationInWebProcess; }
 #endif
+
+    EditorState& editorState() { return m_editorState; }
 
 private:
     RemotePageProxy(WebPageProxy&, WebProcessProxy&, const WebCore::Site&, WebPageProxyMessageReceiverRegistration*, std::optional<WebCore::PageIdentifier>);
@@ -133,6 +142,7 @@ private:
     void isPlayingMediaDidChange(WebCore::MediaProducerMediaStateFlags);
 
     void setNetworkRequestsInProgress(bool);
+    void setCanShortCircuitHorizontalWheelEvents(bool);
 
     const WebCore::PageIdentifier m_webPageID;
     const Ref<WebProcessProxy> m_process;
@@ -156,7 +166,11 @@ private:
     WebPageProxyMessageReceiverRegistration m_messageReceiverRegistration;
     WebCore::MediaProducerMediaStateFlags m_mediaState;
     RefPtr<RemotePageScreenOrientationManagerProxy> m_screenOrientationManager;
+#if ENABLE(WEB_AUTHN)
+    RefPtr<RemotePageWebAuthenticatorCoordinatorProxy> m_webAuthenticatorCoordinator;
+#endif
     bool m_hasNetworkRequestsInProgress { false };
+    bool m_canShortCircuitHorizontalWheelEvents { true };
 #if ASSERT_ENABLED
     bool m_disconnected { false };
 #endif
@@ -164,6 +178,7 @@ private:
     LayerHostingContextID m_contextIDForVisibilityPropagationInWebProcess { 0 };
 #endif
 
+    EditorState m_editorState;
 };
 
 }

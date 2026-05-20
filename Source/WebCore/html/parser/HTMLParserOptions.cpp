@@ -27,9 +27,11 @@
 #include "HTMLParserOptions.h"
 
 #include "Document.h"
+#include "FrameDestructionObserverInlines.h"
 #include "LocalFrame.h"
 #include "ScriptController.h"
 #include "Settings.h"
+#include "FrameDestructionObserverInlines.h"
 
 namespace WebCore {
 

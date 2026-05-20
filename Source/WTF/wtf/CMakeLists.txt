@@ -74,6 +74,7 @@ set(WTF_PUBLIC_HEADERS
     CrossThreadTaskHandler.h
     CryptographicUtilities.h
     CryptographicallyRandomNumber.h
+    CurrentThread.h
     DataLog.h
     DataMutex.h
     DataRef.h
@@ -117,7 +118,6 @@ set(WTF_PUBLIC_HEADERS
     GenericHashKey.h
     GenericTimeMixin.h
     GetPtr.h
-    Gigacage.h
     GlobalVersion.h
     GraphNodeWorklist.h
     GregorianDateTime.h
@@ -180,6 +180,7 @@ set(WTF_PUBLIC_HEADERS
     LoggingHashSet.h
     LoggingHashTraits.h
     MachSendRight.h
+    MachSendRightAnnotated.h
     MainThread.h
     MainThreadData.h
     MainThreadDispatcher.h
@@ -198,6 +199,7 @@ set(WTF_PUBLIC_HEADERS
     MetaAllocatorHandle.h
     MmapSpan.h
     MonotonicTime.h
+    module.modulemap
     NakedPtr.h
     NativePromise.h
     NaturalLoops.h
@@ -220,6 +222,9 @@ set(WTF_PUBLIC_HEADERS
     OptionalOrReference.h
     OptionSetHash.h
     OrderMaker.h
+    OrderedHashMap.h
+    OrderedHashSet.h
+    OrderedHashTable.h
     OverflowHandler.h
     OverflowPolicy.h
     Packed.h
@@ -240,9 +245,6 @@ set(WTF_PUBLIC_HEADERS
     PlatformCPU.h
     PlatformEnable.h
     PlatformEnableCocoa.h
-    PlatformEnableGlib.h
-    PlatformEnablePlayStation.h
-    PlatformEnableWin.h
     PlatformHave.h
     PlatformLegacy.h
     PlatformOS.h
@@ -270,6 +272,7 @@ set(WTF_PUBLIC_HEADERS
     RecursableLambda.h
     RecursiveLockAdapter.h
     RedBlackTree.h
+    ReducedResolutionSeconds.h
     Ref.h
     RefCountable.h
     RefCountDebugger.h
@@ -284,6 +287,7 @@ set(WTF_PUBLIC_HEADERS
     ReferenceWrapperVector.h
     ResourceUsage.h
     RetainPtr.h
+    RetainRef.h
     RobinHoodHashMap.h
     RobinHoodHashSet.h
     RobinHoodHashTable.h
@@ -301,6 +305,7 @@ set(WTF_PUBLIC_HEADERS
     Seconds.h
     SegmentedVector.h
     SentinelLinkedList.h
+    SequenceLocked.h
     SequesteredAllocator.h
     SequesteredAutomaticThread.h
     SequesteredImmortalHeap.h
@@ -347,6 +352,7 @@ set(WTF_PUBLIC_HEADERS
     StructDump.h
     SuspendableWorkQueue.h
     SwiftBridging.h
+    SwiftCXXThunk.h
     SynchronizedFixedQueue.h
     SystemFree.h
     SystemMalloc.h
@@ -358,6 +364,7 @@ set(WTF_PUBLIC_HEADERS
     ThreadAssertions.h
     ThreadGroup.h
     ThreadMessage.h
+    ThreadSafeLazyUniquePtr.h
     ThreadSafetyAnalysis.h
     ThreadSafeRefCounted.h
     ThreadSafeRefCountedWithSuppressingSaferCPPChecking.h
@@ -366,6 +373,7 @@ set(WTF_PUBLIC_HEADERS
     ThreadSanitizerSupport.h
     ThreadSpecific.h
     Threading.h
+    ThreadingEnums.h
     ThreadingPrimitives.h
     TimeWithDynamicClockType.h
     TimingScope.h
@@ -382,7 +390,7 @@ set(WTF_PUBLIC_HEADERS
     URLParser.h
     UUID.h
     UnalignedAccess.h
-    Unexpected.h
+    UnbarrieredMonotonicTime.h
     UniStdExtras.h
     UnionFind.h
     UniqueArray.h
@@ -448,6 +456,8 @@ set(WTF_PUBLIC_HEADERS
 
     fast_float/fast_float.h
 
+    ios/WebCoreThread.h
+
     persistence/PersistentCoders.h
     persistence/PersistentDecoder.h
     persistence/PersistentEncoder.h
@@ -482,6 +492,7 @@ set(WTF_PUBLIC_HEADERS
     text/NullTextBreakIterator.h
     text/OrdinalNumber.h
     text/ParsingUtilities.h
+    text/RapidHash.h
     text/StringBuffer.h
     text/StringBuilder.h
     text/StringBuilderInternals.h
@@ -493,7 +504,6 @@ set(WTF_PUBLIC_HEADERS
     text/StringHasher.h
     text/StringHasherInlines.h
     text/SuperFastHash.h
-    text/WYHash.h
     text/StringImpl.h
     text/StringParsingBuffer.h
     text/StringSearch.h
@@ -547,6 +557,7 @@ set(WTF_SOURCES
     CrossThreadTaskHandler.cpp
     CryptographicUtilities.cpp
     CryptographicallyRandomNumber.cpp
+    CurrentThread.cpp
     CurrentTime.cpp
     DataLog.cpp
     DateMath.cpp
@@ -559,7 +570,6 @@ set(WTF_SOURCES
     FilePrintStream.cpp
     FileSystem.cpp
     FunctionDispatcher.cpp
-    Gigacage.cpp
     GlobalVersion.cpp
     GregorianDateTime.cpp
     HashTable.cpp
@@ -627,6 +637,7 @@ set(WTF_SOURCES
     URLHelpers.cpp
     URLParser.cpp
     UUID.cpp
+    UnbarrieredMonotonicTime.cpp
     UniqueArray.cpp
     Vector.cpp
     WTFAssertions.cpp
@@ -712,39 +723,53 @@ elseif (APPLE)
         cf/TypeCastsCF.h
         cf/VectorCF.h
 
+        cocoa/AuditToken.h
         cocoa/CrashReporter.h
         cocoa/Entitlements.h
+        cocoa/NSStringExtras.h
         cocoa/NSURLExtras.h
         cocoa/RuntimeApplicationChecksCocoa.h
         cocoa/SoftLinking.h
+        cocoa/SpanCocoa.h
         cocoa/TollFreeBridging.h
         cocoa/TypeCastsCocoa.h
         cocoa/VectorCocoa.h
 
         darwin/DispatchExtras.h
         darwin/DispatchOSObject.h
+        darwin/LibraryPathDiagnostics.h
         darwin/NetworkOSObject.h
         darwin/OSLogPrintStream.h
+        darwin/TypeCastsOSObject.h
         darwin/WeakLinking.h
         darwin/XPCExtras.h
+        darwin/XPCObjectPtr.h
 
         spi/cf/CFBundleSPI.h
+        spi/cf/CFPrivSPI.h
+        spi/cf/CFRunLoopSPI.h
         spi/cf/CFStringSPI.h
 
+        spi/cocoa/BOMSPI.h
         spi/cocoa/CFXPCBridgeSPI.h
         spi/cocoa/CrashReporterClientSPI.h
+        spi/cocoa/IOReturnSPI.h
         spi/cocoa/IOSurfaceSPI.h
+        spi/cocoa/IOTypesSPI.h
         spi/cocoa/MachVMSPI.h
         spi/cocoa/NSLocaleSPI.h
         spi/cocoa/NSObjCRuntimeSPI.h
+        spi/cocoa/OSLogSPI.h
         spi/cocoa/SecuritySPI.h
+        spi/cocoa/XTSPI.h
         spi/cocoa/objcSPI.h
 
-        spi/darwin/ReasonSPI.h
         spi/darwin/CodeSignSPI.h
         spi/darwin/DataVaultSPI.h
+        spi/darwin/DispatchSPI.h
         spi/darwin/OSVariantSPI.h
         spi/darwin/ProcessMemoryFootprint.h
+        spi/darwin/ReasonSPI.h
         spi/darwin/SandboxSPI.h
         spi/darwin/XPCSPI.h
         spi/darwin/dyldSPI.h
@@ -753,6 +778,11 @@ elseif (APPLE)
 
         text/cf/StringConcatenateCF.h
         text/cf/TextBreakIteratorCF.h
+        text/cf/TextBreakIteratorCFCharacterCluster.h
+        text/cf/TextBreakIteratorCFStringTokenizer.h
+
+        text/cocoa/ContextualizedCFString.h
+        text/cocoa/ContextualizedNSString.h
     )
 elseif (CMAKE_SYSTEM_NAME MATCHES "Linux")
     list(APPEND WTF_PUBLIC_HEADERS
@@ -801,19 +831,20 @@ set(WTF_INTERFACE_DEPENDENCIES WTF_CopyHeaders)
 
 WEBKIT_FRAMEWORK_DECLARE(WTF)
 WEBKIT_INCLUDE_CONFIG_FILES_IF_EXISTS()
-
-if (PORT STREQUAL GTK OR PORT STREQUAL WPE)
-    WEBKIT_ADD_TARGET_CXX_FLAGS(WTF
-        -Wunsafe-buffer-usage
-        -Wunsafe-buffer-usage-in-libc-call
-        -fsafe-buffer-usage-suggestions
-    )
-endif ()
+WEBKIT_ADD_TARGET_UNSAFE_BUFFER_WARNINGS(WTF)
 
 WEBKIT_COPY_FILES(WTF_CopyHeaders
     DESTINATION ${WTF_FRAMEWORK_HEADERS_DIR}/wtf
     FILES ${WTF_PUBLIC_HEADERS}
 )
+
+if (NOT APPLE AND SWIFT_REQUIRED)
+    # module.modulemap has "umbrella spi" for the wtf.SPI submodule; Clang requires
+    # the umbrella directory to be non-empty or it fails with "cannot create includes file".
+    # Provide a stub header so the directory has at least one entry.
+    file(MAKE_DIRECTORY "${WTF_FRAMEWORK_HEADERS_DIR}/wtf/spi")
+    file(WRITE "${WTF_FRAMEWORK_HEADERS_DIR}/wtf/spi/wtf_spi_stub.h" "")
+endif ()
 
 WEBKIT_FRAMEWORK(WTF)
 

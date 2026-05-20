@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024-2025 Samuel Weinig <sam@webkit.org>
+ * Copyright (C) 2024-2026 Samuel Weinig <sam@webkit.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -273,19 +273,11 @@ std::optional<CanonicalDimension> canonicalize(NonCanonicalDimension root, const
     case CSSUnitType::CSS_INTEGER:
     case CSSUnitType::CSS_PERCENTAGE:
     // Non-numeric types should never be stored in a NonCanonicalDimension.
-    case CSSUnitType::CSS_ATTR:
     case CSSUnitType::CSS_CALC:
     case CSSUnitType::CSS_CALC_PERCENTAGE_WITH_ANGLE:
     case CSSUnitType::CSS_CALC_PERCENTAGE_WITH_LENGTH:
-    case CSSUnitType::CSS_DIMENSION:
-    case CSSUnitType::CSS_FONT_FAMILY:
-    case CSSUnitType::CSS_IDENT:
-    case CSSUnitType::CSS_PROPERTY_ID:
     case CSSUnitType::CSS_QUIRKY_EM:
-    case CSSUnitType::CSS_STRING:
     case CSSUnitType::CSS_UNKNOWN:
-    case CSSUnitType::CSS_VALUE_ID:
-    case CSSUnitType::CustomIdent:
         break;
     }
 
@@ -339,17 +331,14 @@ template<typename Op> static std::optional<Child> simplifyForRound(Op& root, con
 
 template<typename Op> static std::optional<Child> simplifyForTrig(Op& root, const SimplificationOptions&)
 {
-    // NOTE: `a` has been type checked by this point to be `<number>` or an `<angle>`, though they may not
-    // be able to be fully resolved yet. If its an `<angle>`, it is also already been converted to canonical
-    // units via earlier simplification.
+    // NOTE: `root.a` has been type checked by this point to be `<number>`, or to be a Deg2Rad
+    // wrapper inserted at parse time around an `<angle>` subtree. The Deg2Rad node takes care of
+    // converting degrees to radians, so simplification here only needs to collapse the trig
+    // function when the wrapped value has resolved to a Number (i.e. a value in radians).
 
     return WTF::switchOn(root.a,
         [&](const Number& a) -> std::optional<Child> {
             return makeChild(Number { .value = executeMathOperation<Op>(a.value) });
-        },
-        [&](const CanonicalDimension& a) -> std::optional<Child> {
-            ASSERT(a.dimension == CanonicalDimension::Dimension::Angle);
-            return makeChild(Number { .value = executeMathOperation<Op>(deg2rad(a.value)) });
         },
         [](const auto&) -> std::optional<Child> {
             return { };
@@ -979,6 +968,23 @@ std::optional<Child> simplify(Invert& root, const SimplificationOptions&)
     );
 }
 
+std::optional<Child> simplify(Deg2Rad& root, const SimplificationOptions&)
+{
+    // Deg2Rad wraps an <angle> subtree and produces a <number> in radians. It is inserted at
+    // parse time inside trig functions whose argument is an <angle>, so that evaluation does not
+    // need to inspect the argument's type.
+
+    return WTF::switchOn(root.angle,
+        [&](const CanonicalDimension& a) -> std::optional<Child> {
+            ASSERT(a.dimension == CanonicalDimension::Dimension::Angle);
+            return makeChild(Number { .value = deg2rad(a.value) });
+        },
+        [](const auto&) -> std::optional<Child> {
+            return { };
+        }
+    );
+}
+
 std::optional<Child> simplify(Min& root, const SimplificationOptions& options)
 {
     return simplifyForMinMax(root, options);
@@ -1333,11 +1339,24 @@ std::optional<Child> simplify(Random& root, const SimplificationOptions& options
 
             auto randomBaseValue = WTF::switchOn(root.sharing,
                 [&](const Random::SharingOptions& sharingOptions) -> std::optional<double> {
-                    if (sharingOptions.elementShared.has_value() && !options.conversionData->styleBuilderState()->element())
+                    CheckedPtr builderState = options.conversionData->styleBuilderState();
+
+                    if (sharingOptions.elementScoped.has_value() && !builderState->element())
                         return { };
-                    return protect(options.conversionData->styleBuilderState())->lookupCSSRandomBaseValue(
-                        sharingOptions.identifier,
-                        sharingOptions.elementShared
+
+                    return WTF::switchOn(sharingOptions.identifier,
+                        [&](const Random::SharingOptions::Auto& autoValue) {
+                            return builderState->lookupCSSRandomBaseValue(
+                                autoValue,
+                                sharingOptions.elementScoped
+                            );
+                        },
+                        [&](const CSS::CustomIdent& customIdent) {
+                            return builderState->lookupCSSRandomBaseValue(
+                                Style::toStyle(customIdent, *builderState),
+                                sharingOptions.elementScoped
+                            );
+                        }
                     );
                 },
                 [&](const Random::SharingFixed& sharingFixed) -> std::optional<double> {
@@ -1420,9 +1439,9 @@ std::optional<Child> simplify(AnchorSize& anchorSize, const SimplificationOption
     CheckedPtr builderState = options.conversionData->styleBuilderState();
 
     std::optional<Style::ScopedName> anchorSizeScopedName;
-    if (!anchorSize.elementName.isNull()) {
+    if (anchorSize.elementName) {
         anchorSizeScopedName = Style::ScopedName {
-            .name = anchorSize.elementName,
+            .name = Style::toStyle(*anchorSize.elementName, *builderState).value,
             .scopeOrdinal = builderState->styleScopeOrdinal()
         };
     }

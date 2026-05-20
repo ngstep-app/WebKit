@@ -28,7 +28,9 @@
 #include "CSSFontFaceSet.h"
 
 #include "CSSFontFaceSource.h"
+#include "CSSFontFamilyNameValue.h"
 #include "CSSFontSelector.h"
+#include "CSSKeywordValue.h"
 #include "CSSParser.h"
 #include "CSSPrimitiveValue.h"
 #include "CSSPropertyParserConsumer+Font.h"
@@ -40,6 +42,7 @@
 #include "StylePrimitiveNumericTypes+Conversions.h"
 #include "StyleProperties.h"
 #include <ranges>
+#include <wtf/Borrow.h>
 
 namespace WebCore {
 
@@ -50,7 +53,7 @@ CSSFontFaceSet::CSSFontFaceSet(CSSFontSelector* owningFontSelector)
 
 CSSFontFaceSet::~CSSFontFaceSet()
 {
-    for (auto& face : m_faces)
+    for (Ref face : borrow(m_faces).get())
         face->removeClient(*this);
 
     for (auto& pair : m_locallyInstalledFacesLookupTable) {
@@ -129,7 +132,7 @@ void CSSFontFaceSet::ensureLocalFontFacesForFamilyRegistered(const AtomString& f
         auto face = CSSFontFace::create(owningFontSelector, nullptr, nullptr, true);
 
         auto& pool = protect(owningFontSelector->scriptExecutionContext())->cssValuePool();
-        face->setFamily(pool.createFontFamilyValue(familyName));
+        face->setFamily(pool.createFontFamilyNameValue(familyName));
         face->setFontSelectionCapabilities(item);
         face->adoptSource(makeUniqueWithoutRefCountedCheck<CSSFontFaceSource>(face.get(), familyName));
         ASSERT(!face->computeFailureState());
@@ -138,33 +141,37 @@ void CSSFontFaceSet::ensureLocalFontFacesForFamilyRegistered(const AtomString& f
     m_locallyInstalledFacesLookupTable.add(familyName, WTF::move(faces));
 }
 
-String CSSFontFaceSet::familyNameFromPrimitive(const CSSPrimitiveValue& value)
+AtomString CSSFontFaceSet::familyName(const CSSValue& value)
 {
-    if (value.isFontFamily())
-        return value.stringValue();
+    if (auto* fontFamilyNameValue = dynamicDowncast<CSSFontFamilyNameValue>(value))
+        return fontFamilyNameValue->fontFamilyName().value;
 
     // We need to use the raw text for all the generic family types, since @font-face is a way of actually
     // defining what font to use for those types.
-    switch (value.valueID()) {
-    case CSSValueSerif:
-        return serifFamily.get();
-    case CSSValueSansSerif:
-        return sansSerifFamily.get();
-    case CSSValueCursive:
-        return cursiveFamily.get();
-    case CSSValueFantasy:
-        return fantasyFamily.get();
-    case CSSValueMonospace:
-        return monospaceFamily.get();
-    case CSSValueWebkitPictograph:
-        return pictographFamily.get();
-    case CSSValueSystemUi:
-        return systemUiFamily.get();
-    case CSSValueMath:
-        return mathFamily.get();
-    default:
-        return { };
+    if (auto* keywordValue = dynamicDowncast<CSSKeywordValue>(value)) {
+        switch (keywordValue->valueID()) {
+        case CSSValueSerif:
+            return serifFamily.get();
+        case CSSValueSansSerif:
+            return sansSerifFamily.get();
+        case CSSValueCursive:
+            return cursiveFamily.get();
+        case CSSValueFantasy:
+            return fantasyFamily.get();
+        case CSSValueMonospace:
+            return monospaceFamily.get();
+        case CSSValueWebkitPictograph:
+            return pictographFamily.get();
+        case CSSValueSystemUi:
+            return systemUiFamily.get();
+        case CSSValueMath:
+            return mathFamily.get();
+        default:
+            return { };
+        }
     }
+
+    return { };
 }
 
 void CSSFontFaceSet::addToFacesLookupTable(CSSFontFace& face)
@@ -176,7 +183,7 @@ void CSSFontFaceSet::addToFacesLookupTable(CSSFontFace& face)
         return;
     }
 
-    auto familyName = AtomString { CSSFontFaceSet::familyNameFromPrimitive(downcast<CSSPrimitiveValue>(*family)) };
+    auto familyName = CSSFontFaceSet::familyName(*family);
     if (familyName.isNull())
         return;
 
@@ -222,7 +229,7 @@ void CSSFontFaceSet::add(CSSFontFace& face)
 
 void CSSFontFaceSet::removeFromFacesLookupTable(const CSSFontFace& face, const CSSValue& familyToSearchFor)
 {
-    auto familyName = CSSFontFaceSet::familyNameFromPrimitive(downcast<CSSPrimitiveValue>(familyToSearchFor));
+    auto familyName = CSSFontFaceSet::familyName(familyToSearchFor);
     if (familyName.isNull())
         return;
 

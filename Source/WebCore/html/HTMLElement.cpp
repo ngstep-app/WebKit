@@ -1,7 +1,7 @@
 /*
  * Copyright (C) 1999 Lars Knoll (knoll@kde.org)
  *           (C) 1999 Antti Koivisto (koivisto@kde.org)
- * Copyright (C) 2004-2025 Apple Inc. All rights reserved.
+ * Copyright (C) 2004-2026 Apple Inc. All rights reserved.
  * Copyright (C) 2021-2024 Google Inc. All rights reserved.
  * Copyright (C) 2009 Torch Mobile Inc. All rights reserved. (http://www.torchmobile.com/)
  * Copyright (C) 2011 Motorola Mobility. All rights reserved.
@@ -104,6 +104,7 @@
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/text/CString.h>
 #include <wtf/text/StringBuilder.h>
+#include <wtf/unicode/CharacterNames.h>
 
 namespace WebCore {
 
@@ -147,17 +148,6 @@ void HTMLElement::applyBorderAttributeToStyle(const AtomString& value, MutableSt
 {
     addPropertyToPresentationalHintStyle(style, CSSPropertyBorderWidth, parseBorderWidthAttribute(value), CSSUnitType::CSS_PX);
     addPropertyToPresentationalHintStyle(style, CSSPropertyBorderStyle, CSSValueSolid);
-}
-
-void HTMLElement::mapLanguageAttributeToLocale(const AtomString& value, MutableStyleProperties& style)
-{
-    if (!value.isEmpty()) {
-        // Have to quote so the locale id is treated as a string instead of as a CSS keyword.
-        addPropertyToPresentationalHintStyle(style, CSSPropertyWebkitLocale, serializeString(value));
-    } else {
-        // The empty string means the language is explicitly unknown.
-        addPropertyToPresentationalHintStyle(style, CSSPropertyWebkitLocale, CSSValueAuto);
-    }
 }
 
 bool HTMLElement::hasPresentationalHintsForAttribute(const QualifiedName& name) const
@@ -572,7 +562,7 @@ void HTMLElement::addParsedWidthAndHeightToAspectRatioList(double width, double 
 {
     style.setProperty(CSSPropertyAspectRatio,
         CSSValueList::createSpaceSeparated(
-            CSSPrimitiveValue::create(CSSValueAuto),
+            CSSKeywordValue::create(CSSValueAuto),
             CSSRatioValue::create(CSS::Ratio { width, height })
         )
     );
@@ -680,14 +670,9 @@ void HTMLElement::setSpellcheck(bool enable)
     setAttributeWithoutSynchronization(spellcheckAttr, enable ? trueAtom() : falseAtom());
 }
 
-bool HTMLElement::writingsuggestions() const
+const AtomString& HTMLElement::writingSuggestions() const
 {
-    return isWritingSuggestionsEnabled();
-}
-
-void HTMLElement::setWritingsuggestions(bool enable)
-{
-    setAttributeWithoutSynchronization(writingsuggestionsAttr, enable ? trueAtom() : falseAtom());
+    return computedWritingSuggestionsValue() ? trueAtom() : falseAtom();
 }
 
 void HTMLElement::effectiveSpellcheckAttributeChanged(bool newValue)
@@ -1148,7 +1133,8 @@ static void runPopoverFocusingSteps(HTMLElement& popover)
 
 void HTMLElement::queuePopoverToggleEventTask(ToggleState oldState, ToggleState newState, Element* source)
 {
-    popoverData()->ensureToggleEventTask(*this)->queue(oldState, newState, source);
+    if (auto* popoverData = this->popoverData())
+        popoverData->ensureToggleEventTask(*this)->queue(oldState, newState, source);
 }
 
 ExceptionOr<void> HTMLElement::showPopover(const ShowPopoverOptions& options)
@@ -1213,16 +1199,20 @@ ExceptionOr<void> HTMLElement::showPopoverInternal(HTMLElement* source)
 
     addToTopLayer();
 
-    popoverData()->setPreviouslyFocusedElement(nullptr);
+    if (auto* popoverData = this->popoverData())
+        popoverData->setPreviouslyFocusedElement(nullptr);
 
     Style::PseudoClassChangeInvalidation styleInvalidation(*this, CSSSelector::PseudoClass::PopoverOpen, true);
-    popoverData()->setVisibilityState(PopoverVisibilityState::Showing);
+    if (auto* popoverData = this->popoverData())
+        popoverData->setVisibilityState(PopoverVisibilityState::Showing);
 
     runPopoverFocusingSteps(*this);
 
     if (shouldRestoreFocus) {
-        ASSERT(popoverState() == PopoverState::Auto);
-        popoverData()->setPreviouslyFocusedElement(previouslyFocusedElement.get());
+        if (auto* popoverData = this->popoverData()) {
+            ASSERT(popoverState() == PopoverState::Auto);
+            popoverData->setPreviouslyFocusedElement(previouslyFocusedElement.get());
+        }
     }
 
     queuePopoverToggleEventTask(ToggleState::Closed, ToggleState::Open, source);

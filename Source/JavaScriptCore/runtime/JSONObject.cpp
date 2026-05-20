@@ -166,7 +166,7 @@ static inline JSValue unwrapBoxedPrimitive(JSGlobalObject* globalObject, JSObjec
     if (object->inherits<StringObject>())
         return object->toString(globalObject);
     if (object->inherits<BooleanObject>() || object->inherits<BigIntObject>())
-        return jsCast<JSWrapperObject*>(object)->internalValue();
+        return uncheckedDowncast<JSWrapperObject>(object)->internalValue();
 
     // Do not unwrap SymbolObject to Symbol. It is not performed in the spec.
     // http://www.ecma-international.org/ecma-262/6.0/#sec-serializejsonproperty
@@ -259,7 +259,7 @@ Stringifier::Stringifier(JSGlobalObject* globalObject, JSValue replacer, JSValue
                 m_usingArrayReplacer = true;
                 forEachInArrayLike(globalObject, replacerObject, [&] (JSValue name) -> bool {
                     if (name.isObject()) {
-                        auto* nameObject = jsCast<JSObject*>(name);
+                        auto* nameObject = uncheckedDowncast<JSObject>(name);
                         if (!nameObject->inherits<NumberObject>() && !nameObject->inherits<StringObject>())
                             return true;
                     } else if (!name.isNumber() && !name.isString())
@@ -381,7 +381,7 @@ Stringifier::StringifyResult Stringifier::appendStringifiedValue(StringBuilder& 
     if (value.isObject()) {
         JSObject* object = asObject(value);
         if (object->inherits<JSRawJSONObject>()) {
-            String string = jsCast<JSRawJSONObject*>(object)->rawJSON(vm)->value(m_globalObject);
+            String string = uncheckedDowncast<JSRawJSONObject>(object)->rawJSON(vm)->value(m_globalObject);
             RETURN_IF_EXCEPTION(scope, StringifyFailed);
             builder.append(WTF::move(string));
             return StringifySucceeded;
@@ -625,7 +625,7 @@ bool Stringifier::Holder::appendNextProperty(Stringifier& stringifier, StringBui
                     unsigned offset = std::get<1>(m_propertiesAndOffsets[index]);
                     value = m_object->getDirect(offset);
                     if (value.isGetterSetter()) {
-                        value = jsCast<GetterSetter*>(value)->callGetter(globalObject, m_object);
+                        value = uncheckedDowncast<GetterSetter>(value)->callGetter(globalObject, m_object);
                         RETURN_IF_EXCEPTION(scope, false);
                     } else if (value.isCustomGetterSetter()) {
                         value = m_object->get(globalObject, propertyName);
@@ -712,7 +712,11 @@ public:
 private:
     explicit FastStringifier(JSGlobalObject&);
     void append(JSValue);
+    void appendInt32(int32_t);
+    void appendInt32Array(JSArray&);
     String result();
+
+    static constexpr unsigned maxInt32StringLength = ("-2147483648"_s).length();
 
     // FIXME These should probably just take an ASCIILiteral.
     void append(char, char, char, char);
@@ -1076,6 +1080,24 @@ inline void FastStringifier<CharType, bufferMode>::append(char a, char b, char c
     m_length += 5;
 }
 
+template<typename CharType, BufferMode bufferMode>
+ALWAYS_INLINE void FastStringifier<CharType, bufferMode>::appendInt32(int32_t number)
+{
+    if constexpr (sizeof(CharType) == 1) {
+        char* cursor = std::bit_cast<char*>(buffer()) + m_length;
+        auto result = std::to_chars(cursor, cursor + maxInt32StringLength, number);
+        ASSERT(result.ec != std::errc::value_too_large);
+        m_length += result.ptr - cursor;
+    } else {
+        std::array<char, maxInt32StringLength> temporary;
+        auto result = std::to_chars(temporary.data(), temporary.data() + maxInt32StringLength, number);
+        ASSERT(result.ec != std::errc::value_too_large);
+        unsigned lengthToCopy = result.ptr - temporary.data();
+        WTF::copyElements(spanReinterpretCast<uint16_t>(bufferSpan().subspan(m_length)), spanReinterpretCast<const uint8_t>(std::span { temporary }).first(lengthToCopy));
+        m_length += lengthToCopy;
+    }
+}
+
 template<typename CharType>
 static ALWAYS_INLINE bool stringCopySameType(std::span<const CharType> span, CharType* cursor)
 {
@@ -1200,25 +1222,11 @@ void FastStringifier<CharType, bufferMode>::append(JSValue value)
     }
 
     if (value.isInt32()) {
-        auto number = value.asInt32();
-        constexpr unsigned maxInt32StringLength = 11; // -INT32_MIN, "-2147483648".
         if (!hasRemainingCapacity(maxInt32StringLength)) [[unlikely]] {
             recordBufferFull();
             return;
         }
-        if constexpr (sizeof(CharType) == 1) {
-            char* cursor = std::bit_cast<char*>(buffer()) + m_length;
-            auto result = std::to_chars(cursor, cursor + maxInt32StringLength, number);
-            ASSERT(result.ec != std::errc::value_too_large);
-            m_length += result.ptr - cursor;
-        } else {
-            std::array<char, maxInt32StringLength> temporary;
-            auto result = std::to_chars(temporary.data(), temporary.data() + maxInt32StringLength, number);
-            ASSERT(result.ec != std::errc::value_too_large);
-            unsigned lengthToCopy = result.ptr - temporary.data();
-            WTF::copyElements(spanReinterpretCast<uint16_t>(bufferSpan().subspan(m_length)), spanReinterpretCast<const uint8_t>(std::span { temporary }).first(lengthToCopy));
-            m_length += lengthToCopy;
-        }
+        appendInt32(value.asInt32());
         return;
     }
 
@@ -1449,6 +1457,17 @@ void FastStringifier<CharType, bufferMode>::append(JSValue value)
             return;
         }
         buffer()[m_length++] = '[';
+        if (hasInt32(array.indexingType())) {
+            appendInt32Array(array);
+            if (haveFailure()) [[unlikely]]
+                return;
+            if (!hasRemainingCapacity()) [[unlikely]] {
+                recordBufferFull();
+                return;
+            }
+            buffer()[m_length++] = ']';
+            return;
+        }
         for (unsigned i = 0, length = array.length(); i < length; ++i) {
             if (i) {
                 if (!hasRemainingCapacity()) [[unlikely]] {
@@ -1479,6 +1498,32 @@ void FastStringifier<CharType, bufferMode>::append(JSValue value)
 
     default:
         recordFailure("object type"_s);
+    }
+}
+
+template<typename CharType, BufferMode bufferMode>
+NEVER_INLINE void FastStringifier<CharType, bufferMode>::appendInt32Array(JSArray& array)
+{
+    auto* butterfly = array.butterfly();
+    unsigned length = butterfly->publicLength();
+    if (length > butterfly->vectorLength()) [[unlikely]] {
+        recordFailure("!canGetIndexQuickly"_s);
+        return;
+    }
+    auto data = butterfly->contiguousInt32();
+    for (unsigned i = 0; i < length; ++i) {
+        JSValue element = data.at(&array, i).get();
+        if (!element) [[unlikely]] {
+            recordFailure("!canGetIndexQuickly"_s);
+            return;
+        }
+        if (!hasRemainingCapacity(1 + maxInt32StringLength)) [[unlikely]] {
+            recordBufferFull();
+            return;
+        }
+        if (i)
+            buffer()[m_length++] = ',';
+        appendInt32(element.asInt32());
     }
 }
 
@@ -1726,7 +1771,7 @@ NEVER_INLINE JSValue Walker::walk(JSValue unfiltered)
             objectStartVisitMember:
             [[fallthrough]];
             case ObjectStartVisitMember: {
-                JSObject* object = jsCast<JSObject*>(markedStack.last());
+                JSObject* object = uncheckedDowncast<JSObject>(markedStack.last());
                 uint32_t index = indexStack.last();
                 PropertyNameArrayBuilder& properties = propertyStack.last();
                 if (index == properties.size()) {
@@ -1767,7 +1812,7 @@ NEVER_INLINE JSValue Walker::walk(JSValue unfiltered)
                 [[fallthrough]];
             }
             case ObjectEndVisitMember: {
-                JSObject* object = jsCast<JSObject*>(markedStack.last());
+                JSObject* object = uncheckedDowncast<JSObject>(markedStack.last());
                 Identifier prop = propertyStack.last()[indexStack.last()];
                 JSValue filteredValue = callReviver(object, jsString(vm, prop.string()), outValue, outValueRange);
                 RETURN_IF_EXCEPTION(scope, { });
@@ -1966,20 +2011,20 @@ JSC_DEFINE_HOST_FUNCTION(jsonProtoFuncRawJSON, (JSGlobalObject* globalObject, Ca
         return character == 0x0009 || character == 0x000A || character == 0x000D || character == 0x0020;
     };
 
-    String string = jsString->value(globalObject);
+    auto view = jsString->view(globalObject);
     RETURN_IF_EXCEPTION(scope, { });
-    if (string.isEmpty()) [[unlikely]] {
+    if (view->isEmpty()) [[unlikely]] {
         throwSyntaxError(globalObject, scope, "JSON.rawJSON cannot accept empty string"_s);
         return { };
     }
 
-    char16_t firstCharacter = string[0];
+    char16_t firstCharacter = view->codeUnitAt(0);
     if (isJSONWhitespace(firstCharacter)) [[unlikely]] {
         throwSyntaxError(globalObject, scope, makeString("JSON.rawJSON cannot accept string starting with '"_s, firstCharacter, "'"_s));
         return { };
     }
 
-    char16_t lastCharacter = string[string.length() - 1];
+    char16_t lastCharacter = view->codeUnitAt(view->length() - 1);
     if (isJSONWhitespace(lastCharacter)) [[unlikely]] {
         throwSyntaxError(globalObject, scope, makeString("JSON.rawJSON cannot accept string ending with '"_s, lastCharacter, "'"_s));
         return { };
@@ -1987,8 +2032,8 @@ JSC_DEFINE_HOST_FUNCTION(jsonProtoFuncRawJSON, (JSGlobalObject* globalObject, Ca
 
     {
         JSValue result;
-        if (string.is8Bit()) {
-            LiteralParser<Latin1Character, JSONReviverMode::Disabled> jsonParser(globalObject, string.span8(), StrictJSON);
+        if (view->is8Bit()) {
+            LiteralParser<Latin1Character, JSONReviverMode::Disabled> jsonParser(globalObject, view->span8(), StrictJSON);
             result = jsonParser.tryLiteralParsePrimitiveValue();
             RETURN_IF_EXCEPTION(scope, { });
             if (!result) [[unlikely]] {
@@ -1996,7 +2041,7 @@ JSC_DEFINE_HOST_FUNCTION(jsonProtoFuncRawJSON, (JSGlobalObject* globalObject, Ca
                 return { };
             }
         } else {
-            LiteralParser<char16_t, JSONReviverMode::Disabled> jsonParser(globalObject, string.span16(), StrictJSON);
+            LiteralParser<char16_t, JSONReviverMode::Disabled> jsonParser(globalObject, view->span16(), StrictJSON);
             result = jsonParser.tryLiteralParsePrimitiveValue();
             RETURN_IF_EXCEPTION(scope, { });
             if (!result) [[unlikely]] {

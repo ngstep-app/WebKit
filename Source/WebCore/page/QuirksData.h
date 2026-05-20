@@ -33,8 +33,10 @@ namespace WebCore {
 struct QuirksData {
     bool isAmazon : 1 { false };
     bool isBankOfAmerica : 1 { false };
+    bool isBestBuy : 1 { false };
     bool isBing : 1 { false };
     bool isCBSSports : 1 { false };
+    bool isCEAC : 1 { false };
     bool isDictionary : 1 { false };
     bool isEA : 1 { false };
     bool isESPN : 1 { false };
@@ -43,11 +45,13 @@ struct QuirksData {
     bool isGoogleProperty : 1 { false };
     bool isGoogleMaps : 1 { false };
     bool isIHeart : 1 { false };
+    bool isInVideo : 1 { false };
     bool isNBA : 1 { false };
     bool isNetflix : 1 { false };
     bool isOutlook : 1 { false };
     bool isSoundCloud : 1 { false };
     bool isThesaurus : 1 { false };
+    bool isTikTok : 1 { false };
     bool isVimeo : 1 { false };
     bool isWalmart : 1 { false };
     bool isWebEx : 1 { false };
@@ -85,7 +89,8 @@ struct QuirksData {
         NeedsDeferKeyDownAndKeyPressTimersUntilNextEditingCommandQuirk,
 #endif
         NeedsFacebookRemoveNotSupportedQuirk,
-#if PLATFORM(MAC)
+#if PLATFORM(COCOA)
+        NeedsAnchorToBeMouseFocusableQuirk,
         NeedsFormControlToBeMouseFocusableQuirk,
 #endif
 #if PLATFORM(IOS_FAMILY)
@@ -96,7 +101,7 @@ struct QuirksData {
         NeedsGoogleTranslateScrollingQuirk,
 #endif
         NeedsGeforcenowWarningDisplayNoneQuirk,
-        NeedsHotelsAnimationQuirk,
+        NeedsExpediaGroupAnimationQuirk,
         NeedsMediaRewriteRangeRequestQuirk,
         NeedsMozillaFileTypeForDataTransferQuirk,
         NeedsNavigatorUserAgentDataQuirk,
@@ -118,6 +123,9 @@ struct QuirksData {
         NeedsVP9FullRangeFlagQuirk,
         NeedsVideoShouldMaintainAspectRatioQuirk,
         NeedsWebKitMediaTextTrackDisplayQuirk,
+#if PLATFORM(COCOA)
+        NeedsYouTubeCaptionQuirk,
+#endif
 #if ENABLE(TWO_PHASE_CLICKS)
         NeedsYouTubeMouseOutQuirk,
 #endif
@@ -137,6 +145,7 @@ struct QuirksData {
         ShouldAllowPopupFromMicrosoftOfficeToOneDrive,
 #endif
         ShouldAutoplayWebAudioForArbitraryUserGestureQuirk,
+        ShouldAvoidProgrammaticScrollClampingQuirk,
         ShouldAvoidResizingWhenInputViewBoundsChangeQuirk,
         ShouldAvoidScrollingWhenFocusedContentIsVisibleQuirk,
         ShouldBlockFetchWithNewlineAndLessThan,
@@ -157,6 +166,7 @@ struct QuirksData {
 #endif
 #if ENABLE(MEDIA_STREAM)
         ShouldDisableImageCaptureQuirk,
+        ShouldAllowMediaStreamTrackSerializationQuirk,
 #endif
         ShouldDisableLazyIframeLoadingQuirk,
 #if PLATFORM(IOS_FAMILY)
@@ -172,6 +182,7 @@ struct QuirksData {
         ShouldDispatchSimulatedMouseEventsAssumeDefaultPreventedQuirk,
 #if ENABLE(MEDIA_STREAM)
         ShouldEnableCameraAndMicrophonePermissionStateQuirk,
+        ShouldEnableCameraBackgroundPlayback,
         ShouldEnableEnumerateDeviceQuirk,
         ShouldEnableFacebookFlagQuirk,
 #endif
@@ -204,6 +215,7 @@ struct QuirksData {
 #if ENABLE(META_VIEWPORT)
         ShouldIgnoreViewportArgumentsToAvoidExcessiveZoomQuirk,
         ShouldIgnoreViewportArgumentsToAvoidEnlargedViewQuirk,
+        ShouldUseDynamicViewportUnitsAsDefaultQuirk,
 #endif
         ShouldLayOutAtMinimumWindowWidthWhenIgnoringScalingConstraintsQuirk,
 #if PLATFORM(IOS_FAMILY)
@@ -241,11 +253,16 @@ struct QuirksData {
         ShouldAvoidStartingSelectionOnMouseDownOverPointerCursor,
         ShouldAllowNotificationPermissionWithoutUserGesture,
         NeedsInstagramResizingReelsQuirk,
+        NeedsYahooVolumeSliderQuirk,
         NeedsZillowFloorplanMarginQuirk,
 #if PLATFORM(IOS_FAMILY)
         NeedsChromeOSNavigatorUserAgentQuirk,
+        ShouldSendFakeTouchForceChangeEvent,
 #endif
         ShouldLimitHLSPlaybackRate,
+        ShouldDeferIntersectionObserversDuringResize,
+        ShouldSuppressHLSSubtitles,
+        ShouldSuppressMediaSessionPauseActionOnInterruption,
 
         NumberOfQuirks
     };
@@ -286,6 +303,7 @@ struct QuirksData {
     enum class ShouldDispatchSimulatedMouseEvents : uint8_t {
         Unknown,
         No,
+        DependingOnTargetWithSliderRole,
         DependingOnTargetFor_mybinder_org,
         Yes,
     };

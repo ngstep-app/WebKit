@@ -32,10 +32,6 @@
 #include "GlobalObjectMethodTable.h"
 #include "JSCInlines.h"
 #include "JSFunctionWithFields.h"
-#include "JSInternalFieldObjectImplInlines.h"
-#include "JSInternalPromise.h"
-#include "JSInternalPromiseConstructor.h"
-#include "JSInternalPromisePrototype.h"
 #include "JSMicrotask.h"
 #include "JSPromiseCombinatorsContext.h"
 #include "JSPromiseCombinatorsGlobalContext.h"
@@ -44,6 +40,7 @@
 #include "JSPromiseReaction.h"
 #include "Microtask.h"
 #include "ObjectConstructor.h"
+#include "TopExceptionScope.h"
 
 namespace JSC {
 
@@ -71,20 +68,15 @@ JSPromise::JSPromise(VM& vm, Structure* structure)
 {
 }
 
-void JSPromise::finishCreation(VM& vm)
-{
-    Base::finishCreation(vm);
-    auto values = initialValues();
-    for (unsigned index = 0; index < values.size(); ++index)
-        Base::internalField(index).set(vm, this, values[index]);
-}
-
 template<typename Visitor>
 void JSPromise::visitChildrenImpl(JSCell* cell, Visitor& visitor)
 {
-    auto* thisObject = jsCast<JSPromise*>(cell);
+    auto* thisObject = uncheckedDowncast<JSPromise>(cell);
     ASSERT_GC_OBJECT_INHERITS(thisObject, info());
     Base::visitChildren(thisObject, visitor);
+    if (JSCell* payload = thisObject->m_packed.pointer())
+        visitor.appendUnbarriered(payload);
+    visitor.append(thisObject->m_slot);
 }
 
 DEFINE_VISIT_CHILDREN(JSPromise);
@@ -115,12 +107,6 @@ std::tuple<JSObject*, JSObject*, JSObject*> JSPromise::newPromiseCapability(JSGl
 
     if (constructor == globalObject->promiseConstructor()) {
         auto* promise = JSPromise::create(vm, globalObject->promiseStructure());
-        auto [resolve, reject] = promise->createFirstResolvingFunctions(vm, globalObject);
-        return { promise, resolve, reject };
-    }
-
-    if (constructor == globalObject->internalPromiseConstructor()) {
-        auto* promise = JSInternalPromise::create(vm, globalObject->internalPromiseStructure());
         auto [resolve, reject] = promise->createFirstResolvingFunctions(vm, globalObject);
         return { promise, resolve, reject };
     }
@@ -156,9 +142,9 @@ JSPromise::DeferredData JSPromise::createDeferredData(JSGlobalObject* globalObje
     auto scope = DECLARE_THROW_SCOPE(vm);
     auto [ promiseCapability, resolveCapability, rejectCapability ] = newPromiseCapability(globalObject, promiseConstructor);
     RETURN_IF_EXCEPTION(scope, { });
-    auto* promise = jsDynamicCast<JSPromise*>(promiseCapability);
-    auto* resolve = jsDynamicCast<JSFunction*>(resolveCapability);
-    auto* reject  = jsDynamicCast<JSFunction*>(rejectCapability);
+    auto* promise = dynamicDowncast<JSPromise>(promiseCapability);
+    auto* resolve = dynamicDowncast<JSFunction>(resolveCapability);
+    auto* reject  = dynamicDowncast<JSFunction>(rejectCapability);
     if (promise && resolve && reject)
         return DeferredData { promise, resolve, reject };
 
@@ -168,7 +154,7 @@ JSPromise::DeferredData JSPromise::createDeferredData(JSGlobalObject* globalObje
 
 JSPromise* JSPromise::resolvedPromise(JSGlobalObject* globalObject, JSValue value)
 {
-    return jsCast<JSPromise*>(promiseResolve(globalObject, globalObject->promiseConstructor(), value));
+    return uncheckedDowncast<JSPromise>(promiseResolve(globalObject, globalObject->promiseConstructor(), value));
 }
 
 JSPromise* JSPromise::rejectedPromise(JSGlobalObject* globalObject, JSValue value)
@@ -181,32 +167,39 @@ JSPromise* JSPromise::rejectedPromise(JSGlobalObject* globalObject, JSValue valu
 
 void JSPromise::resolve(JSGlobalObject* globalObject, VM& vm, JSValue value)
 {
-    int32_t flags = this->flags();
     ASSERT(!value.inherits<Exception>());
-    if (!(flags & isFirstResolvingFunctionCalledFlag)) {
-        internalField(Field::Flags).setWithoutWriteBarrier(jsNumber(static_cast<int32_t>(flags | isFirstResolvingFunctionCalledFlag)));
+    if (!isFirstResolvingFunctionCalled()) {
+        setFlags(flags() | isFirstResolvingFunctionCalledFlag);
         resolvePromise(globalObject, vm, value);
     }
 }
 
 void JSPromise::reject(VM& vm, JSGlobalObject* globalObject, JSValue value)
 {
-    int32_t flags = this->flags();
     ASSERT(!value.inherits<Exception>());
-    if (!(flags & isFirstResolvingFunctionCalledFlag)) {
-        internalField(Field::Flags).setWithoutWriteBarrier(jsNumber(static_cast<int32_t>(flags | isFirstResolvingFunctionCalledFlag)));
+    if (!isFirstResolvingFunctionCalled()) {
+        setFlags(flags() | isFirstResolvingFunctionCalledFlag);
         rejectPromise(vm, globalObject, value);
     }
 }
 
 void JSPromise::fulfill(VM& vm, JSGlobalObject* globalObject, JSValue value)
 {
-    int32_t flags = this->flags();
     ASSERT(!value.inherits<Exception>());
-    if (!(flags & isFirstResolvingFunctionCalledFlag)) {
-        internalField(Field::Flags).setWithoutWriteBarrier(jsNumber(static_cast<int32_t>(flags | isFirstResolvingFunctionCalledFlag)));
+    if (!isFirstResolvingFunctionCalled()) {
+        setFlags(flags() | isFirstResolvingFunctionCalledFlag);
         fulfillPromise(vm, globalObject, value);
     }
+}
+
+void JSPromise::pipeFrom(VM& vm, JSPromise* from)
+{
+    if (isFirstResolvingFunctionCalled())
+        return;
+    setFlags(flags() | isFirstResolvingFunctionCalledFlag);
+
+    JSGlobalObject* globalObject = this->realm();
+    from->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::PromiseFulfillWithoutHandlerJob, this, jsUndefined());
 }
 
 void JSPromise::performPromiseThenExported(VM& vm, JSGlobalObject* globalObject, JSValue onFulfilled, JSValue onRejected, JSValue promiseOrCapability)
@@ -217,7 +210,7 @@ void JSPromise::performPromiseThenExported(VM& vm, JSGlobalObject* globalObject,
 void JSPromise::rejectAsHandled(VM& vm, JSGlobalObject* lexicalGlobalObject, JSValue value)
 {
     // Setting isHandledFlag before calling reject since this removes round-trip between JSC and PromiseRejectionTracker, and it does not show an user-observable behavior.
-    if (!(flags() & isFirstResolvingFunctionCalledFlag)) {
+    if (!isFirstResolvingFunctionCalled()) {
         markAsHandled();
         reject(vm, lexicalGlobalObject, value);
     }
@@ -244,56 +237,173 @@ JSPromise* JSPromise::rejectWithCaughtException(JSGlobalObject* globalObject, Th
     return this;
 }
 
+void JSPromise::setInlineMicrotaskReaction(VM& vm, InternalMicrotask task, JSCell* cell, JSValue context)
+{
+    ASSERT(status() == Status::Pending);
+    ASSERT(inlineReactionKind() == InlineReactionKind::None);
+    ASSERT(!payloadCell());
+    ASSERT(task != InternalMicrotask::None);
+    // The inline reaction always implies markAsHandled; fold both into one flag update.
+    uint16_t newFlags = flags()
+        | isHandledFlag
+        | (static_cast<uint16_t>(InlineReactionKind::InternalMicrotask) << inlineReactionKindShift)
+        | (static_cast<uint16_t>(task) << inlineReactionMicrotaskShift);
+    setSlot(vm, context);
+    setPackedCell(vm, newFlags, cell);
+}
+
+void JSPromise::setInlineHandlerReaction(VM& vm, InlineReactionKind kind, JSPromise* resultPromise, JSValue handler)
+{
+    ASSERT(status() == Status::Pending);
+    ASSERT(inlineReactionKind() == InlineReactionKind::None);
+    ASSERT(!payloadCell());
+    ASSERT(kind == InlineReactionKind::FulfillHandler || kind == InlineReactionKind::RejectHandler);
+    ASSERT(resultPromise);
+    uint16_t newFlags = flags()
+        | isHandledFlag
+        | (static_cast<uint16_t>(kind) << inlineReactionKindShift);
+    setSlot(vm, handler);
+    setPackedCell(vm, newFlags, resultPromise);
+}
+
+JSPromiseReaction* JSPromise::spillInlineReaction(VM& vm)
+{
+    auto kind = inlineReactionKind();
+    ASSERT(kind != InlineReactionKind::None);
+    JSSlimPromiseReaction* reaction = nullptr;
+    switch (kind) {
+    case InlineReactionKind::InternalMicrotask: {
+        InternalMicrotask task = inlineReactionMicrotask();
+        JSValue context = m_slot.get();
+        JSCell* cell = payloadCell();
+        reaction = JSSlimPromiseReaction::create(vm, cell ? JSValue(cell) : jsUndefined(), task, context, nullptr);
+        break;
+    }
+    case InlineReactionKind::FulfillHandler:
+    case InlineReactionKind::RejectHandler: {
+        JSPromise* resultPromise = uncheckedDowncast<JSPromise>(payloadCell());
+        JSValue handler = m_slot.get();
+        bool isFulfill = kind == InlineReactionKind::FulfillHandler;
+        reaction = JSSlimPromiseReaction::create(vm, resultPromise, handler, isFulfill, nullptr);
+        break;
+    }
+    case InlineReactionKind::None:
+        RELEASE_ASSERT_NOT_REACHED();
+    }
+    clearSlot();
+    uint16_t newFlags = flags() & ~(inlineReactionKindMask | inlineReactionMicrotaskMask);
+    setPackedCell(vm, newFlags, reaction);
+    return reaction;
+}
+
+JSPromiseReaction* JSPromise::reactionHead(VM& vm)
+{
+    ASSERT(status() == Status::Pending);
+    if (inlineReactionKind() != InlineReactionKind::None) [[unlikely]]
+        return spillInlineReaction(vm);
+    return uncheckedDowncast<JSPromiseReaction>(payloadCell());
+}
+
+JSValue JSPromise::asyncStackTraceContext() const
+{
+    if (status() != Status::Pending)
+        return { };
+    switch (inlineReactionKind()) {
+    case InlineReactionKind::None: {
+        auto* head = uncheckedDowncast<JSPromiseReaction>(payloadCell());
+        return head ? JSPromiseReaction::tryGetContext(head) : JSValue();
+    }
+    case InlineReactionKind::InternalMicrotask: {
+        if (promiseReactionPacksGlobalContextAndIndex(inlineReactionMicrotask())) {
+            ASSERT(payloadCell());
+            return JSValue(payloadCell());
+        }
+        return m_slot.get();
+    }
+    case InlineReactionKind::FulfillHandler:
+    case InlineReactionKind::RejectHandler:
+        return { };
+    }
+    return { };
+}
+
 void JSPromise::performPromiseThen(VM& vm, JSGlobalObject* globalObject, JSValue onFulfilled, JSValue onRejected, JSValue promiseOrCapability)
 {
-    if (!onFulfilled.isCallable())
-        onFulfilled = globalObject->promiseEmptyOnFulfilledFunction();
+    bool fulfilledCallable = onFulfilled.isCallable();
+    bool rejectedCallable = onRejected.isCallable();
 
-    if (!onRejected.isCallable())
-        onRejected = globalObject->promiseEmptyOnRejectedFunction();
-
-    JSValue reactionsOrResult = this->reactionsOrResult();
     switch (status()) {
     case JSPromise::Status::Pending: {
-        auto* reaction = JSPromiseReaction::create(vm, promiseOrCapability, onFulfilled, onRejected, jsUndefined(), reactionsOrResult ? jsCast<JSPromiseReaction*>(reactionsOrResult) : nullptr);
-        setReactionsOrResult(vm, reaction);
-        markAsHandled();
+        bool onlyFulfill = fulfilledCallable && !rejectedCallable;
+        bool onlyReject = !fulfilledCallable && rejectedCallable;
+        if (inlineReactionKind() == InlineReactionKind::None && !payloadCell()) {
+            if ((onlyFulfill || onlyReject) && promiseOrCapability.inherits<JSPromise>()) [[likely]] {
+                auto* resultPromise = uncheckedDowncast<JSPromise>(promiseOrCapability);
+                setInlineHandlerReaction(vm, onlyFulfill ? InlineReactionKind::FulfillHandler : InlineReactionKind::RejectHandler, resultPromise, onlyFulfill ? onFulfilled : onRejected);
+                break;
+            }
+        }
+        JSPromiseReaction* existing = reactionHead(vm);
+        JSPromiseReaction* reaction;
+        if (onlyFulfill)
+            reaction = JSSlimPromiseReaction::create(vm, promiseOrCapability, onFulfilled, true, existing);
+        else if (onlyReject)
+            reaction = JSSlimPromiseReaction::create(vm, promiseOrCapability, onRejected, false, existing);
+        else if (fulfilledCallable) {
+            ASSERT(rejectedCallable);
+            reaction = JSFullPromiseReaction::create(vm, promiseOrCapability, onFulfilled, onRejected, jsUndefined(), existing);
+        } else
+            reaction = JSSlimPromiseReaction::create(vm, promiseOrCapability, InternalMicrotask::PromiseResolveWithoutHandlerJob, jsUndefined(), existing);
+        setPackedCell(vm, flags() | isHandledFlag, reaction);
         break;
     }
     case JSPromise::Status::Rejected: {
+        JSValue settled = settlementValue();
         if (!isHandled())
             globalObject->globalObjectMethodTable()->promiseRejectionTracker(globalObject, this, JSPromiseRejectionOperation::Handle);
-        globalObject->queueMicrotask(vm, InternalMicrotask::PromiseReactionJob, static_cast<uint8_t>(Status::Rejected), promiseOrCapability, onRejected, reactionsOrResult);
+        if (rejectedCallable)
+            globalObject->queueMicrotask(vm, InternalMicrotask::PromiseReactionJob, static_cast<uint8_t>(Status::Rejected), promiseOrCapability, onRejected, settled);
+        else
+            globalObject->queueMicrotask(vm, InternalMicrotask::PromiseResolveWithoutHandlerJob, static_cast<uint8_t>(Status::Rejected), promiseOrCapability, settled, jsUndefined());
         markAsHandled();
         break;
     }
     case JSPromise::Status::Fulfilled: {
-        globalObject->queueMicrotask(vm, InternalMicrotask::PromiseReactionJob, static_cast<uint8_t>(Status::Fulfilled), promiseOrCapability, onFulfilled, reactionsOrResult);
+        JSValue settled = settlementValue();
+        if (fulfilledCallable)
+            globalObject->queueMicrotask(vm, InternalMicrotask::PromiseReactionJob, static_cast<uint8_t>(Status::Fulfilled), promiseOrCapability, onFulfilled, settled);
+        else
+            globalObject->queueMicrotask(vm, InternalMicrotask::PromiseResolveWithoutHandlerJob, static_cast<uint8_t>(Status::Fulfilled), promiseOrCapability, settled, jsUndefined());
         break;
     }
     }
 }
 
-void JSPromise::performPromiseThenWithInternalMicrotask(VM& vm, JSGlobalObject* globalObject, InternalMicrotask task, JSValue promise, JSValue context)
+void JSPromise::performPromiseThenWithInternalMicrotask(VM& vm, JSGlobalObject* globalObject, InternalMicrotask task, JSCell* cell, JSValue context)
 {
-    JSValue reactionsOrResult = this->reactionsOrResult();
+    JSValue cellValue = cell ? JSValue(cell) : jsUndefined();
     switch (status()) {
     case JSPromise::Status::Pending: {
-        JSValue encodedTask = jsNumber(static_cast<int32_t>(task));
-        auto* reaction = JSPromiseReaction::create(vm, promise, encodedTask, encodedTask, context, reactionsOrResult ? jsCast<JSPromiseReaction*>(reactionsOrResult) : nullptr);
-        setReactionsOrResult(vm, reaction);
-        markAsHandled();
+        if (inlineReactionKind() == InlineReactionKind::None && !payloadCell()) [[likely]] {
+            setInlineMicrotaskReaction(vm, task, cell, context);
+            break;
+        }
+        JSPromiseReaction* existing = reactionHead(vm);
+        auto* reaction = JSSlimPromiseReaction::create(vm, cellValue, task, context, existing);
+        setPackedCell(vm, flags() | isHandledFlag, reaction);
         break;
     }
     case JSPromise::Status::Rejected: {
+        JSValue settled = settlementValue();
         if (!isHandled())
             globalObject->globalObjectMethodTable()->promiseRejectionTracker(globalObject, this, JSPromiseRejectionOperation::Handle);
-        globalObject->queueMicrotask(vm, task, static_cast<uint8_t>(Status::Rejected), promise, reactionsOrResult, context);
+        globalObject->queueMicrotask(vm, task, static_cast<uint8_t>(Status::Rejected), cellValue, settled, context);
         markAsHandled();
         break;
     }
     case JSPromise::Status::Fulfilled: {
-        globalObject->queueMicrotask(vm, task, static_cast<uint8_t>(Status::Fulfilled), promise, reactionsOrResult, context);
+        JSValue settled = settlementValue();
+        globalObject->queueMicrotask(vm, task, static_cast<uint8_t>(Status::Fulfilled), cellValue, settled, context);
         break;
     }
     }
@@ -305,48 +415,136 @@ bool isDefinitelyNonThenable(JSObject* object, JSGlobalObject* globalObject)
         return false;
 
     auto* structure = object->structure();
-    if (globalObject->iteratorResultObjectStructure() == structure)
+    auto state = structure->definitelyNonThenableState();
+    if (state == Structure::DefinitelyNonThenableState::NonThenable && structure->realm() == globalObject)
         return true;
+    if (state == Structure::DefinitelyNonThenableState::MaybeThenable)
+        return false;
 
-    while (structure) {
-        if (structure->hasSpecialProperties())
-            return false;
-        if (structure->typeInfo().overridesGetPrototype())
-            return false;
-        if (!structure->hasMonoProto())
-            return false;
-        structure = structure->storedPrototypeStructure();
+    bool result = true;
+    auto* current = structure;
+    while (current) {
+        if (current->hasSpecialProperties()
+            || current->typeInfo().getOwnPropertySlotIsImpureForPropertyAbsence()
+            || current->typeInfo().overridesGetPrototype()
+            || !current->hasMonoProto()) {
+            result = false;
+            break;
+        }
+        current = current->storedPrototypeStructure();
     }
-    return true;
+
+    // Dictionary structures are mutated in place when properties are added or removed,
+    // so the cached state could become stale (e.g. caching NonThenable, then adding `then`).
+    // Give up caching entirely for them; the per-call walk above remains correct because
+    // `hasSpecialProperties` is updated in place even for dictionaries.
+    if (state == Structure::DefinitelyNonThenableState::NotComputed && !structure->isDictionary()) [[unlikely]] {
+        if (!result) {
+            // Always safe: a stale `false` only loses the optimization, never miscompiles.
+            structure->setDefinitelyNonThenableState(Structure::DefinitelyNonThenableState::MaybeThenable);
+        } else {
+            // A `true` result is cacheable only when the entire prototype chain stays
+            // under the protection of promiseThenWatchpointSet, which watches `then`
+            // absence on Object.prototype. That limits the cacheable chain to [self]
+            // (null proto) or [self, Object.prototype]. Mark anything else Uncacheable
+            // so subsequent calls skip this check and go straight to the walk.
+            JSValue proto = structure->storedPrototype();
+            if (!proto.isObject() || asObject(proto) == globalObject->objectPrototype())
+                structure->setDefinitelyNonThenableState(Structure::DefinitelyNonThenableState::NonThenable);
+            else
+                structure->setDefinitelyNonThenableState(Structure::DefinitelyNonThenableState::Uncacheable);
+        }
+    }
+    return result;
+}
+
+ALWAYS_INLINE void JSPromise::settleInlineInternalMicrotask(VM& vm, JSGlobalObject* globalObject, Status newStatus, JSValue argument, uint16_t flagsSnapshot)
+{
+    ASSERT((flagsSnapshot & inlineReactionKindMask) == (static_cast<uint16_t>(InlineReactionKind::InternalMicrotask) << inlineReactionKindShift));
+    ASSERT(flagsSnapshot & isHandledFlag);
+    InternalMicrotask task = static_cast<InternalMicrotask>((flagsSnapshot & inlineReactionMicrotaskMask) >> inlineReactionMicrotaskShift);
+    JSValue context = m_slot.get();
+    JSCell* cell = payloadCell();
+    JSValue cellValue = cell ? JSValue(cell) : jsUndefined();
+    uint16_t settledFlags = (flagsSnapshot & ~(inlineReactionKindMask | inlineReactionMicrotaskMask)) | static_cast<uint16_t>(newStatus);
+    setSlot(vm, argument);
+    setPackedCell(vm, settledFlags, nullptr);
+    globalObject->queueMicrotask(vm, task, static_cast<uint8_t>(newStatus), cellValue, argument, context);
+}
+
+ALWAYS_INLINE void JSPromise::settleInlineHandler(VM& vm, JSGlobalObject* globalObject, Status newStatus, JSValue argument, uint16_t flagsSnapshot)
+{
+    ASSERT(flagsSnapshot & isHandledFlag);
+    InlineReactionKind kind = static_cast<InlineReactionKind>((flagsSnapshot & inlineReactionKindMask) >> inlineReactionKindShift);
+    ASSERT(kind == InlineReactionKind::FulfillHandler || kind == InlineReactionKind::RejectHandler);
+    bool settledIsFulfilled = newStatus == Status::Fulfilled;
+    bool handlerIsFulfill = kind == InlineReactionKind::FulfillHandler;
+    JSPromise* resultPromise = uncheckedDowncast<JSPromise>(payloadCell());
+    JSValue handler = m_slot.get();
+    uint16_t settledFlags = (flagsSnapshot & ~(inlineReactionKindMask | inlineReactionMicrotaskMask)) | static_cast<uint16_t>(newStatus);
+    setSlot(vm, argument);
+    setPackedCell(vm, settledFlags, nullptr);
+    if (settledIsFulfilled == handlerIsFulfill)
+        globalObject->queueMicrotask(vm, InternalMicrotask::PromiseReactionJob, static_cast<uint8_t>(newStatus), resultPromise, handler, argument);
+    else
+        globalObject->queueMicrotask(vm, InternalMicrotask::PromiseResolveWithoutHandlerJob, static_cast<uint8_t>(newStatus), resultPromise, argument, jsUndefined());
 }
 
 void JSPromise::rejectPromise(VM& vm, JSGlobalObject* globalObject, JSValue argument)
 {
     ASSERT(status() == Status::Pending);
-    int32_t flags = this->flags();
-    JSValue reactions = this->reactionsOrResult();
-    internalField(Field::Flags).setWithoutWriteBarrier(jsNumber(static_cast<int32_t>(flags | static_cast<uint32_t>(Status::Rejected))));
-    internalField(Field::ReactionsOrResult).set(vm, this, argument);
+    uint16_t currentFlags = flags();
+    auto kind = static_cast<InlineReactionKind>((currentFlags & inlineReactionKindMask) >> inlineReactionKindShift);
+    switch (kind) {
+    case InlineReactionKind::InternalMicrotask:
+        return settleInlineInternalMicrotask(vm, globalObject, Status::Rejected, argument, currentFlags);
 
-    if (!isHandled())
-        globalObject->globalObjectMethodTable()->promiseRejectionTracker(globalObject, this, JSPromiseRejectionOperation::Reject);
+    case InlineReactionKind::FulfillHandler:
+    case InlineReactionKind::RejectHandler:
+        return settleInlineHandler(vm, globalObject, Status::Rejected, argument, currentFlags);
 
-    if (!reactions)
+    case InlineReactionKind::None: {
+        JSPromiseReaction* reactions = uncheckedDowncast<JSPromiseReaction>(payloadCell());
+        uint16_t settledFlags = currentFlags | static_cast<uint16_t>(Status::Rejected);
+        setSlot(vm, argument);
+        setPackedCell(vm, settledFlags, nullptr);
+
+        if (!isHandled())
+            globalObject->globalObjectMethodTable()->promiseRejectionTracker(globalObject, this, JSPromiseRejectionOperation::Reject);
+
+        if (!reactions)
+            return;
+        triggerPromiseReactions(vm, globalObject, Status::Rejected, reactions, argument);
         return;
-    triggerPromiseReactions(vm, globalObject, Status::Rejected, jsCast<JSPromiseReaction*>(reactions), argument);
+    }
+    }
 }
 
 void JSPromise::fulfillPromise(VM& vm, JSGlobalObject* globalObject, JSValue argument)
 {
     ASSERT(status() == Status::Pending);
-    int32_t flags = this->flags();
-    JSValue reactions = this->reactionsOrResult();
-    internalField(Field::Flags).setWithoutWriteBarrier(jsNumber(static_cast<int32_t>(flags | static_cast<uint32_t>(Status::Fulfilled))));
-    internalField(Field::ReactionsOrResult).set(vm, this, argument);
+    uint16_t currentFlags = flags();
+    auto kind = static_cast<InlineReactionKind>((currentFlags & inlineReactionKindMask) >> inlineReactionKindShift);
+    switch (kind) {
+    case InlineReactionKind::InternalMicrotask:
+        return settleInlineInternalMicrotask(vm, globalObject, Status::Fulfilled, argument, currentFlags);
 
-    if (!reactions)
+    case InlineReactionKind::FulfillHandler:
+    case InlineReactionKind::RejectHandler:
+        return settleInlineHandler(vm, globalObject, Status::Fulfilled, argument, currentFlags);
+
+    case InlineReactionKind::None: {
+        JSPromiseReaction* reactions = uncheckedDowncast<JSPromiseReaction>(payloadCell());
+        uint16_t settledFlags = currentFlags | static_cast<uint16_t>(Status::Fulfilled);
+        setSlot(vm, argument);
+        setPackedCell(vm, settledFlags, nullptr);
+
+        if (!reactions)
+            return;
+        triggerPromiseReactions(vm, globalObject, Status::Fulfilled, reactions, argument);
         return;
-    triggerPromiseReactions(vm, globalObject, Status::Fulfilled, jsCast<JSPromiseReaction*>(reactions), argument);
+    }
+    }
 }
 
 void JSPromise::resolvePromise(JSGlobalObject* globalObject, VM& vm, JSValue resolution)
@@ -362,7 +560,7 @@ void JSPromise::resolvePromise(JSGlobalObject* globalObject, VM& vm, JSValue res
 
     auto* resolutionObject = asObject(resolution);
     if (resolutionObject->inherits<JSPromise>()) {
-        auto* promise = jsCast<JSPromise*>(resolutionObject);
+        auto* promise = uncheckedDowncast<JSPromise>(resolutionObject);
         if (promise->isThenFastAndNonObservable())
             return globalObject->queueMicrotask(vm, InternalMicrotask::PromiseResolveThenableJobFast, 0, resolutionObject, this, jsUndefined());
     }
@@ -394,15 +592,15 @@ JSC_DEFINE_HOST_FUNCTION(promiseResolvingFunctionResolve, (JSGlobalObject* globa
 {
     VM& vm = globalObject->vm();
 
-    auto* callee = jsCast<JSFunctionWithFields*>(callFrame->jsCallee());
-    auto* other = jsDynamicCast<JSFunctionWithFields*>(callee->getField(JSFunctionWithFields::Field::ResolvingOther));
+    auto* callee = uncheckedDowncast<JSFunctionWithFields>(callFrame->jsCallee());
+    auto* other = dynamicDowncast<JSFunctionWithFields>(callee->getField(JSFunctionWithFields::Field::ResolvingOther));
     if (!other) [[unlikely]]
         return JSValue::encode(jsUndefined());
 
     callee->setField(vm, JSFunctionWithFields::Field::ResolvingOther, jsNull());
     other->setField(vm, JSFunctionWithFields::Field::ResolvingOther, jsNull());
 
-    auto* promise = jsCast<JSPromise*>(callee->getField(JSFunctionWithFields::Field::ResolvingPromise));
+    auto* promise = uncheckedDowncast<JSPromise>(callee->getField(JSFunctionWithFields::Field::ResolvingPromise));
     JSValue argument = callFrame->argument(0);
 
     promise->resolvePromise(globalObject, vm, argument);
@@ -413,15 +611,15 @@ JSC_DEFINE_HOST_FUNCTION(promiseResolvingFunctionReject, (JSGlobalObject* global
 {
     VM& vm = globalObject->vm();
 
-    auto* callee = jsCast<JSFunctionWithFields*>(callFrame->jsCallee());
-    auto* other = jsDynamicCast<JSFunctionWithFields*>(callee->getField(JSFunctionWithFields::Field::ResolvingOther));
+    auto* callee = uncheckedDowncast<JSFunctionWithFields>(callFrame->jsCallee());
+    auto* other = dynamicDowncast<JSFunctionWithFields>(callee->getField(JSFunctionWithFields::Field::ResolvingOther));
     if (!other) [[unlikely]]
         return JSValue::encode(jsUndefined());
 
     callee->setField(vm, JSFunctionWithFields::Field::ResolvingOther, jsNull());
     other->setField(vm, JSFunctionWithFields::Field::ResolvingOther, jsNull());
 
-    auto* promise = jsCast<JSPromise*>(callee->getField(JSFunctionWithFields::Field::ResolvingPromise));
+    auto* promise = uncheckedDowncast<JSPromise>(callee->getField(JSFunctionWithFields::Field::ResolvingPromise));
     JSValue argument = callFrame->argument(0);
 
     promise->rejectPromise(vm, globalObject, argument);
@@ -430,8 +628,8 @@ JSC_DEFINE_HOST_FUNCTION(promiseResolvingFunctionReject, (JSGlobalObject* global
 
 JSC_DEFINE_HOST_FUNCTION(promiseFirstResolvingFunctionResolve, (JSGlobalObject* globalObject, CallFrame* callFrame))
 {
-    auto* callee = jsCast<JSFunctionWithFields*>(callFrame->jsCallee());
-    auto* promise = jsCast<JSPromise*>(callee->getField(JSFunctionWithFields::Field::FirstResolvingPromise));
+    auto* callee = uncheckedDowncast<JSFunctionWithFields>(callFrame->jsCallee());
+    auto* promise = uncheckedDowncast<JSPromise>(callee->getField(JSFunctionWithFields::Field::FirstResolvingPromise));
     JSValue argument = callFrame->argument(0);
 
     promise->resolve(globalObject, globalObject->vm(), argument);
@@ -440,8 +638,8 @@ JSC_DEFINE_HOST_FUNCTION(promiseFirstResolvingFunctionResolve, (JSGlobalObject* 
 
 JSC_DEFINE_HOST_FUNCTION(promiseFirstResolvingFunctionReject, (JSGlobalObject* globalObject, CallFrame* callFrame))
 {
-    auto* callee = jsCast<JSFunctionWithFields*>(callFrame->jsCallee());
-    auto* promise = jsCast<JSPromise*>(callee->getField(JSFunctionWithFields::Field::FirstResolvingPromise));
+    auto* callee = uncheckedDowncast<JSFunctionWithFields>(callFrame->jsCallee());
+    auto* promise = uncheckedDowncast<JSPromise>(callee->getField(JSFunctionWithFields::Field::FirstResolvingPromise));
     JSValue argument = callFrame->argument(0);
 
     promise->reject(globalObject->vm(), globalObject, argument);
@@ -452,15 +650,15 @@ JSC_DEFINE_HOST_FUNCTION(promiseResolvingFunctionResolveWithInternalMicrotask, (
 {
     VM& vm = globalObject->vm();
 
-    auto* callee = jsCast<JSFunctionWithFields*>(callFrame->jsCallee());
-    auto* other = jsDynamicCast<JSFunctionWithFields*>(callee->getField(JSFunctionWithFields::Field::ResolvingWithInternalMicrotaskOther));
+    auto* callee = uncheckedDowncast<JSFunctionWithFields>(callFrame->jsCallee());
+    auto* other = dynamicDowncast<JSFunctionWithFields>(callee->getField(JSFunctionWithFields::Field::ResolvingWithInternalMicrotaskOther));
     if (!other) [[unlikely]]
         return JSValue::encode(jsUndefined());
 
     callee->setField(vm, JSFunctionWithFields::Field::ResolvingWithInternalMicrotaskOther, jsNull());
     other->setField(vm, JSFunctionWithFields::Field::ResolvingWithInternalMicrotaskOther, jsNull());
 
-    auto* context = jsCast<JSPromiseCombinatorsGlobalContext*>(callee->getField(JSFunctionWithFields::Field::ResolvingWithInternalMicrotaskContext));
+    auto* context = uncheckedDowncast<JSPromiseCombinatorsGlobalContext>(callee->getField(JSFunctionWithFields::Field::ResolvingWithInternalMicrotaskContext));
     JSValue argument = callFrame->argument(0);
     JSValue onFulfilled = context->promise();
     JSPromise::resolveWithInternalMicrotask(globalObject, vm, argument, static_cast<InternalMicrotask>(onFulfilled.asInt32()), context->remainingElementsCount());
@@ -471,15 +669,15 @@ JSC_DEFINE_HOST_FUNCTION(promiseResolvingFunctionRejectWithInternalMicrotask, (J
 {
     VM& vm = globalObject->vm();
 
-    auto* callee = jsCast<JSFunctionWithFields*>(callFrame->jsCallee());
-    auto* other = jsDynamicCast<JSFunctionWithFields*>(callee->getField(JSFunctionWithFields::Field::ResolvingWithInternalMicrotaskOther));
+    auto* callee = uncheckedDowncast<JSFunctionWithFields>(callFrame->jsCallee());
+    auto* other = dynamicDowncast<JSFunctionWithFields>(callee->getField(JSFunctionWithFields::Field::ResolvingWithInternalMicrotaskOther));
     if (!other) [[unlikely]]
         return JSValue::encode(jsUndefined());
 
     callee->setField(vm, JSFunctionWithFields::Field::ResolvingWithInternalMicrotaskOther, jsNull());
     other->setField(vm, JSFunctionWithFields::Field::ResolvingWithInternalMicrotaskOther, jsNull());
 
-    auto* context = jsCast<JSPromiseCombinatorsGlobalContext*>(callee->getField(JSFunctionWithFields::Field::ResolvingWithInternalMicrotaskContext));
+    auto* context = uncheckedDowncast<JSPromiseCombinatorsGlobalContext>(callee->getField(JSFunctionWithFields::Field::ResolvingWithInternalMicrotaskContext));
     JSValue argument = callFrame->argument(0);
     JSValue onFulfilled = context->promise();
     JSPromise::rejectWithInternalMicrotask(vm, globalObject, argument, static_cast<InternalMicrotask>(onFulfilled.asInt32()), context->remainingElementsCount());
@@ -491,7 +689,7 @@ JSC_DEFINE_HOST_FUNCTION(promiseCapabilityExecutor, (JSGlobalObject* globalObjec
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto* callee = jsCast<JSFunctionWithFields*>(callFrame->jsCallee());
+    auto* callee = uncheckedDowncast<JSFunctionWithFields>(callFrame->jsCallee());
     JSValue resolve = callee->getField(JSFunctionWithFields::Field::ExecutorResolve);
     if (!resolve.isUndefined()) [[unlikely]]
         return throwVMTypeError(globalObject, scope, "resolve function is already set"_s);
@@ -520,15 +718,23 @@ std::tuple<JSFunction*, JSFunction*> JSPromise::createResolvingFunctions(VM& vm,
     return std::tuple { resolve, reject };
 }
 
-std::tuple<JSFunction*, JSFunction*> JSPromise::createFirstResolvingFunctions(VM& vm, JSGlobalObject* globalObject)
+JSFunction* JSPromise::createFirstResolveFunction(VM& vm, JSGlobalObject* globalObject)
 {
     auto* resolve = JSFunctionWithFields::create(vm, globalObject, vm.promiseFirstResolvingFunctionResolveExecutable(), 1, nullString());
-    auto* reject = JSFunctionWithFields::create(vm, globalObject, vm.promiseFirstResolvingFunctionRejectExecutable(), 1, nullString());
-
     resolve->setField(vm, JSFunctionWithFields::Field::FirstResolvingPromise, this);
-    reject->setField(vm, JSFunctionWithFields::Field::FirstResolvingPromise, this);
+    return resolve;
+}
 
-    return std::tuple { resolve, reject };
+JSFunction* JSPromise::createFirstRejectFunction(VM& vm, JSGlobalObject* globalObject)
+{
+    auto* reject = JSFunctionWithFields::create(vm, globalObject, vm.promiseFirstResolvingFunctionRejectExecutable(), 1, nullString());
+    reject->setField(vm, JSFunctionWithFields::Field::FirstResolvingPromise, this);
+    return reject;
+}
+
+std::tuple<JSFunction*, JSFunction*> JSPromise::createFirstResolvingFunctions(VM& vm, JSGlobalObject* globalObject)
+{
+    return std::tuple { createFirstResolveFunction(vm, globalObject), createFirstRejectFunction(vm, globalObject) };
 }
 
 std::tuple<JSFunction*, JSFunction*> JSPromise::createResolvingFunctionsWithInternalMicrotask(VM& vm, JSGlobalObject* globalObject, InternalMicrotask task, JSValue context)
@@ -555,16 +761,36 @@ void JSPromise::triggerPromiseReactions(VM& vm, JSGlobalObject* globalObject, St
 
     auto queue = [&](JSPromiseReaction* reaction) ALWAYS_INLINE_LAMBDA {
         JSValue promise = reaction->promise();
-        JSValue handler = isResolved ? reaction->onFulfilled() : reaction->onRejected();
-        JSValue context = reaction->context();
-        JSValue arg = argument;
         InternalMicrotask task = InternalMicrotask::PromiseReactionJob;
-        if (handler.isInt32()) {
-            task = static_cast<InternalMicrotask>(handler.asInt32());
-            handler = arg;
-            arg = context;
-        } else
-            ASSERT(context.isUndefinedOrNull());
+        JSValue handler;
+        JSValue arg = argument;
+
+        switch (reaction->type()) {
+        case JSSlimPromiseReactionType: {
+            auto* slimReaction = uncheckedDowncast<JSSlimPromiseReaction>(reaction);
+            if (auto internalTask = slimReaction->internalMicrotask(); internalTask != InternalMicrotask::None) {
+                task = internalTask;
+                handler = argument;
+                arg = slimReaction->handlerOrContext();
+            } else if (slimReaction->isFulfillHandler() == isResolved)
+                handler = slimReaction->handlerOrContext();
+            else {
+                task = InternalMicrotask::PromiseResolveWithoutHandlerJob;
+                handler = argument;
+                arg = jsUndefined();
+            }
+            break;
+        }
+        case JSFullPromiseReactionType: {
+            auto* fullReaction = uncheckedDowncast<JSFullPromiseReaction>(reaction);
+            handler = isResolved ? fullReaction->onFulfilled() : fullReaction->onRejected();
+            ASSERT(fullReaction->context().isUndefinedOrNull());
+            break;
+        }
+        default:
+            RELEASE_ASSERT_NOT_REACHED();
+        }
+
         globalObject->queueMicrotask(vm, task, static_cast<uint8_t>(status), promise, handler, arg);
     };
 
@@ -598,9 +824,9 @@ void JSPromise::triggerPromiseReactions(VM& vm, JSGlobalObject* globalObject, St
 void JSPromise::resolveWithInternalMicrotaskForAsyncAwait(JSGlobalObject* globalObject, VM& vm, JSValue resolution, InternalMicrotask task, JSValue context)
 {
     if (resolution.inherits<JSPromise>()) {
-        auto* promise = jsCast<JSPromise*>(resolution);
+        auto* promise = uncheckedDowncast<JSPromise>(resolution);
         if (promiseSpeciesWatchpointIsValid(vm, promise)) [[likely]]
-            return promise->performPromiseThenWithInternalMicrotask(vm, globalObject, task, jsUndefined(), context);
+            return promise->performPromiseThenWithInternalMicrotask(vm, globalObject, task, nullptr, context);
 
         JSValue constructor;
         JSValue error;
@@ -623,8 +849,8 @@ void JSPromise::resolveWithInternalMicrotaskForAsyncAwait(JSGlobalObject* global
             return;
         }
 
-        if (constructor == globalObject->promiseConstructor() || constructor == globalObject->internalPromiseConstructor())
-            return promise->performPromiseThenWithInternalMicrotask(vm, globalObject, task, jsUndefined(), context);
+        if (constructor == globalObject->promiseConstructor())
+            return promise->performPromiseThenWithInternalMicrotask(vm, globalObject, task, nullptr, context);
     }
 
     resolveWithInternalMicrotask(globalObject, vm, resolution, task, context);
@@ -637,7 +863,7 @@ void JSPromise::resolveWithInternalMicrotask(JSGlobalObject* globalObject, VM& v
 
     auto* resolutionObject = asObject(resolution);
     if (resolutionObject->inherits<JSPromise>()) {
-        auto* promise = jsCast<JSPromise*>(resolutionObject);
+        auto* promise = uncheckedDowncast<JSPromise>(resolutionObject);
         if (promise->isThenFastAndNonObservable())
             return globalObject->queueMicrotask(vm, InternalMicrotask::PromiseResolveThenableJobWithInternalMicrotaskFast, static_cast<uint8_t>(task), resolutionObject, context, jsUndefined());
     }
@@ -679,16 +905,10 @@ bool JSPromise::isThenFastAndNonObservable()
 {
     JSGlobalObject* globalObject = this->realm();
     Structure* structure = this->structure();
-    if (!globalObject->promiseThenWatchpointSet().isStillValid()) [[unlikely]] {
-        if (inherits<JSInternalPromise>())
-            return true;
+    if (!globalObject->promiseThenWatchpointSet().isStillValid()) [[unlikely]]
         return false;
-    }
 
     if (structure == globalObject->promiseStructure())
-        return true;
-
-    if (inherits<JSInternalPromise>())
         return true;
 
     if (getPrototypeDirect() != globalObject->promisePrototype())
@@ -706,7 +926,7 @@ JSObject* promiseSpeciesConstructor(JSGlobalObject* globalObject, JSObject* this
     VM& vm = getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    if (auto* promise = jsDynamicCast<JSPromise*>(thisObject)) [[likely]] {
+    if (auto* promise = dynamicDowncast<JSPromise>(thisObject)) [[likely]] {
         if (promiseSpeciesWatchpointIsValid(vm, promise)) [[likely]]
             return globalObject->promiseConstructor();
     }
@@ -756,10 +976,7 @@ JSObject* JSPromise::then(JSGlobalObject* globalObject, JSValue onFulfilled, JSV
     JSObject* resultPromise;
     JSValue resultPromiseCapability;
     if (promiseSpeciesWatchpointIsValid(vm, this)) [[likely]] {
-        if (inherits<JSInternalPromise>())
-            resultPromise = JSInternalPromise::create(vm, globalObject->internalPromiseStructure());
-        else
-            resultPromise = JSPromise::create(vm, globalObject->promiseStructure());
+        resultPromise = JSPromise::create(vm, globalObject->promiseStructure());
         resultPromiseCapability = resultPromise;
     } else {
         auto* constructor = promiseSpeciesConstructor(globalObject, this);
@@ -783,7 +1000,7 @@ JSObject* JSPromise::promiseResolve(JSGlobalObject* globalObject, JSObject* cons
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     if (argument.inherits<JSPromise>()) {
-        auto* promise = jsCast<JSPromise*>(argument);
+        auto* promise = uncheckedDowncast<JSPromise>(argument);
         if (promiseSpeciesWatchpointIsValid(vm, promise)) [[likely]] {
             if (constructor == promise->realm()->promiseConstructor())
                 return promise;

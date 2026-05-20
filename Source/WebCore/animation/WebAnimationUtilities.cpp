@@ -37,6 +37,7 @@
 #include "CSSTransitionEvent.h"
 #include "Element.h"
 #include "EventTargetInlines.h"
+#include "HTMLDialogElement.h"
 #include "KeyframeEffectStack.h"
 #include "NodeDocument.h"
 #include "RenderStyle.h"
@@ -407,8 +408,13 @@ AtomString animatablePropertyAsString(AnimatableCSSProperty property)
     );
 }
 
-bool styleHasDisplayTransition(const RenderStyle& style)
+bool styleHasDisplayTransition(const RenderStyle& style, const Element& element)
 {
+    // FIXME: Best-effort disablement of this feature for elements participating in the top layer as
+    // that requires some more specification design work that has not happened yet.
+    if (element.popoverState() != PopoverState::None || is<HTMLDialogElement>(element))
+        return false;
+
     if (style.transitions().isInitial())
         return false;
 
@@ -423,8 +429,11 @@ bool styleHasDisplayTransition(const RenderStyle& style)
             [&](const Style::SingleTransitionProperty::UnknownProperty&) {
                 return false;
             },
+            [&](const Style::SingleTransitionProperty::CustomProperty&) {
+                return false;
+            },
             [&](const Style::SingleTransitionProperty::SingleProperty& property) {
-                if (auto* ptr = std::get_if<CSSPropertyID>(&property.value); ptr && *ptr == CSSPropertyDisplay)
+                if (property.propertyID == CSSPropertyDisplay)
                     return transition.behavior() == TransitionBehavior::AllowDiscrete;
                 return false;
             }

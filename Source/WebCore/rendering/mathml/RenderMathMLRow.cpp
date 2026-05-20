@@ -27,6 +27,7 @@
 
 #include "config.h"
 #include "RenderMathMLRow.h"
+#include "RenderBlockInlines.h"
 
 #if ENABLE(MATHML)
 
@@ -133,7 +134,8 @@ void RenderMathMLRow::computePreferredLogicalWidths()
 {
     ASSERT(needsPreferredLogicalWidthsUpdate());
 
-    m_minPreferredLogicalWidth = m_maxPreferredLogicalWidth = preferredLogicalWidthOfRowItems();
+    m_maxPreferredLogicalWidth = preferredLogicalWidthOfRowItems();
+    m_minPreferredLogicalWidth = m_maxPreferredLogicalWidth;
 
     auto sizes = sizeAppliedToMathContent(LayoutPhase::CalculatePreferredLogicalWidth);
     applySizeToMathContent(LayoutPhase::CalculatePreferredLogicalWidth, sizes);
@@ -187,6 +189,8 @@ void RenderMathMLRow::layoutBlock(RelayoutChildren relayoutChildren, LayoutUnit)
     shiftInFlowChildren(shift, 0);
 
     adjustLayoutForBorderAndPadding();
+
+    updateLogicalHeight();
 
     layoutOutOfFlowBoxes(relayoutChildren);
 }

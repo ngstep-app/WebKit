@@ -53,7 +53,9 @@ JITData::JITData(unsigned propertyCacheSize, unsigned poolSize, const JITCode& j
         case LinkerIR::Type::StructureCacheClearedWatchpointSet:
         case LinkerIR::Type::StringToStringWatchpointSet:
         case LinkerIR::Type::StringValueOfWatchpointSet:
+        case LinkerIR::Type::StringSymbolMatchWatchpointSet:
         case LinkerIR::Type::StringSymbolReplaceWatchpointSet:
+        case LinkerIR::Type::StringSymbolSplitWatchpointSet:
         case LinkerIR::Type::StringSymbolToPrimitiveWatchpointSet:
         case LinkerIR::Type::RegExpPrimordialPropertiesWatchpointSet:
         case LinkerIR::Type::PromiseThenWatchpointSet:
@@ -173,9 +175,19 @@ bool JITData::tryInitialize(VM& vm, CodeBlock* codeBlock, const JITCode& jitCode
             success &= attemptToWatch(codeBlock, m_globalObject->stringValueOfWatchpointSet(), watchpoint);
             break;
         }
+        case LinkerIR::Type::StringSymbolMatchWatchpointSet: {
+            auto& watchpoint = m_watchpoints[indexOfWatchpoints++];
+            success &= attemptToWatch(codeBlock, m_globalObject->stringSymbolMatchWatchpointSet(), watchpoint);
+            break;
+        }
         case LinkerIR::Type::StringSymbolReplaceWatchpointSet: {
             auto& watchpoint = m_watchpoints[indexOfWatchpoints++];
             success &= attemptToWatch(codeBlock, m_globalObject->stringSymbolReplaceWatchpointSet(), watchpoint);
+            break;
+        }
+        case LinkerIR::Type::StringSymbolSplitWatchpointSet: {
+            auto& watchpoint = m_watchpoints[indexOfWatchpoints++];
+            success &= attemptToWatch(codeBlock, m_globalObject->stringSymbolSplitWatchpointSet(), watchpoint);
             break;
         }
         case LinkerIR::Type::StringSymbolToPrimitiveWatchpointSet: {

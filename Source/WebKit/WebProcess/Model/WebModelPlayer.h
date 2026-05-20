@@ -29,9 +29,12 @@
 #if ENABLE(GPU_PROCESS_MODEL)
 
 #include "ModelTypes.h"
+#include <WebCore/Color.h>
 #include <WebCore/Model.h>
 #include <WebCore/ModelPlayer.h>
+#include <WebCore/ModelPlayerAnimationState.h>
 #include <WebCore/ModelPlayerClient.h>
+#include <WebCore/PlatformDynamicRangeLimit.h>
 #include <WebCore/StageModeOperations.h>
 #include <wtf/Forward.h>
 #include <wtf/RetainPtr.h>
@@ -63,7 +66,8 @@ public:
     virtual ~WebModelPlayer();
 
     WebCore::ModelPlayerIdentifier identifier() const final;
-    void update();
+    bool isPlaceholder() const final;
+    void scheduleUpdateIfNeeded();
 
 private:
     WebModelPlayer(WebCore::Page&, WebCore::ModelPlayerClient&);
@@ -87,9 +91,6 @@ private:
     void animationDuration(CompletionHandler<void(std::optional<Seconds>&&)>&&) final;
     void animationCurrentTime(CompletionHandler<void(std::optional<Seconds>&&)>&&) final;
     void setAnimationCurrentTime(Seconds, CompletionHandler<void(bool success)>&&) final;
-    void hasAudio(CompletionHandler<void(std::optional<bool>&&)>&&) final;
-    void isMuted(CompletionHandler<void(std::optional<bool>&&)>&&) final;
-    void setIsMuted(bool, CompletionHandler<void(bool success)>&&) final;
     WebCore::ModelPlayerAccessibilityChildren accessibilityChildren() final;
 #if PLATFORM(COCOA)
     std::optional<WebCore::TransformationMatrix> entityTransform() const final;
@@ -97,6 +98,10 @@ private:
     void setEntityTransform(WebCore::TransformationMatrix) final;
     bool supportsTransform(WebCore::TransformationMatrix) final;
     bool supportsMouseInteraction() final;
+    void visibilityStateDidChange() final;
+    void reload(WebCore::Model&, WebCore::LayoutSize, WebCore::ModelPlayerAnimationState&, std::unique_ptr<WebCore::ModelPlayerTransformState>&&) final;
+    std::optional<WebCore::ModelPlayerAnimationState> currentAnimationState() const final;
+    std::optional<std::unique_ptr<WebCore::ModelPlayerTransformState>> currentTransformState() const final;
 
     const MachSendRight* displayBuffer() const;
     WebCore::GraphicsLayerContentsDisplayDelegate* contentsDisplayDelegate();
@@ -109,13 +114,25 @@ private:
     Seconds currentTime() const final;
     void setCurrentTime(Seconds, CompletionHandler<void()>&&) final;
     void play(bool);
-    void simulate(float elapsedTime);
+    bool simulate(float elapsedTime);
     double duration() const final;
 
     void ensureOnMainThreadWithProtectedThis(Function<void(Ref<WebModelPlayer>)>&& task);
+    void startUpdateLoopIfNeeded();
+    void update();
+    bool render();
+    void scheduleDisplayUpdate();
+
     void setStageMode(WebCore::StageModeOperation) final;
     void notifyEntityTransformUpdated();
     void setEnvironmentMap(Ref<WebCore::SharedBuffer>&&) final;
+
+#if HAVE(SUPPORT_HDR_DISPLAY) && ENABLE(PIXEL_FORMAT_RGBA16F)
+    void setDynamicRangeLimit(WebCore::PlatformDynamicRangeLimit, float currentEDRHeadroom, bool suppressEDR) final;
+    std::optional<double> getEffectiveDynamicRangeLimitValue() const final;
+    float computeContentsHeadroom();
+    void updateContentsHeadroom();
+#endif
 
     WeakPtr<WebCore::ModelPlayerClient> m_client;
 
@@ -126,8 +143,11 @@ private:
     RetainPtr<NSData> m_retainedData;
     WeakRef<WebCore::Page> m_page;
     mutable RefPtr<ModelDisplayBufferDisplayDelegate> m_contentsDisplayDelegate;
-    uint32_t m_currentTexture { 0 };
+    WeakPtr<WebCore::GraphicsLayer> m_graphicsLayer;
+    uint32_t m_renderTextureIndex { 0 };
+    uint32_t m_displayTextureIndex { 0 };
     WebCore::StageModeOperation m_stageMode { WebCore::StageModeOperation::None };
+    std::optional<WebCore::Color> m_backgroundColor;
     WebCore::IntSize m_currentPixelSize;
     bool m_didFinishLoading { false };
     enum class PauseState {
@@ -140,8 +160,21 @@ private:
     std::optional<Ref<WebCore::SharedBuffer>> m_environmentMap;
     RetainPtr<WKStageModeOrbitSimulator> m_orbitSimulator;
     MonotonicTime m_lastUpdateTime;
+    std::optional<WebCore::ModelPlayerAnimationState> m_cachedAnimationState;
+    std::optional<std::unique_ptr<WebCore::ModelPlayerTransformState>> m_cachedTransformState;
     float m_playbackRate { 1.0f };
     bool m_isLooping { false };
+
+    bool m_isUpdateLoopRunning { false };
+    bool m_isUpdateScheduled { false };
+    bool m_isUpdating { false };
+    bool m_needsEntityTransformNotification { false };
+
+#if HAVE(SUPPORT_HDR_DISPLAY) && ENABLE(PIXEL_FORMAT_RGBA16F)
+    float m_currentEDRHeadroom { 1.f };
+    bool m_suppressEDR { false };
+    WebCore::PlatformDynamicRangeLimit m_dynamicRangeLimit { WebCore::PlatformDynamicRangeLimit::initialValue() };
+#endif
 };
 
 }

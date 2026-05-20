@@ -45,6 +45,7 @@ struct WebModelCreateMeshDescriptor;
 namespace WebModel {
 struct ImageAsset;
 struct ResizeMeshDescriptor;
+struct TypedResourceId;
 struct UpdateMaterialDescriptor;
 struct UpdateMeshDescriptor;
 struct UpdateTextureDescriptor;
@@ -63,29 +64,26 @@ public:
     ~WebMesh();
 
     bool NODELETE isValid() const;
-    void NODELETE render() const;
-    void NODELETE update(const WebModel::UpdateMeshDescriptor&);
-    void NODELETE updateTexture(const WebModel::UpdateTextureDescriptor&);
-    void NODELETE updateMaterial(const WebModel::UpdateMaterialDescriptor&);
+    void NODELETE render(uint32_t textureIndex, Function<void(bool)>&&) const;
+    void NODELETE update(Vector<WebModel::UpdateMeshDescriptor>&&);
+    void NODELETE updateTexture(Vector<WebModel::UpdateTextureDescriptor>&&);
+    void NODELETE updateMaterial(Vector<WebModel::UpdateMaterialDescriptor>&&);
     void NODELETE setTransform(const simd_float4x4&);
     void NODELETE setFOV(float);
     void NODELETE setBackgroundColor(const simd_float3&);
-    void NODELETE setEnvironmentMap(const WebModel::ImageAsset&);
+    void NODELETE setEnvironmentMap(const WebModel::UpdateTextureDescriptor&);
     void NODELETE play(bool);
     void NODELETE updateRenderBuffers(const WebModel::ResizeMeshDescriptor&);
+    void processRemovals(Vector<WebModel::TypedResourceId>&& meshRemovals, Vector<WebModel::TypedResourceId>&& materialRemovals, Vector<WebModel::TypedResourceId>&& textureRemovals, CompletionHandler<void(bool)>&&);
 
 private:
     WebMesh(const WebModelCreateMeshDescriptor&);
-
-    void NODELETE processUpdates() const;
 
     RetainPtr<NSMutableArray> m_textures;
 
 #if ENABLE(GPU_PROCESS_MODEL)
     RetainPtr<WKBridgeReceiver> m_receiver;
     RetainPtr<NSUUID> m_meshIdentifier;
-    RetainPtr<NSMutableDictionary> m_batchedUpdates;
-    mutable uint32_t m_currentTexture { 0 };
     mutable bool m_meshDataExists { false };
     std::optional<simd_float4x4> m_transform;
 #endif

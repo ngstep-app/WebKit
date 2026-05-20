@@ -1542,7 +1542,7 @@ to-zero
 // nearest
 // progress
 random
-element-shared
+element-scoped
 // fixed
 sibling-count
 sibling-index
@@ -1603,6 +1603,7 @@ tip enable-if=ENABLE_APPLE_PAY&ENABLE_APPLE_PAY_NEW_BUTTON_TYPES
 // font-synthesis
 weight
 style
+oblique-only
 
 // will-change
 scroll-position
@@ -1830,6 +1831,7 @@ trim-all
 no-autospace
 ideograph-alpha
 ideograph-numeric
+insert
 
 // scrollbar-gutter
 // auto
@@ -1848,6 +1850,9 @@ allow-discrete
 // block
 // inline
 -internal-textarea-auto
+
+// outline-offset
+-internal-inset
 
 // CSS Anchor Positioning
 anchor
@@ -1912,7 +1917,9 @@ span-self-inline-end
 // position-visibility
 // always
 anchors-valid
+anchor-valid
 anchors-visible
+anchor-visible
 no-overflow
 
 // view-transition-name
@@ -1935,3 +1942,6 @@ strict-origin
 origin-when-cross-origin
 strict-origin-when-cross-origin
 unsafe-url
+
+// <will-change>
+will-change

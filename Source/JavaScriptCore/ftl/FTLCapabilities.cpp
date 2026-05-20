@@ -81,6 +81,7 @@ inline CapabilityLevel canCompile(Node* node)
     case NewArray:
     case NewArrayWithSpread:
     case NewInternalFieldObject:
+    case NewPromise:
     case Spread:
     case NewArrayBuffer:
     case NewTypedArray:
@@ -174,8 +175,11 @@ inline CapabilityLevel canCompile(Node* node)
     case StringCodePointAt:
     case StringFromCharCode:
     case StringIndexOf:
+    case StringLastIndexOf:
     case StringStartsWith:
     case StringEndsWith:
+    case StringSplit:
+    case StringMatch:
     case AllocatePropertyStorage:
     case ReallocatePropertyStorage:
     case NukeStructureAndSetButterfly:
@@ -247,12 +251,17 @@ inline CapabilityLevel canCompile(Node* node)
     case ObjectGetOwnPropertyNames:
     case ObjectGetOwnPropertySymbols:
     case ObjectToString:
+    case SymbolToString:
     case ReflectOwnKeys:
     case MakeRope:
     case MakeAtomString:
     case NewArrayWithSize:
     case NewArrayWithButterfly:
     case NewButterflyWithSize:
+    case GetCellButterflySlot:
+    case PutCellButterflySlot:
+    case ArraySortCompact:
+    case ArraySortCommit:
     case NewArrayWithSpecies:
     case NewArrayWithSizeAndStructure:
     case TryGetById:
@@ -355,6 +364,7 @@ inline CapabilityLevel canCompile(Node* node)
     case PhantomNewAsyncGeneratorFunction:
     case PhantomNewAsyncFunction:
     case PhantomNewInternalFieldObject:
+    case PhantomNewPromise:
     case PhantomCreateActivation:
     case PhantomNewRegExp:
     case PutHint:
@@ -425,9 +435,12 @@ inline CapabilityLevel canCompile(Node* node)
     case DefineDataProperty:
     case DefineAccessorProperty:
     case ObjectDefineProperty:
+    case ObjectDefinePropertyFromFields:
     case StringValueOf:
     case StringSlice:
     case StringSubstring:
+    case StringSubstr:
+    case ToUpperCase:
     case ToLowerCase:
     case NumberToStringWithRadix:
     case NumberToStringWithValidRadixConstant:
@@ -436,11 +449,15 @@ inline CapabilityLevel canCompile(Node* node)
     case CallDOM:
     case CallDOMGetter:
     case ArraySlice:
+    case ArrayConcatArray:
+    case ArrayConcatAppendOne:
     case ArraySplice:
     case ArrayIncludes:
     case ArrayIndexOf:
     case ArrayPop:
     case ArrayPush:
+    case ArrayShift:
+    case ArrayUnshift:
     case ParseInt:
     case ToIntegerOrInfinity:
     case ToLength:
@@ -500,10 +517,13 @@ inline CapabilityLevel canCompile(Node* node)
     case ResolvePromiseFirstResolving:
     case RejectPromiseFirstResolving:
     case FulfillPromiseFirstResolving:
+    case NewResolvedPromise:
+    case NewRejectedPromise:
     case PromiseResolve:
     case PromiseReject:
     case PromiseThen:
     case PerformPromiseThen:
+    case PerformPromiseThenOneHandler:
         // These are OK.
         break;
 

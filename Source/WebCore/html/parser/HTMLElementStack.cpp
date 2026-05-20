@@ -27,12 +27,15 @@
 #include "config.h"
 #include "HTMLElementStack.h"
 
+#include "Document.h"
 #include "DocumentFragment.h"
 #include "HTMLOptGroupElement.h"
 #include "HTMLOptionElement.h"
 #include "HTMLTableElement.h"
 #include "HTMLTemplateElement.h"
 #include "MathMLNames.h"
+#include "NodeDocument.h"
+#include "Settings.h"
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
@@ -508,7 +511,8 @@ bool HTMLElementStack::inSelectScope(ElementName targetElement) const
 
 bool HTMLElementStack::hasTemplateInHTMLScope() const
 {
-    return inScopeCommon<isRootNode>(m_top.get(), HTML::template_);
+    // The root is pushed first and never popped, and <template> can only be pushed above it, so the counter alone suffices.
+    return m_templateElementCount;
 }
 
 Element& HTMLElementStack::htmlElement() const

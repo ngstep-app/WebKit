@@ -27,12 +27,12 @@
 
 #include <WebCore/FrameRateAligner.h>
 #include <WebCore/GraphicsLayer.h>
-#include <WebCore/ReducedResolutionSeconds.h>
 #include <WebCore/Timer.h>
 #include <WebCore/WebAnimationTypes.h>
 #include <wtf/CancellableTask.h>
 #include <wtf/CheckedRef.h>
 #include <wtf/Markable.h>
+#include <wtf/ReducedResolutionSeconds.h>
 #include <wtf/Seconds.h>
 #include <wtf/WeakHashSet.h>
 
@@ -65,7 +65,7 @@ public:
     void updateStaleScrollTimelines();
     void addPendingAnimation(WebAnimation&);
 
-    std::optional<Seconds> currentTime(UseCachedCurrentTime = UseCachedCurrentTime::Yes);
+    std::optional<ReducedResolutionSeconds> currentTime(UseCachedCurrentTime = UseCachedCurrentTime::Yes);
     std::optional<FramesPerSecond> maximumAnimationFrameRate() const { return m_frameRateAligner.maximumFrameRate(); }
     std::optional<Seconds> timeUntilNextTickForAnimationsWithFrameRate(FramesPerSecond) const;
 
@@ -103,7 +103,7 @@ private:
     TaskCancellationGroup m_pendingAnimationsProcessingTaskCancellationGroup;
     WeakRef<Document, WeakPtrImplWithEventTargetData> m_document;
     FrameRateAligner m_frameRateAligner;
-    Markable<Seconds> m_cachedCurrentTime;
+    Markable<ReducedResolutionSeconds> m_cachedCurrentTime;
     bool m_isSuspended { false };
 };
 

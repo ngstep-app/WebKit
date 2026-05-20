@@ -26,9 +26,11 @@
 #include "config.h"
 #include "TemporalPlainDateTime.h"
 
+#include "ISOArithmetic.h"
 #include "IntlObjectInlines.h"
 #include "JSCInlines.h"
 #include "LazyPropertyInlines.h"
+#include "Rounding.h"
 #include "TemporalPlainDate.h"
 #include "TemporalPlainTime.h"
 #include "VMTrapsInlines.h"
@@ -63,7 +65,7 @@ void TemporalPlainDateTime::finishCreation(VM& vm)
     m_calendar.initLater(
         [] (const auto& init) {
             VM& vm = init.vm;
-            auto* globalObject = jsCast<TemporalPlainDateTime*>(init.owner)->realm();
+            auto* globalObject = init.owner->realm();
             auto* calendar = TemporalCalendar::create(vm, globalObject->calendarStructure(), iso8601CalendarID());
             init.set(calendar);
         });
@@ -74,7 +76,7 @@ void TemporalPlainDateTime::visitChildrenImpl(JSCell* cell, Visitor& visitor)
 {
     Base::visitChildren(cell, visitor);
 
-    auto* thisObject = jsCast<TemporalPlainDateTime*>(cell);
+    auto* thisObject = uncheckedDowncast<TemporalPlainDateTime>(cell);
     thisObject->m_calendar.visit(visitor);
 }
 
@@ -116,16 +118,16 @@ TemporalPlainDateTime* TemporalPlainDateTime::from(JSGlobalObject* globalObject,
 
     if (itemValue.isObject()) {
         if (itemValue.inherits<TemporalPlainDateTime>())
-            return jsCast<TemporalPlainDateTime*>(itemValue);
+            return uncheckedDowncast<TemporalPlainDateTime>(itemValue);
 
         if (itemValue.inherits<TemporalPlainDate>())
-            return TemporalPlainDateTime::create(vm, globalObject->plainDateTimeStructure(), jsCast<TemporalPlainDate*>(itemValue)->plainDate(), { });
+            return TemporalPlainDateTime::create(vm, globalObject->plainDateTimeStructure(), uncheckedDowncast<TemporalPlainDate>(itemValue)->plainDate(), { });
 
         JSObject* calendar = TemporalCalendar::getTemporalCalendarWithISODefault(globalObject, itemValue);
         RETURN_IF_EXCEPTION(scope, { });
 
         // FIXME: Implement after fleshing out Temporal.Calendar.
-        if (!calendar->inherits<TemporalCalendar>() || !jsCast<TemporalCalendar*>(calendar)->isISO8601()) {
+        if (!calendar->inherits<TemporalCalendar>() || !uncheckedDowncast<TemporalCalendar>(calendar)->isISO8601()) {
             throwRangeError(globalObject, scope, "unimplemented: from non-ISO8601 calendar"_s);
             return { };
         }
@@ -183,28 +185,6 @@ int32_t TemporalPlainDateTime::compare(TemporalPlainDateTime* plainDateTime1, Te
     return TemporalPlainTime::compare(plainDateTime1->plainTime(), plainDateTime2->plainTime());
 }
 
-static void incrementDay(ISO8601::Duration& duration)
-{
-    double year = duration.years();
-    double month = duration.months();
-    double day = duration.days();
-
-    double daysInMonth = ISO8601::daysInMonth(year, month);
-    if (day < daysInMonth) {
-        duration.setDays(day + 1);
-        return;
-    }
-
-    duration.setDays(1);
-    if (month < 12) {
-        duration.setMonths(month + 1);
-        return;
-    }
-
-    duration.setMonths(1);
-    duration.setYears(year + 1);
-}
-
 String TemporalPlainDateTime::toString(JSGlobalObject* globalObject, JSValue optionsValue) const
 {
     VM& vm = globalObject->vm();
@@ -231,16 +211,8 @@ String TemporalPlainDateTime::toString(JSGlobalObject* globalObject, JSValue opt
     RETURN_IF_EXCEPTION(scope, { });
 
     double extraDays = duration.days();
-    duration.setYears(year());
-    duration.setMonths(month());
-    duration.setDays(day());
-    if (extraDays) {
-        ASSERT(extraDays == 1);
-        incrementDay(duration);
-    }
-
-    auto plainDate = TemporalPlainDate::toPlainDate(globalObject, duration);
-    RETURN_IF_EXCEPTION(scope, { });
+    ASSERT(!extraDays || extraDays == 1);
+    auto plainDate = TemporalCore::balanceISODate(year(), month(), day() + static_cast<int64_t>(extraDays));
 
     return ISO8601::temporalDateTimeToString(plainDate, plainTime, data.precision);
 }
@@ -289,12 +261,12 @@ TemporalPlainDateTime* TemporalPlainDateTime::with(JSGlobalObject* globalObject,
     RETURN_IF_EXCEPTION(scope, { });
 
     ISO8601::Duration duration { };
-    duration.setHours(optionalHour.value_or(hour()));
-    duration.setMinutes(optionalMinute.value_or(minute()));
-    duration.setSeconds(optionalSecond.value_or(second()));
-    duration.setMilliseconds(optionalMillisecond.value_or(millisecond()));
-    duration.setMicroseconds(optionalMicrosecond.value_or(microsecond()));
-    duration.setNanoseconds(optionalNanosecond.value_or(nanosecond()));
+    duration.setField(TemporalUnit::Hour, optionalHour.value_or(hour()));
+    duration.setField(TemporalUnit::Minute, optionalMinute.value_or(minute()));
+    duration.setField(TemporalUnit::Second, optionalSecond.value_or(second()));
+    duration.setField(TemporalUnit::Millisecond, optionalMillisecond.value_or(millisecond()));
+    duration.setField(TemporalUnit::Microsecond, optionalMicrosecond.value_or(microsecond()));
+    duration.setField(TemporalUnit::Nanosecond, optionalNanosecond.value_or(nanosecond()));
     auto plainTime = TemporalPlainTime::regulateTime(globalObject, WTF::move(duration), overflow);
     RETURN_IF_EXCEPTION(scope, { });
 
@@ -318,7 +290,7 @@ TemporalPlainDateTime* TemporalPlainDateTime::round(JSGlobalObject* globalObject
             return { };
         }
 
-        if (smallest.value() <= TemporalUnit::Week) {
+        if (isCalendarUnit(smallest.value())) {
             throwRangeError(globalObject, scope, "smallestUnit is a disallowed unit"_s);
             return { };
         }
@@ -352,7 +324,7 @@ TemporalPlainDateTime* TemporalPlainDateTime::round(JSGlobalObject* globalObject
     unsigned maximum = 1;
     Inclusivity isInclusive = Inclusivity::Inclusive;
     if (smallestUnit != TemporalUnit::Day) {
-        auto maximumOptional = maximumRoundingIncrement(smallestUnit);
+        auto maximumOptional = TemporalCore::maximumRoundingIncrement(smallestUnit);
         ASSERT(maximumOptional);
         maximum = maximumOptional.value();
         isInclusive = Inclusivity::Exclusive;
@@ -365,16 +337,8 @@ TemporalPlainDateTime* TemporalPlainDateTime::round(JSGlobalObject* globalObject
     RETURN_IF_EXCEPTION(scope, { });
 
     double extraDays = duration.days();
-    duration.setYears(year());
-    duration.setMonths(month());
-    duration.setDays(day());
-    if (extraDays) {
-        ASSERT(extraDays == 1);
-        incrementDay(duration);
-    }
-
-    auto plainDate = TemporalPlainDate::toPlainDate(globalObject, duration);
-    RETURN_IF_EXCEPTION(scope, { });
+    ASSERT(!extraDays || extraDays == 1);
+    auto plainDate = TemporalCore::balanceISODate(year(), month(), day() + static_cast<int64_t>(extraDays));
 
     RELEASE_AND_RETURN(scope, TemporalPlainDateTime::tryCreateIfValid(globalObject, globalObject->plainDateTimeStructure(), WTF::move(plainDate), WTF::move(plainTime)));
 }

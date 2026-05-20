@@ -31,6 +31,7 @@
 #include "FontSelector.h"
 #include "Logging.h"
 #include "Pagination.h"
+#include "PlatformRenderTheme.h"
 #include "RenderBlock.h"
 #include "RenderElement.h"
 #include "RenderStyleProperties+ConstructionInlines.h"
@@ -216,20 +217,20 @@ bool RenderStyle::outOfFlowPositionStyleDidChange(const RenderStyle* other) cons
 
 // MARK: - Used Values
 
-const AtomString& RenderStyle::hyphenString() const
+const String& RenderStyle::hyphenString() const
 {
     ASSERT(hyphens() != Hyphens::None);
 
     return WTF::switchOn(hyphenateCharacter(),
-        [&](const CSS::Keyword::Auto&) -> const AtomString& {
+        [&](const CSS::Keyword::Auto&) -> const String& {
             // FIXME: This should depend on locale.
-            static MainThreadNeverDestroyed<const AtomString> hyphenMinusString(span(hyphenMinus));
-            static MainThreadNeverDestroyed<const AtomString> hyphenString(span(hyphen));
+            static MainThreadNeverDestroyed<const String> hyphenMinusString(span(hyphenMinus));
+            static MainThreadNeverDestroyed<const String> hyphenString(span(hyphen));
 
             return protect(fontCascade().primaryFont())->glyphForCharacter(hyphen) ? hyphenString : hyphenMinusString;
         },
-        [](const AtomString& string) -> const AtomString& {
-            return string;
+        [](const Style::String& string) -> const String& {
+            return string.value;
         }
     );
 }
@@ -402,7 +403,10 @@ Style::LineWidth RenderStyle::usedColumnRuleWidth() const
 
 Style::Length<> RenderStyle::usedOutlineOffset() const
 {
-    return m_computedStyle.outline().outlineOffset;
+    auto& outline = m_computedStyle.outline();
+    if (outline.outlineOffset.isInternalInset())
+        return Style::Length<> { -Style::evaluate<float>(usedOutlineWidth(), Style::ZoomNeeded { }) };
+    return *outline.outlineOffset.tryLength();
 }
 
 Style::LineWidth RenderStyle::usedOutlineWidth() const

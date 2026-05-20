@@ -48,7 +48,7 @@ class ConstExprGenerator {
 public:
     using ErrorType = String;
     using PartialResult = Expected<void, ErrorType>;
-    using UnexpectedResult = Unexpected<ErrorType>;
+    using UnexpectedResult = std::unexpected<ErrorType>;
     using CallType = CallLinkInfo::CallType;
 
     enum InvalidTag { InvalidConstExpr };
@@ -203,8 +203,9 @@ public:
         ASSERT(mode == Mode::Validate);
     }
 
-    ConstExprGenerator(Mode mode, const ModuleInformation& info, JSWebAssemblyInstance* instance)
+    ConstExprGenerator(Mode mode, size_t offsetInSource, const ModuleInformation& info, JSWebAssemblyInstance* instance)
         : m_mode(mode)
+        , m_offsetInSource(offsetInSource)
         , m_info(info)
         , m_instance(instance)
     {
@@ -215,7 +216,7 @@ public:
     const Vector<FunctionSpaceIndex>& NODELETE declaredFunctions() const { return m_declaredFunctions; }
     void NODELETE setParser(FunctionParser<ConstExprGenerator>* parser) { m_parser = parser; };
 
-    bool NODELETE addArguments(const TypeDefinition&) { RELEASE_ASSERT_NOT_REACHED(); }
+    bool NODELETE addArguments(const RTT&) { RELEASE_ASSERT_NOT_REACHED(); }
 
     ExpressionType NODELETE addConstant(Type type, uint64_t value)
     {
@@ -285,15 +286,19 @@ public:
     [[nodiscard]] PartialResult addMemoryCopy(ExpressionType, ExpressionType, ExpressionType, uint8_t, uint8_t) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addMemoryInit(unsigned, ExpressionType, ExpressionType, ExpressionType, uint8_t) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addDataDrop(unsigned) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult atomicLoad(ExtAtomicOpType, Type, ExpressionType, ExpressionType&, uint32_t) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult atomicStore(ExtAtomicOpType, Type, ExpressionType, ExpressionType, uint32_t) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult atomicBinaryRMW(ExtAtomicOpType, Type, ExpressionType, ExpressionType, ExpressionType&, uint32_t) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult atomicCompareExchange(ExtAtomicOpType, Type, ExpressionType, ExpressionType, ExpressionType, ExpressionType&, uint32_t) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult atomicWait(ExtAtomicOpType, ExpressionType, ExpressionType, ExpressionType, ExpressionType&, uint32_t) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult atomicNotify(ExtAtomicOpType, ExpressionType, ExpressionType, ExpressionType&, uint32_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult atomicLoad(ExtAtomicOpType, Type, ExpressionType, ExpressionType&, uint64_t, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult atomicStore(ExtAtomicOpType, Type, ExpressionType, ExpressionType, uint64_t, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult atomicBinaryRMW(ExtAtomicOpType, Type, ExpressionType, ExpressionType, ExpressionType&, uint64_t, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult atomicCompareExchange(ExtAtomicOpType, Type, ExpressionType, ExpressionType, ExpressionType, ExpressionType&, uint64_t, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult atomicWait(ExtAtomicOpType, ExpressionType, ExpressionType, ExpressionType, ExpressionType&, uint64_t, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult atomicNotify(ExtAtomicOpType, ExpressionType, ExpressionType, ExpressionType&, uint64_t, uint8_t) CONST_EXPR_STUB
     [[nodiscard]] PartialResult atomicFence(ExtAtomicOpType, uint8_t) CONST_EXPR_STUB
     [[nodiscard]] PartialResult truncTrapping(OpType, ExpressionType, ExpressionType&, Type, Type) CONST_EXPR_STUB
     [[nodiscard]] PartialResult truncSaturated(Ext1OpType, ExpressionType, ExpressionType&, Type, Type) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addI64Add128(ExpressionType, ExpressionType, ExpressionType, ExpressionType, ExpressionType&, ExpressionType&) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addI64Sub128(ExpressionType, ExpressionType, ExpressionType, ExpressionType, ExpressionType&, ExpressionType&) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addI64MulWideS(ExpressionType, ExpressionType, ExpressionType&, ExpressionType&) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addI64MulWideU(ExpressionType, ExpressionType, ExpressionType&, ExpressionType&) CONST_EXPR_STUB
 
     [[nodiscard]] PartialResult NODELETE addRefI31(ExpressionType value, ExpressionType& result)
     {
@@ -321,22 +326,22 @@ public:
         return ConstExprValue(result);
     }
 
-    [[nodiscard]] PartialResult addArrayNew(uint32_t typeIndex, ExpressionType size, ExpressionType value, ExpressionType& result)
+    [[nodiscard]] PartialResult addArrayNew(TypeSignatureIndex typeIndex, ExpressionType size, ExpressionType value, ExpressionType& result)
     {
         if (m_mode == Mode::Evaluate) {
-            auto* structure = m_instance->gcObjectStructure(typeIndex);
+            auto* structure = m_instance->gcObjectStructure(typeIndex.rawIndex());
             result = createNewArray(structure, static_cast<uint32_t>(size.getValue()), value);
             WASM_ALLOCATOR_FAIL_IF(result.isInvalid(), "Failed to allocate new array"_s);
         }
         return { };
     }
 
-    [[nodiscard]] PartialResult addArrayNewDefault(uint32_t typeIndex, ExpressionType size, ExpressionType& result)
+    [[nodiscard]] PartialResult addArrayNewDefault(TypeSignatureIndex typeIndex, ExpressionType size, ExpressionType& result)
     {
         if (m_mode == Mode::Evaluate) {
-            auto* structure = m_instance->gcObjectStructure(typeIndex);
-            const Wasm::TypeDefinition& arraySignature = structure->typeDefinition();
-            auto elementType = arraySignature.as<Wasm::ArrayType>()->elementType().type.unpacked();
+            auto* structure = m_instance->gcObjectStructure(typeIndex.rawIndex());
+            const Wasm::RTT& arraySignature = structure->rtt();
+            auto elementType = arraySignature.elementType().type.unpacked();
             ExpressionType initValue { };
             if (isRefType(elementType))
                 initValue = { static_cast<uint64_t>(JSValue::encode(jsNull())) };
@@ -349,21 +354,21 @@ public:
         return { };
     }
 
-    [[nodiscard]] PartialResult addArrayNewFixed(uint32_t typeIndex, ArgumentList& args, ExpressionType& result)
+    [[nodiscard]] PartialResult addArrayNewFixed(TypeSignatureIndex typeIndex, ArgumentList& args, ExpressionType& result)
     {
         if (m_mode == Mode::Evaluate) {
-            auto* structure = m_instance->gcObjectStructure(typeIndex);
-            const Wasm::TypeDefinition& arraySignature = structure->typeDefinition();
-            if (arraySignature.as<Wasm::ArrayType>()->elementType().type.unpacked().isV128()) {
+            auto* structure = m_instance->gcObjectStructure(typeIndex.rawIndex());
+            const Wasm::RTT& arraySignature = structure->rtt();
+            if (arraySignature.elementType().type.unpacked().isV128()) {
                 result = createNewArray(structure, args.size(), { vectorAllZeros() });
                 WASM_ALLOCATOR_FAIL_IF(result.isInvalid(), "Failed to allocate new array"_s);
-                JSWebAssemblyArray* arrayObject = jsCast<JSWebAssemblyArray*>(JSValue::decode(result.getValue()));
+                JSWebAssemblyArray* arrayObject = uncheckedDowncast<JSWebAssemblyArray>(JSValue::decode(result.getValue()));
                 for (size_t i = 0; i < args.size(); i++)
                     arrayObject->set(arrayObject->vm(), i, args[i].value().getVector());
             } else {
                 result = createNewArray(structure, args.size(), { });
                 WASM_ALLOCATOR_FAIL_IF(result.isInvalid(), "Failed to allocate new array"_s);
-                JSWebAssemblyArray* arrayObject = jsCast<JSWebAssemblyArray*>(JSValue::decode(result.getValue()));
+                JSWebAssemblyArray* arrayObject = uncheckedDowncast<JSWebAssemblyArray>(JSValue::decode(result.getValue()));
                 for (size_t i = 0; i < args.size(); i++)
                     arrayObject->set(arrayObject->vm(), i, args[i].value().getValue());
             }
@@ -372,19 +377,19 @@ public:
         return { };
     }
 
-    [[nodiscard]] PartialResult addArrayNewData(uint32_t, uint32_t, ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addArrayNewElem(uint32_t, uint32_t, ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addArrayGet(ExtGCOpType, uint32_t, ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addArraySet(uint32_t, ExpressionType, ExpressionType, ExpressionType) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addArrayNewData(TypeSignatureIndex, uint32_t, ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addArrayNewElem(TypeSignatureIndex, uint32_t, ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addArrayGet(ExtGCOpType, TypeSignatureIndex, ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addArraySet(TypeSignatureIndex, ExpressionType, ExpressionType, ExpressionType) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addArrayLen(ExpressionType, ExpressionType&) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addArrayFill(uint32_t, ExpressionType, ExpressionType, ExpressionType, ExpressionType) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addArrayCopy(uint32_t, ExpressionType, ExpressionType, uint32_t, ExpressionType, ExpressionType, ExpressionType) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addArrayInitElem(uint32_t, ExpressionType, ExpressionType, uint32_t, ExpressionType, ExpressionType) CONST_EXPR_STUB;
-    [[nodiscard]] PartialResult addArrayInitData(uint32_t, ExpressionType, ExpressionType, uint32_t, ExpressionType, ExpressionType) CONST_EXPR_STUB;
+    [[nodiscard]] PartialResult addArrayFill(TypeSignatureIndex, ExpressionType, ExpressionType, ExpressionType, ExpressionType) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addArrayCopy(TypeSignatureIndex, ExpressionType, ExpressionType, TypeSignatureIndex, ExpressionType, ExpressionType, ExpressionType) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addArrayInitElem(TypeSignatureIndex, ExpressionType, ExpressionType, uint32_t, ExpressionType, ExpressionType) CONST_EXPR_STUB;
+    [[nodiscard]] PartialResult addArrayInitData(TypeSignatureIndex, ExpressionType, ExpressionType, uint32_t, ExpressionType, ExpressionType) CONST_EXPR_STUB;
 
-    ExpressionType createNewStruct(uint32_t typeIndex)
+    ExpressionType createNewStruct(TypeSignatureIndex typeIndex)
     {
-        auto* structure = m_instance->gcObjectStructure(typeIndex);
+        auto* structure = m_instance->gcObjectStructure(typeIndex.rawIndex());
         JSValue result = structNew(m_instance, structure, static_cast<bool>(UseDefaultValue::Yes), nullptr);
         if (result.isNull()) [[unlikely]]
             return ConstExprValue(InvalidConstExpr);
@@ -392,7 +397,7 @@ public:
         return ConstExprValue(result);
     }
 
-    [[nodiscard]] PartialResult addStructNewDefault(uint32_t typeIndex, ExpressionType& result)
+    [[nodiscard]] PartialResult addStructNewDefault(TypeSignatureIndex typeIndex, ExpressionType& result)
     {
         if (m_mode == Mode::Evaluate) {
             result = createNewStruct(typeIndex);
@@ -402,12 +407,12 @@ public:
         return { };
     }
 
-    [[nodiscard]] PartialResult addStructNew(uint32_t typeIndex, ArgumentList& args, ExpressionType& result)
+    [[nodiscard]] PartialResult addStructNew(TypeSignatureIndex typeIndex, ArgumentList& args, ExpressionType& result)
     {
         if (m_mode == Mode::Evaluate) {
             result = createNewStruct(typeIndex);
             WASM_ALLOCATOR_FAIL_IF(result.isInvalid(), "Failed to allocate new struct"_s);
-            JSWebAssemblyStruct* structObject = jsCast<JSWebAssemblyStruct*>(JSValue::decode(result.getValue()));
+            JSWebAssemblyStruct* structObject = uncheckedDowncast<JSWebAssemblyStruct>(JSValue::decode(result.getValue()));
             for (size_t i = 0; i < args.size(); i++) {
                 if (args[i].value().type() == ConstExprValue::Vector)
                     structObject->set(i, args[i].value().getVector());
@@ -419,8 +424,8 @@ public:
         return { };
     }
 
-    [[nodiscard]] PartialResult addStructGet(ExtGCOpType, ExpressionType, const StructType&, const RTT&, uint32_t, ExpressionType&) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addStructSet(ExpressionType, const StructType&, const RTT&, uint32_t, ExpressionType) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addStructGet(ExtGCOpType, ExpressionType, const RTT&, uint32_t, ExpressionType&) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addStructSet(ExpressionType, const RTT&, uint32_t, ExpressionType) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addRefTest(ExpressionType, bool, int32_t, bool, ExpressionType&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addRefCast(ExpressionType, bool, int32_t, ExpressionType&) CONST_EXPR_STUB
 
@@ -618,7 +623,7 @@ public:
     [[nodiscard]] PartialResult addRefFunc(FunctionSpaceIndex index, ExpressionType& result)
     {
         if (m_mode == Mode::Evaluate) {
-            JSValue wrapper = m_instance->getFunctionWrapper(index);
+            JSValue wrapper = m_instance->ensureFunctionWrapper(index);
             ASSERT(!wrapper.isNull());
             ASSERT(wrapper.isObject());
             m_keepAlive.appendWithCrashOnOverflow(asObject(wrapper));
@@ -641,8 +646,8 @@ public:
     [[nodiscard]] PartialResult addElseToUnreachable(ControlData&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addTry(BlockSignature, Stack&, ControlType&, Stack&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addTryTable(BlockSignature, Stack&, const Vector<CatchHandler>&, ControlType&, Stack&) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addCatch(unsigned, const TypeDefinition&, Stack&, ControlType&, ResultList&) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addCatchToUnreachable(unsigned, const TypeDefinition&, ControlType&, ResultList&) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addCatch(unsigned, const RTT&, Stack&, ControlType&, ResultList&) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addCatchToUnreachable(unsigned, const RTT&, ControlType&, ResultList&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addCatchAll(Stack&, ControlType&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addCatchAllToUnreachable(ControlType&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addDelegate(ControlType&, ControlType&) CONST_EXPR_STUB
@@ -679,24 +684,24 @@ public:
         return { };
     }
 
-    [[nodiscard]] PartialResult addCall(unsigned, FunctionSpaceIndex, const TypeDefinition&, ArgumentList&, ResultList&, CallType = CallType::Call) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addCallIndirect(unsigned, unsigned, const TypeDefinition&, ArgumentList&, ResultList&, CallType = CallType::Call) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addCallRef(unsigned, const TypeDefinition&, ArgumentList&, ResultList&, CallType = CallType::Call) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addCall(unsigned, FunctionSpaceIndex, const RTT&, ArgumentList&, ResultList&, CallType = CallType::Call) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addCallIndirect(unsigned, unsigned, const RTT&, ArgumentList&, ResultList&, CallType = CallType::Call) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addCallRef(unsigned, const RTT&, ArgumentList&, ResultList&, CallType = CallType::Call) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addUnreachable() CONST_EXPR_STUB
     [[nodiscard]] PartialResult addCrash() CONST_EXPR_STUB
     bool NODELETE usesSIMD() { return false; }
     void NODELETE notifyFunctionUsesSIMD() { }
-    [[nodiscard]] PartialResult addSIMDLoad(ExpressionType, uint32_t, ExpressionType&) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addSIMDStore(ExpressionType, ExpressionType, uint32_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addSIMDLoad(ExpressionType, uint32_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addSIMDStore(ExpressionType, ExpressionType, uint32_t, uint8_t) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addSIMDSplat(SIMDLane, ExpressionType, ExpressionType&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addSIMDShuffle(v128_t, ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addSIMDShift(SIMDLaneOperation, SIMDInfo, ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addSIMDExtmul(SIMDLaneOperation, SIMDInfo, ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addSIMDLoadSplat(SIMDLaneOperation, ExpressionType, uint32_t, ExpressionType&) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addSIMDLoadLane(SIMDLaneOperation, ExpressionType, ExpressionType, uint32_t, uint8_t, ExpressionType&) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addSIMDStoreLane(SIMDLaneOperation, ExpressionType, ExpressionType, uint32_t, uint8_t) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addSIMDLoadExtend(SIMDLaneOperation, ExpressionType, uint32_t, ExpressionType&) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addSIMDLoadPad(SIMDLaneOperation, ExpressionType, uint32_t, ExpressionType&) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addSIMDLoadSplat(SIMDLaneOperation, ExpressionType, uint32_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addSIMDLoadLane(SIMDLaneOperation, ExpressionType, ExpressionType, uint32_t, uint8_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addSIMDStoreLane(SIMDLaneOperation, ExpressionType, ExpressionType, uint32_t, uint8_t, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addSIMDLoadExtend(SIMDLaneOperation, ExpressionType, uint32_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addSIMDLoadPad(SIMDLaneOperation, ExpressionType, uint32_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
     [[nodiscard]] ExpressionType NODELETE addSIMDConstant(v128_t vector)
     {
         RELEASE_ASSERT(Options::useWasmSIMD());
@@ -728,7 +733,7 @@ public:
 private:
     FunctionParser<ConstExprGenerator>* m_parser { nullptr };
     Mode m_mode;
-    size_t m_offsetInSource;
+    size_t m_offsetInSource { 0 };
     ExpressionType m_result;
     const ModuleInformation& m_info;
     JSWebAssemblyInstance* m_instance { nullptr };
@@ -740,7 +745,7 @@ private:
 Expected<void, String> parseExtendedConstExpr(std::span<const uint8_t> source, size_t offsetInSource, size_t& offset, ModuleInformation& info, Type expectedType)
 {
     ConstExprGenerator generator(ConstExprGenerator::Mode::Validate, offsetInSource, info);
-    FunctionParser<ConstExprGenerator> parser(generator, source, *TypeInformation::typeDefinitionForFunction({ expectedType }, { }), info);
+    FunctionParser<ConstExprGenerator> parser(generator, source, BlockSignature { expectedType }, info);
     WASM_FAIL_IF_HELPER_FAILS(parser.parseConstantExpression());
     offset = parser.offset();
 
@@ -750,10 +755,12 @@ Expected<void, String> parseExtendedConstExpr(std::span<const uint8_t> source, s
     return { };
 }
 
-Expected<uint64_t, String> evaluateExtendedConstExpr(const Vector<uint8_t>& constantExpression, JSWebAssemblyInstance* instance, const ModuleInformation& info, Type expectedType)
+Expected<uint64_t, String> evaluateExtendedConstExpr(const ModuleInformation::ConstantExpressionAndSourceOffset& constantExpressionAndSourceOffset, JSWebAssemblyInstance* instance, const ModuleInformation& info, Type expectedType)
 {
-    ConstExprGenerator generator(ConstExprGenerator::Mode::Evaluate, info, instance);
-    FunctionParser<ConstExprGenerator> parser(generator, constantExpression, *TypeInformation::typeDefinitionForFunction({ expectedType }, { }), info);
+    auto constantExpression = constantExpressionAndSourceOffset.first;
+    size_t offsetInSource = constantExpressionAndSourceOffset.second;
+    ConstExprGenerator generator(ConstExprGenerator::Mode::Evaluate, offsetInSource, info, instance);
+    FunctionParser<ConstExprGenerator> parser(generator, constantExpression, BlockSignature { expectedType }, info);
     WASM_FAIL_IF_HELPER_FAILS(parser.parseConstantExpression());
 
     ConstExprGenerator::ExpressionType result = generator.result();

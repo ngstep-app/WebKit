@@ -146,6 +146,7 @@ BEGIN {
        &libFuzzerIsEnabled
        &ltoMode
        &markBaseProductDirectoryAsCreatedByXcodeBuildSystem
+       &maybeEnterWebKitContainerSDK
        &maybeUseContainerSDKRootDir
        &maxCPULoad
        &nativeArchitecture
@@ -573,15 +574,25 @@ sub determineArchitecture
             $compiler = $ENV{'CC'} if (defined($ENV{'CC'}));
             my @compiler_machine = split('-', `$compiler -dumpmachine`);
             $architecture = $compiler_machine[0];
-        } elsif (open my $cmake_sysinfo, "cmake --system-information |") {
-            while (<$cmake_sysinfo>) {
-                next unless index($_, 'CMAKE_SYSTEM_PROCESSOR') == 0;
-                if (/^CMAKE_SYSTEM_PROCESSOR \"([^"]+)\"/) {
-                    $architecture = $1;
-                    last;
-                }
+        } else {
+            my $prefix = "";
+            # This gets called from argumentsForConfiguration() which needs to resolve the target architecture
+            # before entering into the cross-toolchain-env, so to achieve that we call the cross-target cmake.
+            if (shouldBuildForCrossTarget()) {
+                $prefix = sprintf("%s --cross-target=%s --cross-toolchain-run-cmd",
+                            File::Spec->catfile(sourceDir(), "Tools", "Scripts", "cross-toolchain-helper"),
+                            getCrossTargetName());
             }
-            close $cmake_sysinfo;
+            if (open my $cmake_sysinfo, "$prefix cmake --system-information |") {
+                while (<$cmake_sysinfo>) {
+                    next unless index($_, 'CMAKE_SYSTEM_PROCESSOR') == 0;
+                    if (/^CMAKE_SYSTEM_PROCESSOR \"([^"]+)\"/) {
+                        $architecture = $1;
+                        last;
+                    }
+                }
+                close $cmake_sysinfo;
+            }
         }
     }
 
@@ -1179,6 +1190,8 @@ sub determineConfigurationProductDir
         } else {
             if (isGtk() or isWPE() or isJSCOnly() or shouldUseFlatpak() or shouldBuildForCrossTarget() or inCrossTargetEnvironment()) {
                 $configurationProductDir = "$baseProductDir/$portName/$configuration";
+            } elsif (isAppleCocoaWebKit() && isCMakeBuild()) {
+                $configurationProductDir = "$baseProductDir/cmake-mac/$configuration";
             } else {
                 $configurationProductDir = "$baseProductDir/$configuration";
             }
@@ -2538,6 +2551,40 @@ sub runInCrossTargetEnvironment(@)
     exec @prefix, @command, argumentsForConfiguration(), @ARGV or die;
 }
 
+sub maybeEnterWebKitContainerSDK()
+{
+    # Must match linux_container_sdk_utils.AUTOENTER_DECLINED_EXIT_CODE.
+    my $AUTOENTER_DECLINED_EXIT_CODE = 100;
+
+    return if not isLinux();
+    # Cross-target builds use their own toolchain wrapper (runInCrossTargetEnvironment);
+    # don't double-wrap them in the SDK container.
+    return if (shouldBuildForCrossTarget() or inCrossTargetEnvironment());
+
+    # Mirror the cheap opt-out checks from maybe_enter_webkit_container_sdk so
+    # that the overwhelmingly common no-op case avoids forking a Python
+    # interpreter on every wrapper invocation. Keep in sync with that function.
+    return if ($ENV{'WEBKIT_FLATPAK'} // '') eq '1';
+    return if ($ENV{'WEBKIT_JHBUILD'} // '') eq '1';
+    return if ($ENV{'WEBKIT_CONTAINER_SDK_INSIDE_MOUNT_NAMESPACE'} // '') eq '1';
+    return unless -f File::Spec->catfile(sourceDir(), ".wkdev-sdk-version");
+
+    # Auto-enter is opt-in on the host. Inside the container we always invoke
+    # the helper so the version-mismatch warning fires regardless of opt-in.
+    return if (($ENV{'WEBKIT_CONTAINER_SDK'} // '') ne '1'
+               and ($ENV{'WEBKIT_CONTAINER_SDK_ENABLE_AUTOENTER'} // '') ne '1');
+
+    # Delegate to the Python helper. It either replaces this process with
+    # `podman exec ...` (never returning), or exits with
+    # $AUTOENTER_DECLINED_EXIT_CODE to signal "continue on the host".
+    my $helper = File::Spec->catfile($FindBin::Bin, "container-sdk-autoenter");
+    return unless -x $helper;
+    system($helper, Cwd::realpath($0) // $0, @ARGV);
+    my $status = exitStatus($?);
+    return if $status == $AUTOENTER_DECLINED_EXIT_CODE;
+    exit $status;
+}
+
 sub maybeUseContainerSDKRootDir()
 {
     return if not isLinux();
@@ -2862,8 +2909,8 @@ sub generateBuildSystemFromCMakeProject
 
     if (shouldUseVcpkg()) {
         push @args, '-DCMAKE_TOOLCHAIN_FILE="' . $ENV{VCPKG_ROOT} . '\\scripts\\buildsystems\\vcpkg.cmake"';
-        if (architecture() eq "ARM64") {
-            push @args, '-DVCPKG_TARGET_TRIPLET=arm64-windows-static-md';
+        if (architecture() eq "arm64") {
+            push @args, '-DVCPKG_TARGET_TRIPLET=arm64-windows-webkit';
         } else {
             push @args, '-DVCPKG_TARGET_TRIPLET=x64-windows-webkit'
         }
@@ -2890,7 +2937,8 @@ sub generateBuildSystemFromCMakeProject
             # Set linker library paths
             my $sdkLib = "$sysroot/sdk/lib";
             my $crtLib = "$sysroot/crt/lib";
-            my $linkFlags = "-libpath:$crtLib/x64 -libpath:$sdkLib/ucrt/x64 -libpath:$sdkLib/um/x64";
+            my $libArch = (architecture() eq "arm64") ? "arm64" : "x64";
+            my $linkFlags = "-libpath:$crtLib/$libArch -libpath:$sdkLib/ucrt/$libArch -libpath:$sdkLib/um/$libArch";
             push @args, "-DCMAKE_EXE_LINKER_FLAGS_INIT=\"$linkFlags\"";
             push @args, "-DCMAKE_SHARED_LINKER_FLAGS_INIT=\"$linkFlags\"";
             push @args, "-DCMAKE_MODULE_LINKER_FLAGS_INIT=\"$linkFlags\"";
@@ -2937,7 +2985,7 @@ sub generateBuildSystemFromCMakeProject
         $ENV{"CXXFLAGS"} = "-m32" . ($ENV{"CXXFLAGS"} || "");
         $ENV{"LDFLAGS"} = "-m32" . ($ENV{"LDFLAGS"} || "");
     }
-    if (architecture() eq "arm64" && shouldBuild32Bit()) {
+    if (architecture() =~ /^(arm64|armv8l?)$/ && shouldBuild32Bit()) {
         my $compiler = "";
         $compiler = $ENV{'CC'} if (defined($ENV{'CC'}));
         # CMAKE_LIBRARY_ARCHITECTURE is needed to get the right .pc
@@ -3112,6 +3160,21 @@ sub determineIsCMakeBuild()
 {
     return if defined($isCMakeBuild);
     $isCMakeBuild = checkForArgumentAndRemoveFromARGV("--cmake");
+    return if $isCMakeBuild;
+
+    # Auto-detect a CMake macOS build when no Xcode build is present at the
+    # expected path. The CMake macOS presets place artifacts under
+    # WebKitBuild/cmake-mac/<Configuration>; an Xcode build, if present,
+    # always wins to preserve existing workflows.
+    if (isAppleCocoaWebKit()) {
+        determineBaseProductDir();
+        determineConfiguration();
+        my $cmakeMacBuild = File::Spec->catdir($baseProductDir, "cmake-mac", $configuration);
+        my $xcodeBuild = File::Spec->catdir($baseProductDir, $configuration);
+        if (-f File::Spec->catfile($cmakeMacBuild, "CMakeCache.txt") && !-d $xcodeBuild) {
+            $isCMakeBuild = 1;
+        }
+    }
 }
 
 sub isCMakeBuild()

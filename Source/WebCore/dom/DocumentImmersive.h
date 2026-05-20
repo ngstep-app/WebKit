@@ -59,7 +59,7 @@ public:
 
     void requestImmersive(HTMLModelElement*, CompletionHandler<void(ExceptionOr<void>)>&&);
     void exitImmersive(CompletionHandler<void(ExceptionOr<void>)>&&);
-    WEBCORE_EXPORT void exitImmersiveIfNeeded();
+    WEBCORE_EXPORT void exitImmersiveIfNeeded(CompletionHandler<void()>&& = nullptr);
     void exitRemovedImmersiveElementIfNeeded(HTMLModelElement*, CompletionHandler<void()>&&);
 
     enum class EventType : bool { Change, Error };
@@ -81,7 +81,8 @@ private:
 
     WeakPtr<HTMLModelElement, WeakPtrImplWithEventTargetData> m_pendingImmersiveElement;
     bool m_pendingExitImmersive { false };
-    CompletionHandler<void()> m_pendingExitCompletionHandler;
+    CompletionHandler<void()> m_deferredRequestHandler;
+    void releaseDeferredRequest();
 
     struct ActiveRequest {
         enum class Stage : uint8_t { None, Permission, ModelPlayer, Presentation };

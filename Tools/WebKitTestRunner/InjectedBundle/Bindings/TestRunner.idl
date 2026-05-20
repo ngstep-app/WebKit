@@ -131,6 +131,7 @@ interface TestRunner {
     undefined setDatabaseQuota(unsigned long long quota);
     DOMString pathToLocalResource(DOMString url);
     undefined syncLocalStorage();
+    readonly attribute unsigned long storageAreaMapCount;
 
     attribute double databaseDefaultQuota;
     attribute double databaseMaxQuota;
@@ -161,6 +162,8 @@ interface TestRunner {
 
     readonly attribute boolean didReceiveServerRedirectForProvisionalNavigation;
     undefined clearDidReceiveServerRedirectForProvisionalNavigation();
+
+    readonly attribute DOMString lastProvisionalNavigationFailureURL;
 
     // Window/view state
     undefined setWindowIsKey(boolean isKey);
@@ -202,6 +205,10 @@ interface TestRunner {
 
     // Screen Wake Lock
     undefined setScreenWakeLockPermission(boolean value);
+
+    // Global Privacy Control
+    undefined setGlobalPrivacyControl(boolean value);
+    boolean getGlobalPrivacyControl();
 
     // MediaStream
     undefined setCameraPermission(boolean value);

@@ -42,6 +42,7 @@
 #include "RestrictedOpenerType.h"
 #include "ShouldGrandfatherStatistics.h"
 #include "StorageAccessStatus.h"
+#include "TimeBasedEvictionMode.h"
 #include "UnifiedOriginStorageLevel.h"
 #include "WebBackForwardCache.h"
 #include "WebCookieManagerMessages.h"
@@ -74,6 +75,7 @@
 #include <WebCore/StorageUtilities.h>
 #include <WebCore/WebLockRegistry.h>
 #include <algorithm>
+#include <wtf/Borrow.h>
 #include <wtf/CallbackAggregator.h>
 #include <wtf/CheckedPtr.h>
 #include <wtf/CompletionHandler.h>
@@ -455,10 +457,6 @@ static void resolveDirectories(WebsiteDataStoreConfiguration::Directories& direc
     if (!directories.generalStorageDirectory.isEmpty())
         directories.generalStorageDirectory = resolveAndCreateReadWriteDirectoryForSandboxExtension(directories.generalStorageDirectory);
 
-#if ENABLE(ARKIT_INLINE_PREVIEW)
-    if (!directories.modelElementCacheDirectory.isEmpty())
-        directories.modelElementCacheDirectory = resolveAndCreateReadWriteDirectoryForSandboxExtension(directories.modelElementCacheDirectory);
-#endif
 
     if (!directories.cookieStorageFile.isEmpty()) {
         auto resolvedCookieDirectory = resolveAndCreateReadWriteDirectoryForSandboxExtension(FileSystem::parentPath(directories.cookieStorageFile));
@@ -530,9 +528,6 @@ void WebsiteDataStore::handleResolvedDirectoriesAsynchronously(const WebsiteData
         allCacheDirectories = {
             directories.mediaCacheDirectory.isolatedCopy()
             , directories.networkCacheDirectory.isolatedCopy()
-#if ENABLE(ARKIT_INLINE_PREVIEW)
-            , directories.modelElementCacheDirectory.isolatedCopy()
-#endif
         };
     }
 
@@ -649,7 +644,7 @@ void WebsiteDataStore::fetchDataAndApply(OptionSet<WebsiteDataType> dataTypes, O
             for (auto& entry : websiteData.entries) {
                 auto displayName = WebsiteDataRecord::displayNameForOrigin(entry.origin);
                 if (!displayName) {
-                    if (!allowsWebsiteDataRecordsForAllOrigins)
+                    if (!allowsWebsiteDataRecordsForAllOrigins && !m_fetchOptions.contains(WebsiteDataFetchOption::IncludeAllOrigins))
                         continue;
 
                     String hostString = entry.origin.host().isEmpty() ? emptyString() : makeString(' ', entry.origin.host());
@@ -887,7 +882,7 @@ HashSet<WebCore::ProcessIdentifier> WebsiteDataStore::activeWebProcesses() const
     HashSet<WebCore::ProcessIdentifier> identifiers;
     // m_processes does not include worker processes now, so we iterate all processes.
     for (Ref processPool : WebProcessPool::allProcessPools()) {
-        for (Ref process : processPool->processes()) {
+        for (Ref process : borrow(processPool->processes()).get()) {
             if (process->isPrewarmed() || process->websiteDataStore() != this)
                 continue;
 
@@ -1116,6 +1111,11 @@ void WebsiteDataStore::setServiceWorkerTimeoutForTesting(Seconds seconds)
 void WebsiteDataStore::resetServiceWorkerTimeoutForTesting()
 {
     protect(networkProcess())->sendSync(Messages::NetworkProcess::ResetServiceWorkerFetchTimeoutForTesting(), 0);
+}
+
+void WebsiteDataStore::clearCrossOriginPreflightResultCacheForTesting()
+{
+    protect(networkProcess())->sendSync(Messages::NetworkProcess::ClearCrossOriginPreflightResultCacheForTesting(), 0);
 }
 
 bool WebsiteDataStore::hasServiceWorkerBackgroundActivityForTesting() const
@@ -1914,6 +1914,18 @@ bool WebsiteDataStore::trackingPreventionEnabled() const
     return m_trackingPreventionEnabled == TrackingPreventionEnabled::Yes;
 }
 
+TimeBasedEvictionMode WebsiteDataStore::timeBasedEvictionMode() const
+{
+    bool isBrowserOrRunningTest = false;
+#if PLATFORM(COCOA)
+    isBrowserOrRunningTest = isFullWebBrowserOrRunningTest();
+#endif
+    if (!isBrowserOrRunningTest || trackingPreventionEnabled())
+        return TimeBasedEvictionMode::Disabled;
+
+    return m_configuration->timeBasedEvictionMode();
+}
+
 bool WebsiteDataStore::resourceLoadStatisticsDebugMode() const
 {
     return m_trackingPreventionDebugMode;
@@ -2240,6 +2252,11 @@ WebsiteDataStoreParameters WebsiteDataStore::parameters()
     networkSessionParameters.serviceWorkerProcessTerminationDelayEnabled = m_configuration->serviceWorkerProcessTerminationDelayEnabled();
     networkSessionParameters.inspectionForServiceWorkersAllowed = m_inspectionForServiceWorkersAllowed;
     networkSessionParameters.storageSiteValidationEnabled = m_storageSiteValidationEnabled;
+    networkSessionParameters.timeBasedEvictionMode = timeBasedEvictionMode();
+    networkSessionParameters.timeBasedEvictionThreshold = m_configuration->timeBasedEvictionThreshold();
+    networkSessionParameters.lastModificationTimeUpdateIntervalOverride = m_configuration->lastModificationTimeUpdateIntervalOverride();
+    networkSessionParameters.timeBasedEvictionIntervalOverride = m_configuration->timeBasedEvictionIntervalOverride();
+    networkSessionParameters.mockPushSubscriptionOriginsForTesting = m_configuration->mockPushSubscriptionOriginsForTesting();
 #if ENABLE(DECLARATIVE_WEB_PUSH)
     networkSessionParameters.isDeclarativeWebPushEnabled = m_configuration->isDeclarativeWebPushEnabled();
 #endif
@@ -2723,7 +2740,7 @@ void WebsiteDataStore::download(const DownloadProxy& downloadProxy, const String
         isAppBound = initiatingPage->isTopFrameNavigatingToAppBoundDomain();
 #endif
 
-        URL initiatingPageURL = URL { initiatingPage->pageLoadState().url() };
+        auto& initiatingPageURL = initiatingPage->pageLoadState().url();
         updatedRequest.setFirstPartyForCookies(initiatingPageURL);
         updatedRequest.setIsSameSite(WebCore::areRegistrableDomainsEqual(initiatingPageURL, downloadProxy.request().url()));
         topOrigin = initiatingPage->pageLoadState().origin();
@@ -2951,6 +2968,13 @@ void WebsiteDataStore::isStorageSuspendedForTesting(CompletionHandler<void(bool)
 {
     protect(networkProcess())->isStorageSuspendedForTesting(m_sessionID, WTF::move(completionHandler));
 }
+
+#if HAVE(WEBCONTENTRESTRICTIONS)
+void WebsiteDataStore::installMockParentalControlsURLFilterForTesting(Vector<URL>&& blockedURLs, CompletionHandler<void()>&& completionHandler)
+{
+    protect(networkProcess())->installMockParentalControlsURLFilterForTesting(WTF::move(blockedURLs), WTF::move(completionHandler));
+}
+#endif
 
 #if !PLATFORM(COCOA)
 

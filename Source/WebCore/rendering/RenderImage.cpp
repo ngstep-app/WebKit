@@ -53,6 +53,7 @@
 #include "LogicalSelectionOffsetCachesInlines.h"
 #include "Page.h"
 #include "PaintInfo.h"
+#include "PlatformRenderTheme.h"
 #include "RenderBoxInlines.h"
 #include "RenderBoxModelObjectInlines.h"
 #include "RenderChildIterator.h"
@@ -140,7 +141,7 @@ void RenderImage::collectSelectionGeometries(Vector<SelectionGeometry>& geometri
     }
 
     bool isFixed = false;
-    auto absoluteQuad = localToAbsoluteQuad(FloatRect(imageRect), UseTransforms, &isFixed);
+    auto absoluteQuad = localToAbsoluteQuad(FloatRect(imageRect), MapCoordinatesMode::UseTransforms, &isFixed);
     auto lineExtentBounds = localToAbsoluteQuad(FloatRect(lineExtentRect)).enclosingBoundingBox();
     if (!containingBlock->isHorizontalWritingMode())
         lineExtentBounds = lineExtentBounds.transposedRect();
@@ -408,6 +409,7 @@ void RenderImage::repaintOrMarkForLayout(ImageSizeChangeType imageSizeChange, co
             FloatSize sourceSize = srcImg->size() / style().usedZoom();
             repaintRect.intersect(enclosingIntRect(mapRect(*rect, FloatRect(FloatPoint(), sourceSize), repaintRect)));
         }
+        // FIXME: This needs to account for filter outsets: webkit.org/b/293553.
         repaintRectangle(repaintRect);
     }
 
@@ -785,6 +787,7 @@ ImageDrawResult RenderImage::paintIntoRect(PaintInfo& paintInfo, const FloatRect
         StrictImageClamping::No,
 #endif
         paintInfo.paintBehavior.contains(PaintBehavior::DrawsHDRContent) ? DrawsHDRContent::Yes : DrawsHDRContent::No,
+        settings().hdrAcceleratedApplyGainMapEnabled() ? AllowAcceleratedApplyGainMap::Yes : AllowAcceleratedApplyGainMap::No,
         style().dynamicRangeLimit().toPlatformDynamicRangeLimit()
     };
 
@@ -936,26 +939,13 @@ void RenderImage::layout()
     }
 }
 
-FloatSize RenderImage::computeIntrinsicSize() const
+FloatSize RenderImage::preferredAspectRatioAsSize() const
 {
-    ASSERT(!shouldApplySizeContainment());
-    auto intrinsicSize = RenderReplaced::computeIntrinsicSize();
-
-    // Our intrinsicSize is empty if we're rendering generated images with relative width/height. Figure out the right intrinsic size to use.
-    if (intrinsicSize.isEmpty() && (imageResource().imageHasRelativeWidth() || imageResource().imageHasRelativeHeight())) {
-        RenderObject* containingBlock = isOutOfFlowPositioned() ? container() : this->containingBlock();
-        if (auto* box = dynamicDowncast<RenderBox>(*containingBlock)) {
-            intrinsicSize.setWidth(box->contentBoxLogicalWidth());
-            intrinsicSize.setHeight(box->availableLogicalHeight(AvailableLogicalHeightType::IncludeMarginBorderPadding));
-        }
-    }
-
-    return intrinsicSize;
-}
-
-FloatSize RenderImage::preferredAspectRatio() const
-{
-    ASSERT(!shouldApplySizeContainment());
+    // Size containment suppresses intrinsic dimensions from content, but the
+    // aspect ratio from the CSS aspect-ratio property is still available via the
+    // base class (which doesn't query image data).
+    if (shouldApplySizeOrInlineSizeContainment())
+        return RenderReplaced::preferredAspectRatioAsSize();
 
     // Don't compute an intrinsic ratio to preserve historical WebKit behavior if we're painting alt text and/or a broken image.
     if (shouldDisplayBrokenImageIcon()) {
@@ -964,21 +954,32 @@ FloatSize RenderImage::preferredAspectRatio() const
         return { 1.0, 1.0 };
     }
 
-    return RenderReplaced::preferredAspectRatio();
+    if (CheckedPtr svgRoot = embeddedSVGRoot()) {
+        auto ratio = svgRoot->preferredAspectRatioAsSize();
+        if (!isHorizontalWritingMode() && !ratio.isEmpty())
+            ratio = ratio.transposedSize();
+
+        if (style().aspectRatio().isRatio() || (style().aspectRatio().isAutoAndRatio() && ratio.isEmpty()))
+            ratio = FloatSize::narrowPrecision(style().aspectRatioLogicalWidth().value, style().aspectRatioLogicalHeight().value);
+
+        return ratio;
+    }
+
+    return RenderReplaced::preferredAspectRatioAsSize();
 }
 
 bool RenderImage::shouldInvalidatePreferredWidths() const
 {
     if (RenderReplaced::shouldInvalidatePreferredWidths())
         return true;
-    return embeddedContentBox();
+    return embeddedSVGRoot();
 }
 
-RenderBox* RenderImage::embeddedContentBox() const
+RenderReplaced* RenderImage::embeddedSVGRoot() const
 {
     if (RefPtr cachedImage = this->cachedImage()) {
         if (RefPtr image = dynamicDowncast<SVGImage>(cachedImage->image()))
-            return image->embeddedContentBox();
+            return image->embeddedSVGRoot();
     }
     return nullptr;
 }

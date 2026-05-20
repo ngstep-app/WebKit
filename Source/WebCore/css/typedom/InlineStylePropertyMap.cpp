@@ -29,7 +29,6 @@
 #include "CSSCustomPropertyValue.h"
 #include "CSSSerializationContext.h"
 #include "Document.h"
-#include "NodeInlines.h"
 #include "StyleAttributeMutationScope.h"
 #include "StylePropertiesInlines.h"
 #include "StyledElement.h"
@@ -83,8 +82,13 @@ auto InlineStylePropertyMap::entries(ScriptExecutionContext* context) const -> V
         return { };
 
     auto& document = downcast<Document>(*context);
-    return map(*inlineStyle, [&document] (auto property) {
-        return StylePropertyMapEntry(property.cssName(), reifyValueToVector(document, RefPtr<CSSValue> { property.value() }, property.id()));
+    return map(*inlineStyle, [&document](auto propertyReference) {
+        return StylePropertyMapEntry {
+            propertyReference.cssName(),
+            propertyReference.id() == CSSPropertyCustom
+                ? reifyValueToVector(document, RefPtr<CSSValue> { propertyReference.value() }, AtomString { propertyReference.cssName() })
+                : reifyValueToVector(document, RefPtr<CSSValue> { propertyReference.value() }, propertyReference.id()),
+        };
     });
 }
 

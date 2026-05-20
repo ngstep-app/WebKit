@@ -48,7 +48,6 @@ enum class LinkTimeConstant : int32_t;
     macro(getByIdDirectPrivate) \
     macro(getByValWithThis) \
     macro(getPrototypeOf) \
-    macro(getPromiseInternalField) \
     macro(getGeneratorInternalField) \
     macro(getIteratorHelperInternalField) \
     macro(getAsyncDisposableStackInternalField) \
@@ -98,7 +97,6 @@ enum class LinkTimeConstant : int32_t;
     macro(putByValDirect) \
     macro(putByValWithThisSloppy) \
     macro(putByValWithThisStrict) \
-    macro(putPromiseInternalField) \
     macro(putGeneratorInternalField) \
     macro(putAsyncDisposableStackInternalField) \
     macro(putAsyncGeneratorInternalField) \
@@ -144,23 +142,12 @@ enum class LinkTimeConstant : int32_t;
     macro(ModuleSatisfy) \
     macro(ModuleLink) \
     macro(ModuleReady) \
-    macro(promiseRejectionReject) \
-    macro(promiseRejectionHandle) \
-    macro(promiseStatePending) \
-    macro(promiseStateFulfilled) \
-    macro(promiseStateRejected) \
-    macro(promiseStateMask) \
-    macro(promiseFlagsIsHandled) \
-    macro(promiseFlagsIsFirstResolvingFunctionCalled) \
-    macro(promiseFieldFlags) \
-    macro(promiseFieldReactionsOrResult) \
     macro(proxyFieldTarget) \
     macro(proxyFieldHandler) \
     macro(generatorFieldState) \
     macro(generatorFieldNext) \
     macro(generatorFieldThis) \
     macro(generatorFieldFrame) \
-    macro(generatorFieldContext) \
     macro(GeneratorResumeModeNormal) \
     macro(GeneratorResumeModeThrow) \
     macro(GeneratorResumeModeReturn) \

@@ -30,9 +30,11 @@
 #include "Document.h"
 #include "InternalObserver.h"
 #include "JSDOMExceptionHandling.h"
+#include "JSValueInWrappedObjectInlines.h"
 #include "ScriptWrappableInlines.h"
 #include "SubscriberCallback.h"
 #include "SubscriptionObserverCallback.h"
+#include <JavaScriptCore/Exception.h>
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
@@ -48,6 +50,7 @@ Subscriber::Subscriber(ScriptExecutionContext& context, Ref<InternalObserver>&& 
     , m_observer(observer)
     , m_options(options)
 {
+    m_observer->setSubscriber(*this);
     relaxAdoptionRequirement();
     followSignal(m_signal);
     if (RefPtr signal = options.signal)

@@ -29,8 +29,11 @@
 #include "Exception.h"
 #include "JSDOMExceptionHandling.h"
 #include "WebCoreJSClientData.h"
+#include <JavaScriptCore/HeapCellInlines.h>
 #include <JavaScriptCore/JSArrayBufferViewInlines.h>
+#include <JavaScriptCore/JSCellInlines.h>
 #include <JavaScriptCore/JSObjectInlines.h>
+#include <JavaScriptCore/TopExceptionScope.h>
 
 namespace WebCore {
 

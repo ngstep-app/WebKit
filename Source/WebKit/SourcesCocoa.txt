@@ -179,7 +179,6 @@ Shared/Extensions/Cocoa/WebExtensionFrameIdentifierCocoa.mm @nonARC
 
 Shared/Cocoa/APIDataCocoa.mm @nonARC
 Shared/Cocoa/APIObject.mm @nonARC
-Shared/Cocoa/ARKitSoftLink.mm @nonARC
 Shared/Cocoa/AccessibilityPreferences.mm @nonARC
 Shared/Cocoa/AuxiliaryProcessCocoa.mm @nonARC
 Shared/Cocoa/CodeSigning.mm @nonARC
@@ -364,6 +363,7 @@ UIProcess/API/Cocoa/WKFindResult.mm @nonARC
 UIProcess/API/Cocoa/WKFormInfo.mm @nonARC
 UIProcess/API/Cocoa/WKFrameInfo.mm @nonARC
 UIProcess/API/Cocoa/WKHTTPCookieStore.mm @nonARC
+UIProcess/API/Cocoa/WKImmersiveEnvironment.mm @nonARC
 UIProcess/API/Cocoa/WKJSHandle.mm @nonARC
 UIProcess/API/Cocoa/WKJSScriptingBuffer.mm @nonARC
 UIProcess/API/Cocoa/WKJSSerializedNode.mm @nonARC
@@ -456,7 +456,6 @@ UIProcess/Cocoa/LegacyDownloadClient.mm @nonARC
 UIProcess/Cocoa/LegacySessionStateCoding.cpp
 UIProcess/Cocoa/MediaUtilities.mm @nonARC
 UIProcess/Cocoa/MediaPermissionUtilities.mm @nonARC
-UIProcess/Cocoa/ModelElementControllerCocoa.mm @nonARC
 UIProcess/Cocoa/NavigationState.mm @nonARC
 UIProcess/Cocoa/PageClientImplCocoa.mm @nonARC
 UIProcess/Cocoa/PlatformWritingToolsUtilities.mm @nonARC
@@ -600,15 +599,12 @@ UIProcess/ios/WKApplicationStateTrackingView.mm @nonARC
 UIProcess/ios/WKBaseScrollView.mm @nonARC
 UIProcess/ios/WKContentView.mm @nonARC @no-unify
 UIProcess/ios/WKContentViewInteraction.mm @nonARC @no-unify
-UIProcess/ios/WKDeferringGestureRecognizer.mm @nonARC
 UIProcess/ios/WKExtendedTextInputTraits.mm @nonARC
 UIProcess/ios/WKExtrinsicButton.mm @nonARC
 UIProcess/ios/WKGeolocationProviderIOS.mm @nonARC
 UIProcess/ios/WKHighlightLongPressGestureRecognizer.mm @nonARC
 UIProcess/ios/WKImageAnalysisGestureRecognizer.mm @nonARC
 UIProcess/ios/WKKeyboardScrollingAnimator.mm @nonARC
-UIProcess/ios/WKModelInteractionGestureRecognizer.mm @nonARC
-UIProcess/ios/WKModelView.mm @nonARC
 UIProcess/ios/WKMouseDeviceObserver.mm @nonARC
 UIProcess/ios/WKMouseInteraction.mm @nonARC
 UIProcess/ios/WKPageHostedModelView.mm @nonARC
@@ -732,6 +728,12 @@ UIProcess/XR/ios/PlatformXRARKit.mm @nonARC
 UIProcess/XR/ios/PlatformXRSystemIOS.mm @nonARC
 UIProcess/XR/ios/WKARPresentationSession.mm @nonARC
 
+UIProcess/XR/xros/PlatformXRCompositor.mm @nonARC
+UIProcess/XR/xros/PlatformXRSystemXROS.mm @nonARC
+UIProcess/XR/xros/WKSpatialGestureRecognizer.mm @nonARC
+UIProcess/XR/xros/WKXRControllerManager.mm @nonARC
+UIProcess/XR/xros/WKXRTrackingManager.mm @nonARC
+
 WebProcess/API/Cocoa/WKWebProcess.cpp
 
 WebProcess/ApplePay/WebPaymentCoordinator.cpp
@@ -842,10 +844,6 @@ WebProcess/Inspector/mac/WebInspectorUIMac.mm @nonARC
 
 WebProcess/MediaCache/WebMediaKeyStorageManager.cpp
 
-WebProcess/Model/ARKitInlinePreviewModelPlayer.mm @nonARC
-WebProcess/Model/ios/ARKitInlinePreviewModelPlayerIOS.mm @nonARC
-WebProcess/Model/mac/ARKitInlinePreviewModelPlayerMac.mm @nonARC
-
 WebProcess/Plugins/PDF/PDFAnnotationTypeHelpers.mm @nonARC
 WebProcess/Plugins/PDF/PDFIncrementalLoader.mm @nonARC
 WebProcess/Plugins/PDF/PDFPlugin.mm @nonARC
@@ -939,6 +937,7 @@ LibWebRTCCodecsMessageReceiver.cpp
 LibWebRTCCodecsProxyMessageReceiver.cpp
 LibWebRTCNetworkMessageReceiver.cpp
 LogStreamMessageReceiver.cpp
+Shared/LogStream.mm @no-unify
 ModelConnectionToWebProcessMessageReceiver.cpp
 MediaPlayerPrivateRemoteMessageReceiver.cpp
 MediaSourcePrivateRemoteMessageReceiverMessageReceiver.cpp
@@ -1046,6 +1045,7 @@ WasmDebuggerDispatcherMessageReceiver.cpp
 WebInspectorInterruptDispatcherMessageReceiver.cpp
 WebInspectorBackendMessageReceiver.cpp
 WebInspectorBackendProxyMessageReceiver.cpp
+ProxyingNetworkAgentMessageReceiver.cpp
 WebInspectorUIExtensionControllerMessageReceiver.cpp
 WebInspectorUIExtensionControllerProxyMessageReceiver.cpp
 WebInspectorUIMessageReceiver.cpp

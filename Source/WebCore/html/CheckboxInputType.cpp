@@ -50,6 +50,7 @@
 #include "LocalizedStrings.h"
 #include "MouseEvent.h"
 #include "NodeDocument.h"
+#include "PlatformRenderTheme.h"
 #include "RenderElement.h"
 #include "RenderStyle+GettersInlines.h"
 #include "RenderTheme.h"
@@ -271,7 +272,7 @@ static int switchPointerTrackingLogicalLeftPosition(Element& element, LayoutPoin
 {
     CheckedRef renderer = *element.renderer();
     auto isVertical = !renderer->writingMode().isHorizontal();
-    auto localLocation = renderer->absoluteToLocal(absoluteLocation, UseTransforms);
+    auto localLocation = renderer->absoluteToLocal(absoluteLocation, MapCoordinatesMode::UseTransforms);
     return isVertical ? localLocation.y() : localLocation.x();
 }
 

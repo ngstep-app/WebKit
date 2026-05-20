@@ -369,7 +369,7 @@ protected:
     virtual void dumpMeta(CommaPrinter&, PrintStream&) const;
 
     // The specific value of VarArgs does not matter, but the value of the others is assumed to match their meaning.
-    enum NumChildren : uint8_t { Zero = 0, One = 1, Two = 2, Three = 3, VarArgs = 4};
+    enum NumChildren : uint8_t { Zero = 0, One = 1, Two = 2, Three = 3, Four = 4, VarArgs = 5 };
 
     char* childrenAlloc() { return std::bit_cast<char*>(this) + m_adjacencyListOffset; }
     const char* childrenAlloc() const { return std::bit_cast<const char*>(this) + m_adjacencyListOffset; }
@@ -454,6 +454,7 @@ protected:
         case WasmAddress:
         case WasmBoundsCheck:
         case WasmStructGet:
+        case WasmArrayLength:
         case VectorExtractLane:
         case VectorSplat:
         case VectorNot:
@@ -519,6 +520,7 @@ protected:
         case Store8:
         case Store16:
         case Store:
+        case WasmArrayGet:
         case WasmStructSet:
         case WasmStructNew:
         case WasmRefCast:
@@ -566,7 +568,12 @@ protected:
         case VectorTransposeOdd:
         case VectorExtractPair:
         case Stitch:
+        case VectorRelaxedMin:
+        case VectorRelaxedMax:
+        case VectorRelaxedQ15Mulr:
+        case VectorRelaxedDotI8x16I7x16:
             return 2 * sizeof(Value*);
+        case WasmArraySet:
         case Select:
         case AtomicWeakCAS:
         case AtomicStrongCAS:
@@ -576,7 +583,10 @@ protected:
         case VectorRelaxedLaneSelect:
         case MemoryFill:
         case MemoryCopy:
+        case VectorRelaxedDotI8x16I7x16Add:
             return 3 * sizeof(Value*);
+        case WasmArrayNew:
+            return 4 * sizeof(Value*);
         case CCall:
         case Check:
         case CheckAdd:
@@ -656,6 +666,9 @@ private:
         case VarArgs:
             new (std::bit_cast<char*>(this) + offset) Vector<Value*, 3> (valueToClone.childrenVector());
             break;
+        case Four:
+            std::bit_cast<Value**>(std::bit_cast<char*>(this) + offset)[3] = valueToClone.childrenArray()[3];
+            [[fallthrough]];
         case Three:
             std::bit_cast<Value**>(std::bit_cast<char*>(this) + offset)[2] = valueToClone.childrenArray()[2];
             [[fallthrough]];
@@ -737,6 +750,7 @@ private:
         case VectorDupElement:
         case VectorReverse:
         case VectorRelaxedTruncSat:
+        case WasmArrayLength:
             if (numArgs != 1) [[unlikely]]
                 badKind(kind, numArgs);
             return One;
@@ -812,6 +826,10 @@ private:
         case VectorTransposeEven:
         case VectorTransposeOdd:
         case VectorExtractPair:
+        case VectorRelaxedQ15Mulr:
+        case VectorRelaxedMin:
+        case VectorRelaxedMax:
+        case VectorRelaxedDotI8x16I7x16:
         case Stitch:
             if (numArgs != 2) [[unlikely]]
                 badKind(kind, numArgs);
@@ -821,6 +839,7 @@ private:
         case VectorRelaxedMAdd:
         case VectorRelaxedNMAdd:
         case VectorRelaxedLaneSelect:
+        case VectorRelaxedDotI8x16I7x16Add:
         case MemoryCopy:
         case MemoryFill:
             if (numArgs != 3) [[unlikely]]
@@ -910,7 +929,6 @@ private:
 
     static Type NODELETE typeFor(Kind, Value* firstChild, Value* secondChild = nullptr);
 
-    // m_index to m_numChildren are arranged to fit in 64 bits.
 protected:
     unsigned m_index { UINT_MAX };
 private:

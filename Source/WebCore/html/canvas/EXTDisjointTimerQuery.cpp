@@ -56,10 +56,10 @@ bool EXTDisjointTimerQuery::supported(GraphicsContextGL& context)
     return context.supportsExtension(GCGLExtension::EXT_disjoint_timer_query);
 }
 
-RefPtr<WebGLTimerQueryEXT> EXTDisjointTimerQuery::createQueryEXT()
+Ref<WebGLTimerQueryEXT> EXTDisjointTimerQuery::createQueryEXT()
 {
     if (isContextLost())
-        return nullptr;
+        return WebGLTimerQueryEXT::createLost();
     return WebGLTimerQueryEXT::create(context().get());
 }
 
@@ -185,7 +185,7 @@ void EXTDisjointTimerQuery::queryCounterEXT(ScriptExecutionContext& scriptExecut
     protect(context->graphicsContextGL())->queryCounterEXT(query.object(), target);
 
     // A query's result must not be made available until control has returned to the user agent's main loop.
-    protect(scriptExecutionContext.eventLoop())->queueMicrotask(scriptExecutionContext.vm(), [query = Ref { query }] {
+    protect(scriptExecutionContext.eventLoop())->queueMicrotask(scriptExecutionContext.vm(), [query = protect(query)] {
         query->makeResultAvailable();
     });
 }

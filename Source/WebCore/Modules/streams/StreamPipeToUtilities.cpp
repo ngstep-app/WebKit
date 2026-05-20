@@ -33,11 +33,13 @@
 #include "InternalWritableStreamWriter.h"
 #include "JSDOMPromise.h"
 #include "JSDOMPromiseDeferred.h"
+#include "JSValueInWrappedObjectInlines.h"
 #include "ReadableStream.h"
 #include "ReadableStreamDefaultReader.h"
 #include "ScriptExecutionContextInlines.h"
 #include "StreamPipeOptions.h"
 #include "WritableStream.h"
+#include <JavaScriptCore/StrongInlines.h>
 
 namespace WebCore {
 
@@ -251,7 +253,7 @@ static RefPtr<DOMPromise> cancelReadableStream(JSDOMGlobalObject& globalObject, 
     if (!value)
         return nullptr;
 
-    auto* promise = jsCast<JSC::JSPromise*>(value);
+    auto* promise = downcast<JSC::JSPromise>(value);
     if (!promise)
         return nullptr;
 
@@ -274,7 +276,7 @@ StreamPipeToState::~StreamPipeToState() = default;
 JSDOMGlobalObject* StreamPipeToState::globalObject()
 {
     RefPtr context = scriptExecutionContext();
-    return context ? JSC::jsCast<JSDOMGlobalObject*>(context->globalObject()) : nullptr;
+    return context ? downcast<JSDOMGlobalObject>(context->globalObject()) : nullptr;
 }
 
 void StreamPipeToState::handleSignal()
@@ -300,7 +302,7 @@ void StreamPipeToState::handleSignal()
                     return nullptr;
 
                 auto value = internalWritableStream->abort(*globalObject, signal->reason().getValue());
-                auto* promise = jsCast<JSC::JSPromise*>(value);
+                auto* promise = downcast<JSC::JSPromise>(value);
                 if (!promise)
                     return nullptr;
 
@@ -386,7 +388,7 @@ void StreamPipeToState::doWrite(JSC::JSValue value)
     if (!m_pendingWritePromise)
         return;
 
-    RefPtr { m_pendingWritePromise }->markAsHandled();
+    m_pendingWritePromise->markAsHandled();
 
     loop();
 }
@@ -405,7 +407,7 @@ void StreamPipeToState::errorsMustBePropagatedForward(JSDOMGlobalObject& globalO
 
                 Ref internalWritableStream = protectedThis->m_destination->internalWritableStream();
                 auto value = internalWritableStream->abort(*globalObject, error.get());
-                auto* promise = jsCast<JSC::JSPromise*>(value);
+                auto* promise = downcast<JSC::JSPromise>(value);
                 if (!promise) {
                     auto [result, deferred] = createPromiseAndWrapper(*globalObject);
                     deferred->resolve();
@@ -553,7 +555,7 @@ void StreamPipeToState::closingMustBePropagatedBackward()
             };
 
             auto [result, deferred] = createPromiseAndWrapper(*globalObject);
-            auto* promise = jsCast<JSC::JSPromise*>(value);
+            auto* promise = downcast<JSC::JSPromise>(value);
             if (!promise)
                 deferred->rejectWithCallback(WTF::move(getError2), RejectAsHandled::Yes);
             else {

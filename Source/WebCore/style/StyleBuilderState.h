@@ -34,6 +34,7 @@
 #include "RuleSet.h"
 #include "SelectorChecker.h"
 #include "StyleForVisitedLink.h"
+#include "StyleSubstitutionContext.h"
 #include "TextFlags.h"
 #include "TreeResolutionState.h"
 #include <wtf/BitSet.h>
@@ -43,6 +44,7 @@ namespace WebCore {
 class FontCascadeDescription;
 class FontSelectionValue;
 class StyleResolver;
+struct CSSRegisteredCustomProperty;
 
 namespace CSSCalc {
 struct RandomCachingKey;
@@ -51,7 +53,9 @@ struct RandomCachingKey;
 namespace Style {
 
 class BuilderState;
+class CustomPropertyRegistry;
 class Image;
+class LocalPropertyRegistry;
 struct Color;
 struct FontFamilies;
 struct FontFeatureSettings;
@@ -88,6 +92,7 @@ struct BuilderContext {
     RefPtr<const Element> element { };
     CheckedPtr<TreeResolutionState> treeResolutionState { };
     std::optional<BuilderPositionTryFallback> positionTryFallback { };
+    const LocalPropertyRegistry* localPropertyRegistry { nullptr };
 };
 
 class BuilderState : public CanMakeCheckedPtr<BuilderState> {
@@ -122,6 +127,8 @@ public:
     const Document& document() const { return *m_context.document; }
     const Element* element() const { return m_context.element.get(); }
 
+    const CSSRegisteredCustomProperty* registeredProperty(const AtomString&) const;
+
     inline void setZoom(Zoom);
     inline void setUsedZoom(float);
     inline void setWritingMode(StyleWritingMode);
@@ -150,6 +157,9 @@ public:
 
     const CSSToLengthConversionData& cssToLengthConversionData() const LIFETIME_BOUND { return m_cssToLengthConversionData; }
 
+    GuardedSubstitutionContexts::Guard guardSubstitutionContext(SubstitutionContext&& context) { return m_guardedSubstitutionContexts.guard(WTF::move(context)); }
+    void addGuardedFunctionContexts(const BuilderState& other) { m_guardedSubstitutionContexts.addFunctionContextsFrom(other.m_guardedSubstitutionContexts); }
+
     void setIsBuildingKeyframeStyle() { m_isBuildingKeyframeStyle = true; }
     bool hasRevertRuleOrLayerInKeyframeStyle() const { return m_hasRevertRuleOrLayerInKeyframeStyle; }
 
@@ -166,7 +176,7 @@ public:
     void NODELETE setUsesViewportUnits();
     void NODELETE setUsesContainerUnits();
 
-    double lookupCSSRandomBaseValue(const CSSCalc::RandomCachingKey&, std::optional<CSS::Keyword::ElementShared>) const;
+    double lookupCSSRandomBaseValue(const CSSCalc::RandomCachingKey&, std::optional<CSS::Keyword::ElementScoped>) const;
 
     // Accessors for sibling information used by the sibling-count() and sibling-index() CSS functions.
     unsigned NODELETE siblingCount();
@@ -190,7 +200,7 @@ public:
     void setFontDescriptionFontSmoothing(FontSmoothingMode);
     void setFontDescriptionFontStyle(FontStyle);
     void setFontDescriptionFontSynthesisSmallCaps(FontSynthesisLonghandValue);
-    void setFontDescriptionFontSynthesisStyle(FontSynthesisLonghandValue);
+    void setFontDescriptionFontSynthesisStyle(FontSynthesisStyleLonghandValue);
     void setFontDescriptionFontSynthesisWeight(FontSynthesisLonghandValue);
     void setFontDescriptionKerning(Kerning);
     void setFontDescriptionOpticalSizing(FontOpticalSizing);
@@ -250,10 +260,7 @@ private:
     const CSSToLengthConversionData m_cssToLengthConversionData;
 
     HashSet<AtomString> m_appliedCustomProperties;
-    HashSet<AtomString> m_inProgressCustomProperties;
-    HashSet<AtomString> m_inCycleCustomProperties;
-    HashSet<AtomString> m_inProgressAttrAttributes;
-    HashSet<AtomString> m_inCycleAttrAttributes;
+    GuardedSubstitutionContexts m_guardedSubstitutionContexts;
     WTF::BitSet<cssPropertyIDEnumValueCount> m_inProgressProperties;
     WTF::BitSet<cssPropertyIDEnumValueCount> m_invalidAtComputedValueTimeProperties;
 

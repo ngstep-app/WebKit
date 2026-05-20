@@ -31,6 +31,7 @@
 #include <JavaScriptCore/MicrotaskQueue.h>
 #include <JavaScriptCore/TopExceptionScope.h>
 #include <JavaScriptCore/VMEntryScopeInlines.h>
+#include <wtf/SetForScope.h>
 
 namespace JSC {
 
@@ -42,14 +43,14 @@ inline JSCell* QueuedTask::dispatcher() const
 inline JSGlobalObject* QueuedTask::globalObject() const
 {
     if (isJSMicrotaskDispatcher()) [[unlikely]]
-        return jsCast<JSMicrotaskDispatcher*>(dispatcher())->globalObject();
-    return jsCast<JSGlobalObject*>(dispatcher());
+        return uncheckedDowncast<JSMicrotaskDispatcher>(dispatcher())->globalObject();
+    return uncheckedDowncast<JSGlobalObject>(dispatcher());
 }
 
 inline JSMicrotaskDispatcher* QueuedTask::jsMicrotaskDispatcher() const
 {
     if (isJSMicrotaskDispatcher()) [[unlikely]]
-        return jsCast<JSMicrotaskDispatcher*>(dispatcher());
+        return uncheckedDowncast<JSMicrotaskDispatcher>(dispatcher());
     return nullptr;
 }
 
@@ -75,6 +76,7 @@ inline void MicrotaskQueue::enqueue(QueuedTask&& task)
 template<bool useCallOnEachMicrotask>
 inline void MicrotaskQueue::performMicrotaskCheckpoint(VM& vm, NOESCAPE const Invocable<void(JSGlobalObject*, JSGlobalObject*)> auto& globalObjectSwitchCallback)
 {
+    SetForScope inCheckpoint(m_isPerformingMicrotaskCheckpoint, true);
     auto catchScope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
     if (vm.executionForbidden()) [[unlikely]]
         clear();

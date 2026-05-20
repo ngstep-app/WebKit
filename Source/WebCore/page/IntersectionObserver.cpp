@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2022 Apple Inc. All rights reserved.
+ * Copyright (C) 2016-2026 Apple Inc. All rights reserved.
  * Copyright (C) 2020 Google Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -31,9 +31,10 @@
 #include "ContextDestructionObserverInlines.h"
 #include "CSSParserTokenRange.h"
 #include "CSSPropertyParserConsumer+Background.h"
-#include "CSSPropertyParserConsumer+CSSPrimitiveValueResolver.h"
 #include "CSSPropertyParserConsumer+LengthPercentageDefinitions.h"
+#include "CSSPropertyParserConsumer+MetaConsumer.h"
 #include "CSSTokenizer.h"
+#include "DocumentQuirks.h"
 #include "DocumentSecurityOrigin.h"
 #include "DocumentView.h"
 #include "Element.h"
@@ -52,7 +53,8 @@
 #include "RenderLineBreak.h"
 #include "RenderObjectInlines.h"
 #include "RenderView.h"
-#include "StylePrimitiveKeyword+Logging.h"
+#include "StyleKeyword+Logging.h"
+#include "StylePrimitiveNumericTypes+Conversions.h"
 #include "StylePrimitiveNumericTypes+Evaluation.h"
 #include "StylePrimitiveNumericTypes+Logging.h"
 #include "VisibleRectContext.h"
@@ -81,21 +83,30 @@ static ExceptionOr<IntersectionObserverMarginBox> parseMargin(String& margin, co
         return IntersectionObserverMarginBox { IntersectionObserverMarginEdge::Fixed { 0 } };
 
     auto consumeEdge = [&] -> ExceptionOr<IntersectionObserverMarginEdge> {
-        auto parsedValue = CSSPrimitiveValueResolver<CSS::LengthPercentage<>>::consumeAndResolve(tokenRange, parserState);
+        auto parsedValue = MetaConsumer<CSS::LengthPercentage<CSS::All, float>>::consume(tokenRange, parserState);
 
-        if (!parsedValue || parsedValue->isCalculated())
+        if (!parsedValue || parsedValue->isCalc())
             return Exception { ExceptionCode::SyntaxError, makeString("Failed to construct 'IntersectionObserver': "_s, marginName, " must be specified in pixels or percent."_s) };
 
-        if (parsedValue->isPercentage())
-            return { IntersectionObserverMarginEdge::Percentage { parsedValue->resolveAsPercentageNoConversionDataRequired<float>() } };
-
-        // FIXME: This should support all absolute length units, not just px.
-        // Spec states: "Similar to the CSS margin property, this is a string of 1-4 components, each either an *absolute length* or a percentage."
-        // https://w3c.github.io/IntersectionObserver/#dom-intersectionobserverinit-rootmargin
-        if (parsedValue->isPx())
-            return { IntersectionObserverMarginEdge::Fixed { parsedValue->resolveAsLengthNoConversionDataRequired<float>() } };
-
-        return Exception { ExceptionCode::SyntaxError, makeString("Failed to construct 'IntersectionObserver': "_s, marginName, " must be specified in pixels or percent."_s) };
+        auto raw = parsedValue->raw();
+        return CSS::switchOnUnitType(raw->unit,
+            [&](CSS::PercentageUnit) -> ExceptionOr<IntersectionObserverMarginEdge> {
+                return { IntersectionObserverMarginEdge::Percentage {
+                    Style::toStyle(CSS::PercentageRaw<CSS::All, float> { raw->value }, NoConversionDataRequiredToken { }).value
+                } };
+            },
+            [&](CSS::LengthUnit lengthUnit) -> ExceptionOr<IntersectionObserverMarginEdge> {
+                // FIXME: This should support all absolute length units, not just px.
+                // Spec states: "Similar to the CSS margin property, this is a string of 1-4 components, each either an *absolute length* or a percentage."
+                // https://w3c.github.io/IntersectionObserver/#dom-intersectionobserverinit-rootmargin
+                if (lengthUnit == CSS::LengthUnit::Px) {
+                    return { IntersectionObserverMarginEdge::Fixed {
+                        Style::toStyle(CSS::LengthRaw<CSS::All, float> { lengthUnit, raw->value }, NoConversionDataRequiredToken { }).unresolvedValue()
+                    } };
+                }
+                return Exception { ExceptionCode::SyntaxError, makeString("Failed to construct 'IntersectionObserver': "_s, marginName, " must be specified in pixels or percent."_s) };
+            }
+        );
     };
 
     auto edge1 = consumeEdge();
@@ -458,8 +469,10 @@ auto IntersectionObserver::computeIntersectionState(const IntersectionObserverRe
 {
     bool isFirstObservation = !registration.previousThresholdIndex;
 
-    float rootUsedZoom = 1.0;
+    // This is only set for explicit roots.
+    // FIXME: remove one remaining place that needs this to work with implicit root.
     CheckedPtr<RenderBlock> rootRenderer;
+
     CheckedPtr<RenderElement> targetRenderer;
     IntersectionObservationState intersectionState;
 
@@ -496,8 +509,6 @@ auto IntersectionObserver::computeIntersectionState(const IntersectionObserverRe
             else
                 intersectionState.rootBounds = { FloatPoint(), rootRenderer->size() };
 
-            rootUsedZoom = rootRenderer->style().usedZoom();
-
             return;
         }
 
@@ -510,7 +521,6 @@ auto IntersectionObserver::computeIntersectionState(const IntersectionObserverRe
 
         intersectionState.canComputeIntersection = true;
         intersectionState.rootBounds = layoutViewportRectForIntersection();
-        rootUsedZoom = rootRenderer->style().usedZoom();
     };
 
     computeRootBounds();
@@ -520,6 +530,26 @@ auto IntersectionObserver::computeIntersectionState(const IntersectionObserverRe
     }
 
     if (applyRootMargin == ApplyRootMargin::Yes) {
+        auto rootUsedZoom = [&] () -> float {
+            if (rootRenderer)
+                return rootRenderer->style().usedZoom();
+
+            // If applyRootMargin is Yes, the root and target frames are same-origin.
+            // Therefore the root frame should be in the same process as the target frame
+            // (with or without Site Isolation)
+            auto* hostLocalFrameView = dynamicDowncast<LocalFrameView>(hostFrameView);
+            ASSERT(hostLocalFrameView);
+            if (!hostLocalFrameView)
+                return 1;
+
+            CheckedPtr hostRenderView = hostLocalFrameView->renderView();
+            ASSERT(hostRenderView);
+            if (!hostRenderView)
+                return 1;
+
+            return hostRenderView->style().usedZoom();
+        }();
+
         expandRootBoundsWithRootMargin(intersectionState.rootBounds, scrollMarginBox(), rootUsedZoom);
         expandRootBoundsWithRootMargin(intersectionState.rootBounds, rootMarginBox(), rootUsedZoom);
     }
@@ -646,6 +676,16 @@ auto IntersectionObserver::updateObservations(const Frame& hostFrame) -> NeedNot
         auto intersectionState = computeIntersectionState(registration, *hostFrameView, target, applyRootMargin);
 
         if (intersectionState.observationChanged) {
+            if (intersectionState.isIntersecting) {
+                if (RefPtr document = dynamicDowncast<Document>(m_callback->scriptExecutionContext())) {
+                    if (RefPtr page = document->page()) {
+                        if (document->quirks().shouldDeferIntersectionObserversDuringResize() && page->isWithinResizeDebounceWindow()) {
+                            registration.previousThresholdIndex = intersectionState.thresholdIndex;
+                            continue;
+                        }
+                    }
+                }
+            }
             FloatRect targetBoundingClientRect;
             FloatRect clientIntersectionRect;
             FloatRect clientRootBounds;
@@ -654,12 +694,13 @@ auto IntersectionObserver::updateObservations(const Frame& hostFrame) -> NeedNot
                 ASSERT(intersectionState.absoluteRootBounds);
 
                 RefPtr targetFrameView = target.document().view();
-                targetBoundingClientRect = targetFrameView->absoluteToClientRect(*intersectionState.absoluteTargetRect, target.renderer()->style().usedZoom());
+                auto targetZoomForClient = target.document().zoomForClient(target.renderer()->style());
+                targetBoundingClientRect = targetFrameView->absoluteToClientRect(*intersectionState.absoluteTargetRect, targetZoomForClient);
                 clientRootBounds = hostFrameView->absoluteToLayoutViewportRect(*intersectionState.absoluteRootBounds);
 
                 if (intersectionState.isIntersecting) {
                     ASSERT(intersectionState.absoluteIntersectionRect);
-                    clientIntersectionRect = targetFrameView->absoluteToClientRect(*intersectionState.absoluteIntersectionRect, target.renderer()->style().usedZoom());
+                    clientIntersectionRect = targetFrameView->absoluteToClientRect(*intersectionState.absoluteIntersectionRect, targetZoomForClient);
                 }
             }
 
@@ -717,6 +758,16 @@ void IntersectionObserver::notify()
     if (m_queuedEntries.isEmpty()) {
         ASSERT(m_pendingTargets.isEmpty());
         return;
+    }
+
+
+    if (RefPtr context = m_callback->scriptExecutionContext()) {
+        if (RefPtr document = dynamicDowncast<Document>(context.get())) {
+            if (RefPtr page = document->page()) {
+                if (document->quirks().shouldDeferIntersectionObserversDuringResize() && page->isWithinResizeDebounceWindow())
+                    return;
+            }
+        }
     }
 
     auto takenRecords = takeRecords();

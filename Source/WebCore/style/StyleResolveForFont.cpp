@@ -37,7 +37,7 @@
 #include "CSSFontSelector.h"
 #include "CSSFontStyleWithAngleValue.h"
 #include "CSSFontVariationValue.h"
-#include "CSSPrimitiveValueMappings.h"
+#include "CSSKeywordValueInlines.h"
 #include "CSSPropertyParserConsumer+Font.h"
 #include "CSSValueList.h"
 #include "CSSValuePair.h"
@@ -51,8 +51,11 @@
 #include "StyleBuilderChecking.h"
 #include "StyleFontFamily.h"
 #include "StyleFontSizeFunctions.h"
+#include "StyleFontWeight.h"
+#include "StyleKeyword+Mappings.h"
 #include "StyleLengthResolution.h"
 #include "StylePrimitiveNumericTypes+Conversions.h"
+#include "StylePrimitiveNumericTypes+DeprecatedCSSValueConversion.h"
 #include "StylePrimitiveNumericTypes+Evaluation.h"
 #include "WebKitFontFamilyNames.h"
 
@@ -65,13 +68,12 @@ using namespace WebKitFontFamilyNames;
 
 FontSelectionValue fontWeightFromCSSValueDeprecated(const CSSValue& value)
 {
-    auto& primitiveValue = downcast<CSSPrimitiveValue>(value);
+    if (RefPtr primitiveValue = dynamicDowncast<CSSPrimitiveValue>(value)) {
+        ASSERT(primitiveValue->isNumber());
+        return FontSelectionValue(static_cast<float>(deprecatedToStyleFromCSSValue<FontWeight::Number>(*primitiveValue)->value));
+    }
 
-    if (primitiveValue.isNumber())
-        return FontSelectionValue(clampTo<float>(primitiveValue.resolveAsNumberDeprecated(), 1, 1000));
-
-    ASSERT(primitiveValue.isValueID());
-    switch (primitiveValue.valueID()) {
+    switch (valueID(value)) {
     case CSSValueNormal:
         return normalWeightValue();
     case CSSValueBold:
@@ -116,25 +118,20 @@ static FontSelectionValue fontWeightFromUnresolvedFontWeight(const CSSPropertyPa
 
 FontSelectionValue fontStretchFromCSSValueDeprecated(const CSSValue& value)
 {
-    const auto& primitiveValue = downcast<CSSPrimitiveValue>(value);
+    if (RefPtr primitiveValue = dynamicDowncast<CSSPrimitiveValue>(value)) {
+        ASSERT(primitiveValue->isPercentage());
+        return FontSelectionValue::clampFloat(deprecatedToStyleFromCSSValue<Percentage<CSS::Nonnegative, float>>(*primitiveValue)->value);
+    }
 
-    if (primitiveValue.isPercentage())
-        return FontSelectionValue::clampFloat(primitiveValue.resolveAsPercentageDeprecated<float>());
-
-    ASSERT(primitiveValue.isValueID());
-    if (auto value = fontWidthValue(primitiveValue.valueID()))
+    const auto& keywordValue = downcast<CSSKeywordValue>(value);
+    if (auto value = fontWidthValue(keywordValue.valueID()))
         return value.value();
 
-    ASSERT(CSSPropertyParserHelpers::isSystemFontShorthand(primitiveValue.valueID()));
+    ASSERT(CSSPropertyParserHelpers::isSystemFontShorthand(keywordValue.valueID()));
     return normalWidthValue();
 }
 
 // MARK: - 'font-style'
-
-FontSelectionValue fontStyleAngleFromCSSValueDeprecated(const CSSValue& value)
-{
-    return normalizedFontItalicValue(downcast<CSSPrimitiveValue>(value).resolveAsAngleDeprecated<float>());
-}
 
 std::optional<FontSelectionValue> fontStyleAngleFromCSSFontStyleWithAngleValueDeprecated(const CSSFontStyleWithAngleValue& value)
 {
@@ -148,7 +145,7 @@ std::optional<FontSelectionValue> fontStyleFromCSSValueDeprecated(const CSSValue
     if (RefPtr fontStyleValue = dynamicDowncast<CSSFontStyleWithAngleValue>(value))
         return fontStyleAngleFromCSSFontStyleWithAngleValueDeprecated(*fontStyleValue);
 
-    auto valueID = value.valueID();
+    auto valueID = downcast<CSSKeywordValue>(value).valueID();
     if (valueID == CSSValueNormal)
         return std::nullopt;
 

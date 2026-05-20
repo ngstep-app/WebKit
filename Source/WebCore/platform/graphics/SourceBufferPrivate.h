@@ -122,7 +122,7 @@ public:
 
     using ComputeSeekPromise = MediaTimePromise;
     WEBCORE_EXPORT virtual Ref<ComputeSeekPromise> computeSeekTime(const SeekTarget&);
-    WEBCORE_EXPORT virtual void seekToTime(const MediaTime&);
+    WEBCORE_EXPORT virtual void reenqueueMediaForTime(const MediaTime&);
     WEBCORE_EXPORT virtual void updateTrackIds(Vector<std::pair<TrackID, TrackID>>&& trackIdPairs);
 
     WEBCORE_EXPORT void setClient(SourceBufferPrivateClient&);
@@ -179,7 +179,6 @@ protected:
     virtual Ref<MediaPromise> appendInternal(Ref<SharedBuffer>&&) = 0;
     virtual void resetParserStateInternal() = 0;
     virtual MediaTime timeFudgeFactor() const { return PlatformTimeRanges::timeFudgeFactor(); }
-    virtual bool isSeeking() const { return false; }
     virtual void flush(TrackID) { }
     virtual void enqueueSample(Ref<MediaSample>&&, TrackID) { }
     virtual void allSamplesInTrackEnqueued(TrackID) { }
@@ -241,6 +240,9 @@ private:
     uint64_t totalTrackBufferSizeInBytes() const;
     void iterateTrackBuffers(NOESCAPE const Function<void(TrackBuffer&)>&);
     void iterateTrackBuffers(NOESCAPE const Function<void(const TrackBuffer&)>&) const;
+    bool isReenqueuePending() const;
+
+    void flushTracksThatNeedReenqueueing();
 
     using OperationPromise = NativePromise<void, PlatformMediaError, WTF::PromiseOption::Default | WTF::PromiseOption::NonExclusive>;
 
@@ -264,7 +266,7 @@ private:
     std::atomic<size_t> m_abortCount { 0 };
 
     void processPendingMediaSamples();
-    bool processMediaSample(SourceBufferPrivateClient&, Ref<MediaSample>&&);
+    bool processMediaSample(SourceBufferPrivateClient&, Ref<MediaSample>&&, bool isPresentationTail);
 
     enum class ComputeEvictionDataRule {
         Default,
@@ -274,6 +276,11 @@ private:
 
     using SamplesVector = Vector<Ref<MediaSample>>;
     SamplesVector m_pendingSamples WTF_GUARDED_BY_CAPABILITY(m_dispatcher.get());
+    // Per video track, the pending sample with the highest presentationEndTime. Maintained
+    // incrementally in didReceiveSample and drained in lockstep with m_pendingSamples so
+    // processPendingMediaSamples does not need to rescan the batch. Raw pointers are valid
+    // while the owning Ref lives in m_pendingSamples.
+    StdUnorderedMap<TrackID, MediaSample*> m_presentationTailPerTrack WTF_GUARDED_BY_CAPABILITY(m_dispatcher.get());
     Ref<MediaPromise> m_currentAppendProcessing WTF_GUARDED_BY_CAPABILITY(m_dispatcher.get()) { MediaPromise::createAndResolve() };
 
     MediaTime m_appendWindowStart WTF_GUARDED_BY_LOCK(m_lock) { MediaTime::zeroTime() };

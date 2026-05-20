@@ -27,7 +27,7 @@
 #include "config.h"
 #include "Editor.h"
 
-#if PLATFORM(GTK) || PLATFORM(WPE)
+#if PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(HAIKU)
 #include "CachedImage.h"
 #include "ContainerNodeInlines.h"
 #include "DocumentFragment.h"
@@ -108,7 +108,7 @@ void Editor::writeImageToPasteboard(Pasteboard& pasteboard, Element& imageElemen
         return;
     ASSERT(pasteboardImage.image);
 
-    pasteboardImage.url.url = imageElement.document().completeURL(elementURL(imageElement));
+    pasteboardImage.url.url = imageElement.document().encodingParseURL(elementURL(imageElement));
     pasteboardImage.url.title = title;
     pasteboardImage.url.markup = serializeFragment(imageElement, SerializedNodes::SubtreeIncludingNode, nullptr, ResolveURLs::Yes);
     pasteboard.write(pasteboardImage);
@@ -134,4 +134,4 @@ RefPtr<DocumentFragment> Editor::webContentFromPasteboard(Pasteboard& pasteboard
 
 } // namespace WebCore
 
-#endif // PLATFORM(GTK) || PLATFORM(WPE)
+#endif // PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(HAIKU)

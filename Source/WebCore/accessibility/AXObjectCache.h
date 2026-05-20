@@ -26,26 +26,23 @@
 #pragma once
 
 #include <WebCore/AXAnnouncementTypes.h>
-#include <WebCore/AXTextMarker.h>
+#include <WebCore/AXObjectTypes.h>
+#include <WebCore/AXTextStateChangeIntent.h>
 #include <WebCore/AXTreeStore.h>
+#include <WebCore/AccessibilityObject.h>
 #include <WebCore/AccessibilityRemoteToken.h>
-#include <WebCore/AffineTransform.h>
-#include <WebCore/Document.h>
-#include <WebCore/RenderView.h>
 #include <WebCore/SimpleRange.h>
 #include <WebCore/StyleChange.h>
 #include <WebCore/Timer.h>
 #include <WebCore/VisibleUnits.h>
-#include <limits.h>
-#include <wtf/CheckedPtr.h>
+#include <wtf/CheckedRef.h>
 #include <wtf/Deque.h>
 #include <wtf/HashMap.h>
 #include <wtf/HashSet.h>
 #include <wtf/ListHashSet.h>
-#include <wtf/Platform.h>
-#include <wtf/ProcessID.h>
 #include <wtf/WeakHashMap.h>
 #include <wtf/WeakHashSet.h>
+#include <wtf/WeakListHashSet.h>
 
 #if PLATFORM(COCOA)
 #include <WebCore/AttributedString.h>
@@ -72,6 +69,7 @@ class AccessibilityRenderObject;
 class AccessibilitySpinButton;
 class Document;
 class HTMLAreaElement;
+class HTMLCanvasElement;
 class HTMLDetailsElement;
 class HTMLSelectElement;
 class HTMLTableElement;
@@ -82,6 +80,10 @@ class RemoteFrame;
 class RenderBlock;
 class RenderBlockFlow;
 class RenderImage;
+
+class AXTextMarker;
+
+namespace Style { struct Difference; }
 class RenderObject;
 class RenderStyle;
 class RenderText;
@@ -101,67 +103,6 @@ enum class AXStreamOptions : uint16_t;
 enum class AXProperty : uint16_t;
 enum class LiveRegionStatus: uint8_t;
 
-enum class AccessibilityMode : uint8_t {
-    // Off MUST be the zero variant - WebPageProxy relies on the default initializer
-    // for an AccessibilityMode to be Off.
-    Off = 0,
-    // Accessibility is enabled but not isolated tree mode.
-    MainThread,
-    // This implies / is equivalent to the notion of isolated tree mode.
-    AXThread,
-    // Equivalent to Off, but remembers what mode we were in before disabling.
-    OffWasMainThread,
-    OffWasAXThread,
-};
-
-inline bool isAccessibilityModeOff(AccessibilityMode mode)
-{
-    return mode == AccessibilityMode::Off
-        || mode == AccessibilityMode::OffWasMainThread
-        || mode == AccessibilityMode::OffWasAXThread;
-}
-
-// Returns the resolved target mode for a requested transition, or std::nullopt
-// if the transition is not allowed. Allowed transitions:
-//   Off (or OffWas*) -> MainThread or AXThread
-//   MainThread       -> AXThread or OffWasMainThread (test mode only)
-//   AXThread         -> OffWasAXThread (test mode only)
-// Transitioning to an Off state is only allowed in test mode.
-// Returns std::nullopt if the transition is not allowed or unnecessary (i.e.
-// the current and requested modes are equal).
-WEBCORE_EXPORT std::optional<AccessibilityMode> resolveAccessibilityModeTransition(AccessibilityMode current, AccessibilityMode requested);
-
-enum class TextMarkerOrigin : uint16_t;
-
-struct CharacterOffset {
-    RefPtr<Node> node;
-    int startIndex;
-    int offset;
-    int remainingOffset;
-
-    CharacterOffset(Node* n = nullptr, int startIndex = 0, int offset = 0, int remaining = 0)
-        : node(n)
-        , startIndex(startIndex)
-        , offset(offset)
-        , remainingOffset(remaining)
-    { }
-
-    int remaining() const { return remainingOffset; }
-    bool isNull() const { return !node; }
-    inline bool isEqual(const CharacterOffset& other) const;
-    inline String debugDescription();
-};
-
-struct VisiblePositionIndex {
-    int value = -1;
-    RefPtr<ContainerNode> scope;
-};
-
-struct VisiblePositionIndexRange {
-    VisiblePositionIndex startIndex;
-    VisiblePositionIndex endIndex;
-    bool isNull() const { return startIndex.value == -1 || endIndex.value == -1; }
-};
 
 struct AXTreeData {
     String liveTree;
@@ -255,15 +196,22 @@ struct AXTextChangeContext {
 
 #if ENABLE(ACCESSIBILITY_LOCAL_FRAME)
 // When this is updated, WebCoreArgumentCoders.serialization.in must be updated as well.
-struct InheritedFrameState {
-    bool isAXHidden { false };
-    bool isInert { false };
-    bool isRenderHidden { false };
-};
 
+// Describes a frame's position and scale on screen for accessibility coordinate conversion.
+// Sent from the UIProcess to the WebProcess via IPC whenever the frame scrolls, moves, or resizes.
 // When this is updated, WebCoreArgumentCoders.serialization.in must be updated as well.
-struct FrameGeometry {
+struct AXFrameGeometry {
+    // The frame's content origin in screen coordinates.
+    //   - Coordinate space: bottom-left on macOS, top-left on other platforms.
+    //   - Points to: the top-left of the frame's document.
+    //   - Units: display pixels.
+    //   - Scroll: document-origin-based, so accounts for the frame's scroll position
+    //     (e.g. scrolling down moves the document origin up on screen).
+    // Element rects in content space compose with this directly to produce screen coordinates.
     IntPoint screenPosition;
+
+    // Scale accounts for page zoom and device scale factor, among other things.
+    // Applied to the element rect before adding screenPosition.
     AffineTransform screenTransform;
 };
 #endif
@@ -352,9 +300,9 @@ public:
     AccessibilityObject* rootWebArea();
 #if ENABLE(ACCESSIBILITY_LOCAL_FRAME)
     WEBCORE_EXPORT void setFrameInheritedState(LocalFrame&, const InheritedFrameState&);
-    WEBCORE_EXPORT void setFrameGeometry(LocalFrame&, const FrameGeometry&);
-    const std::optional<FrameGeometry>& frameGeometry() const LIFETIME_BOUND { return m_frameGeometry; }
-    const std::optional<FrameGeometry>& getAndUpdateFrameGeometry() LIFETIME_BOUND;
+    WEBCORE_EXPORT void setFrameGeometry(LocalFrame&, const AXFrameGeometry&);
+    const std::optional<AXFrameGeometry>& frameGeometry() const LIFETIME_BOUND { return m_frameGeometry; }
+    const std::optional<AXFrameGeometry>& getAndUpdateFrameGeometry() LIFETIME_BOUND;
 #endif
 
     // Creation/retrieval of AX objects associated with a DOM or RenderTree object.
@@ -411,22 +359,12 @@ public:
     {
         return node ? get(*node) : nullptr;
     }
-    inline AccessibilityObject* get(Node& node) const
-    {
-        if (CheckedPtr document = dynamicDowncast<Document>(node)) [[unlikely]]
-            return get(document->renderView());
-        return m_nodeObjectMapping.get(node);
-    }
+    AccessibilityObject* get(Node&) const;
     inline AccessibilityObject* get(Element& element) const
     {
         return m_nodeObjectMapping.get(element);
     }
-    inline std::optional<AXID> getAXID(RenderObject& renderer) const
-    {
-        if (auto* node = renderer.node())
-            return m_nodeIdMapping.getOptional(*node);
-        return m_renderObjectIdMapping.getOptional(const_cast<RenderObject&>(renderer));
-    }
+    std::optional<AXID> getAXID(RenderObject&) const;
 
     void remove(RenderObject&);
     void remove(Node&);
@@ -507,6 +445,7 @@ public:
     void onValidityChange(Element&);
     void onTextCompositionChange(Node&, CompositionState, bool, const String&, size_t, bool);
     void onWidgetVisibilityChanged(RenderWidget&);
+    void onPostRenderingUpdate();
     void valueChanged(Element&);
     void checkedStateChanged(Element&);
     void autofillTypeChanged(HTMLInputElement&);
@@ -526,7 +465,7 @@ public:
     void onTextRunsChanged(const RenderObject&);
 #endif
 
-    void onLaidOutInlineContent(const RenderBlockFlow& renderBlock) { setDirtyStitchGroups(renderBlock); }
+    void onLaidOutInlineContent(const RenderBlockFlow&);
     const Vector<AXStitchGroup>* stitchGroupsOwnedBy(AccessibilityObject&);
 
     void updateLoadingProgress(double);
@@ -551,11 +490,20 @@ public:
         WeakPtr<RemoteFrame> remoteFrame;
         WeakPtr<Element, WeakPtrImplWithEventTargetData> oldFocusedElement;
     };
+
+    struct CanvasFocusPathBoundsChange {
+        // The canvas fallback element whose focus path bounds were set by
+        // CanvasRenderingContext2D::drawFocusIfNeeded().
+        WeakPtr<Element, WeakPtrImplWithEventTargetData> fallbackElement;
+        WeakPtr<HTMLCanvasElement, WeakPtrImplWithEventTargetData> canvas;
+        FloatRect bounds;
+    };
     using DeferredCollection = Variant<HashMap<Element*, String>
         , HashSet<AXID>
         , ListHashSet<Node*>
         , ListHashSet<Ref<AccessibilityObject>>
         , Vector<AttributeChange>
+        , Vector<CanvasFocusPathBoundsChange>
         , Vector<std::pair<Node*, Node*>>
         , WeakHashSet<Element, WeakPtrImplWithEventTargetData>
         , WeakHashSet<HTMLTableElement, WeakPtrImplWithEventTargetData>
@@ -652,6 +600,9 @@ public:
     NO_RETURN_DUE_TO_ASSERT void onPaint(const RenderText&, size_t) { ASSERT_NOT_REACHED(); }
 #endif
 
+    void deferCanvasFocusPathBoundsUpdate(Element& canvasFallbackElement, HTMLCanvasElement&, FloatRect bounds);
+    std::optional<IntRect> cachedBoundsForID(AXID) const;
+
     // Text marker utilities.
     std::optional<TextMarkerData> textMarkerDataForVisiblePosition(const VisiblePosition&, TextMarkerOrigin = static_cast<TextMarkerOrigin>(0));
     TextMarkerData textMarkerDataForCharacterOffset(const CharacterOffset&, TextMarkerOrigin = static_cast<TextMarkerOrigin>(0));
@@ -735,7 +686,7 @@ public:
 
     AXComputedObjectAttributeCache* computedObjectAttributeCache() LIFETIME_BOUND { return m_computedObjectAttributeCache.get(); }
 
-    Document* document() const { return m_document; }
+    Document* document() const;
     FrameIdentifier frameID() const { return m_frameID; }
 
     RefPtr<Page> NODELETE page() const;
@@ -743,6 +694,39 @@ public:
 
     void objectBecameIgnored(const AccessibilityObject&);
     void objectBecameUnignored(const AccessibilityObject&);
+    static bool isMockObjectOrWebAreaRole(AccessibilityRole role)
+    {
+        switch (role) {
+        case AccessibilityRole::WebArea:
+        case AccessibilityRole::ScrollArea:
+        case AccessibilityRole::ScrollBar:
+        case AccessibilityRole::LocalFrame:
+        case AccessibilityRole::FrameHost:
+        case AccessibilityRole::RemoteFrame:
+        case AccessibilityRole::SliderThumb:
+        case AccessibilityRole::SpinButton:
+        case AccessibilityRole::SpinButtonPart:
+        case AccessibilityRole::MenuListPopup:
+        case AccessibilityRole::Column:
+        case AccessibilityRole::TableHeaderContainer:
+            return true;
+        default:
+            return false;
+        }
+    }
+    void incrementUnignoredContentObjectCount(AccessibilityRole role)
+    {
+        if (!isMockObjectOrWebAreaRole(role))
+            ++m_unignoredContentObjectCount;
+    }
+    void decrementUnignoredContentObjectCount(AccessibilityRole role)
+    {
+        if (isMockObjectOrWebAreaRole(role))
+            return;
+        AX_ASSERT(m_unignoredContentObjectCount);
+        if (m_unignoredContentObjectCount)
+            --m_unignoredContentObjectCount;
+    }
 
 #if PLATFORM(COCOA)
     static void NODELETE setShouldRepostNotificationsForTests(bool);
@@ -767,6 +751,7 @@ public:
     // Returns the IDs of the objects that relate to the given object with the specified relationship.
     std::optional<ListHashSet<AXID>> relatedObjectIDsFor(const AXCoreObject&, AXRelation, UpdateRelations = UpdateRelations::Yes);
     void updateRelations(Element&, const QualifiedName&);
+    bool hasAriaOwnsRelations() const { return m_relationsNeedUpdate || m_hasAriaOwnsRelations; }
 
 #if PLATFORM(IOS_FAMILY)
     void relayNotification(String&&, RetainPtr<NSData>&&);
@@ -909,6 +894,7 @@ private:
 #endif // ENABLE(ACCESSIBILITY_ISOLATED_TREE)
 
     void deferRowspanChange(AccessibilityObject*);
+    void handleCanvasFocusPathBoundsChange(const CanvasFocusPathBoundsChange&);
     void handleChildrenChanged(AccessibilityObject&);
     void handleAllDeferredChildrenChanged();
     void handleInputTypeChanged(Element&);
@@ -929,6 +915,7 @@ private:
     void handleScrollbarUpdate(ScrollView&);
     void handleActiveDescendantChange(Element&, const AtomString&, const AtomString&);
     void handleAriaExpandedChange(Element&);
+    void handleAriaHiddenChange(Element&);
     enum class UpdateModal : bool { No, Yes };
     void handleFocusedUIElementChanged(Element* oldFocus, Element* newFocus, UpdateModal = UpdateModal::Yes);
     void handleRemoteFrameGainedFocus(RemoteFrame&, Element* oldFocusedElement);
@@ -984,7 +971,7 @@ private:
     const WeakPtr<Document, WeakPtrImplWithEventTargetData> m_document;
     const FrameIdentifier m_frameID; // constant for object's lifetime.
 #if ENABLE(ACCESSIBILITY_LOCAL_FRAME)
-    std::optional<FrameGeometry> m_frameGeometry;
+    std::optional<AXFrameGeometry> m_frameGeometry;
 #endif
     OptionSet<ActivityState> m_pageActivityState;
     HashMap<AXID, Ref<AccessibilityObject>> m_objects;
@@ -1055,12 +1042,17 @@ private:
     Vector<WeakPtr<Element, WeakPtrImplWithEventTargetData>> m_modalElements;
     bool m_modalNodesInitialized { false };
     bool m_isRetrievingCurrentModalNode { false };
+    bool m_needsAriaHiddenModalOverrideCheck { false };
 
 #if PLATFORM(COCOA)
     bool m_liveRegionManagerInitialized { false };
 
     static std::atomic<bool> gShouldRepostNotificationsForTests;
 #endif
+    // "Unignored content object count" and not "unignored object count"
+    // because we exclude certain roles from this count (e.g. web-areas, mock objects)
+    // on the basis of them not being meaningful content.
+    unsigned m_unignoredContentObjectCount { 0 };
 
     Timer m_performCacheUpdateTimer;
 
@@ -1080,6 +1072,7 @@ private:
     SingleThreadWeakHashSet<ScrollView> m_deferredScrollbarUpdateChangeList;
     WeakHashMap<Element, String, WeakPtrImplWithEventTargetData> m_deferredTextFormControlValue;
     Vector<AttributeChange> m_deferredAttributeChange;
+    Vector<CanvasFocusPathBoundsChange> m_deferredCanvasFocusPathBoundsChanges;
     std::optional<std::pair<WeakPtr<Element, WeakPtrImplWithEventTargetData>, WeakPtr<Element, WeakPtrImplWithEventTargetData>>> m_deferredFocusedNodeChange;
     std::optional<DeferredRemoteFrameFocus> m_deferredRemoteFrameFocus;
     WeakHashSet<AccessibilityObject> m_deferredUnconnectedObjects;
@@ -1090,10 +1083,10 @@ private:
     Vector<DeferredNotificationData> m_deferredNotifications;
     Vector<Ref<AccessibilityObject>> m_deferredToggledPopovers;
 
+    const Ref<AXGeometryManager> m_geometryManager;
 #if ENABLE(ACCESSIBILITY_ISOLATED_TREE)
     Timer m_buildIsolatedTreeTimer;
     bool m_deferredRegenerateIsolatedTree { false };
-    const Ref<AXGeometryManager> m_geometryManager;
     DeferrableOneShotTimer m_selectedTextRangeTimer;
     Markable<AXID> m_lastDebouncedTextRangeObject;
 
@@ -1102,6 +1095,12 @@ private:
     bool m_isSynchronizingSelection { false };
     bool m_performingDeferredCacheUpdate { false };
     double m_loadingProgress { 0 };
+
+    // Tracks focus landing inside an aria-hidden region. After one rendering update
+    // (giving web developers a chance to move focus in a rAF callback), if focus is
+    // still inside the aria-hidden region, the aria-hidden is permanently overridden.
+    WeakPtr<Element, WeakPtrImplWithEventTargetData> m_pendingAriaHiddenFocusTarget;
+    bool m_needsAriaHiddenFocusCheck { false };
 
     unsigned m_cacheUpdateDeferredCount { 0 };
 
@@ -1112,8 +1111,11 @@ private:
     // Relationships between objects.
     HashMap<AXID, AXRelations> m_relations;
     bool m_relationsNeedUpdate { true };
+    bool m_hasAriaOwnsRelations { false };
+    bool m_doneInitialRelationsBuild { false };
     HashSet<AXID> m_relationTargets;
     HashMap<AXID, AXRelations> m_recentlyRemovedRelations;
+    WeakHashSet<Element, WeakPtrImplWithEventTargetData> m_elementsWithRelationAttributes;
 
 #if USE(ATSPI)
     ListHashSet<RefPtr<AccessibilityObject>> m_deferredParentChangedList;

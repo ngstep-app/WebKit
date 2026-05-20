@@ -20,11 +20,11 @@
 
 #pragma once
 
-#include <JavaScriptCore/Debugger.h>
 #include <WebCore/ActivityState.h>
 #include <WebCore/AnimationFrameRate.h>
 #include <WebCore/BackForwardFrameItemIdentifier.h>
 #include <WebCore/BoxExtents.h>
+#include <WebCore/BrowsingContextGroupIdentifier.h>
 #include <WebCore/Color.h>
 #include <WebCore/DocumentEnums.h>
 #include <WebCore/FindOptions.h>
@@ -46,18 +46,12 @@
 #include <WebCore/Supplementable.h>
 #include <WebCore/Timer.h>
 #include <WebCore/UserInterfaceLayoutDirection.h>
-#include <memory>
 #include <pal/SessionID.h>
-#include <wtf/Assertions.h>
 #include <wtf/CheckedPtr.h>
-#include <wtf/Forward.h>
 #include <wtf/Function.h>
 #include <wtf/HashSet.h>
 #include <wtf/Noncopyable.h>
-#include <wtf/OptionSet.h>
-#include <wtf/Platform.h>
 #include <wtf/ProcessID.h>
-#include <wtf/Ref.h>
 #include <wtf/RefCountedAndCanMakeWeakPtr.h>
 #include <wtf/RobinHoodHashSet.h>
 #include <wtf/TZoneMalloc.h>
@@ -65,7 +59,6 @@
 #include <wtf/UniqueRef.h>
 #include <wtf/WeakHashMap.h>
 #include <wtf/WeakHashSet.h>
-#include <wtf/WeakPtr.h>
 #include <wtf/text/WTFString.h>
 
 #if ENABLE(APPLICATION_MANIFEST)
@@ -81,6 +74,7 @@
 #endif
 
 namespace JSC {
+class Debugger;
 class JSGlobalObject;
 }
 
@@ -123,6 +117,7 @@ class Document;
 class DOMRectList;
 class DOMWrapperWorld;
 class DatabaseProvider;
+class DeviceOrientationAndMotionAccessController;
 class DeviceOrientationUpdateProvider;
 class DiagnosticLoggingClient;
 class DocumentSyncData;
@@ -157,6 +152,7 @@ class MediaPlaybackTarget;
 class MediaSessionCoordinatorPrivate;
 class MediaSessionManagerInterface;
 class ModelPlayerProvider;
+class NavigationAPIMethodTracker;
 class PageConfiguration;
 class PageGroup;
 class PageInspectorController;
@@ -237,7 +233,6 @@ struct CharacterRange;
 struct ClientOrigin;
 struct DocumentSyncSerializationData;
 struct FixedContainerEdges;
-struct NavigationAPIMethodTracker;
 struct ResolvedCaptionDisplaySettingsOptions;
 struct SpatialBackdropSource;
 struct SystemPreviewInfo;
@@ -397,6 +392,8 @@ public:
 
     // Utility pages (e.g. SVG image pages) don't have an identifier currently.
     std::optional<PageIdentifier> identifier() const { return m_identifier; }
+
+    std::optional<BrowsingContextGroupIdentifier> browsingContextGroupIdentifier() const { return m_browsingContextGroupIdentifier; }
 
     void willEnterBackForwardCache();
 
@@ -1030,7 +1027,7 @@ public:
 
 #if ENABLE(MODEL_PROCESS)
     void incrementModelElementCount();
-    void decrementModelElementCount(unsigned);
+    void decrementModelElementCount();
 #endif
 
     std::optional<MediaSessionGroupIdentifier> NODELETE mediaSessionGroupIdentifier() const;
@@ -1080,9 +1077,6 @@ public:
 
     IDBClient::IDBConnectionToServer& idbConnection();
     WEBCORE_EXPORT IDBClient::IDBConnectionToServer* NODELETE optionalIDBConnection();
-    WEBCORE_EXPORT void clearIDBConnection();
-    WEBCORE_EXPORT void clearIDBConnectionOnAllDocuments();
-    WEBCORE_EXPORT void refreshIDBConnectionForWorkers();
 
     void setShowAllPlugins(bool showAll) { m_showAllPlugins = showAll; }
     bool showAllPlugins() const;
@@ -1154,12 +1148,17 @@ public:
     DeviceOrientationUpdateProvider* deviceOrientationUpdateProvider() const { return m_deviceOrientationUpdateProvider.get(); }
 #endif
 
+#if ENABLE(DEVICE_ORIENTATION)
+    DeviceOrientationAndMotionAccessController& deviceOrientationAndMotionAccessController();
+    WEBCORE_EXPORT void clearDeviceOrientationAndMotionPermissions();
+#endif
+
     WEBCORE_EXPORT void forEachDocument(NOESCAPE const Function<void(Document&)>&) const;
     bool findMatchingLocalDocument(NOESCAPE const Function<bool(Document&)>&) const;
     void forEachRenderableDocument(NOESCAPE const Function<void(Document&)>&) const;
     void forEachMediaElement(NOESCAPE const Function<void(HTMLMediaElement&)>&);
     static void forEachDocumentFromMainFrame(const Frame&, NOESCAPE const Function<void(Document&)>&);
-    void forEachLocalFrame(NOESCAPE const Function<void(LocalFrame&)>&);
+    WEBCORE_EXPORT void forEachLocalFrame(NOESCAPE const Function<void(LocalFrame&)>&);
     void forEachWindowEventLoop(NOESCAPE const Function<void(WindowEventLoop&)>&);
 
     bool shouldDisableCorsForRequestTo(const URL&) const;
@@ -1336,6 +1335,9 @@ public:
     WEBCORE_EXPORT void NODELETE startDeferringIntersectionObservations();
     WEBCORE_EXPORT void flushDeferredIntersectionObservations();
 
+    void recordResizeForIntersectionObserverQuirk() { m_lastResizeTimeForIOQuirk = MonotonicTime::now(); }
+    bool isWithinResizeDebounceWindow() const { return MonotonicTime::now() - m_lastResizeTimeForIOQuirk < 700_ms; }
+
     bool reportScriptTrackingPrivacy(const URL&, ScriptTrackingPrivacyCategory);
     bool shouldAllowScriptAccess(const URL&, const SecurityOrigin& topOrigin, ScriptTrackingPrivacyCategory) const;
     bool requiresScriptTrackingPrivacyProtections(const URL&) const;
@@ -1476,6 +1478,7 @@ private:
     const UniqueRef<Internals> m_internals;
 
     std::optional<PageIdentifier> m_identifier;
+    std::optional<BrowsingContextGroupIdentifier> m_browsingContextGroupIdentifier;
     const UniqueRef<Chrome> m_chrome;
     const UniqueRef<DragCaretController> m_dragCaretController;
 
@@ -1696,7 +1699,7 @@ private:
 
     const std::unique_ptr<PerformanceMonitor> m_performanceMonitor;
     const UniqueRef<LowPowerModeNotifier> m_lowPowerModeNotifier;
-    const UniqueRef<ThermalMitigationNotifier> m_thermalMitigationNotifier;
+    const Ref<ThermalMitigationNotifier> m_thermalMitigationNotifier;
     OptionSet<ThrottlingReason> m_throttlingReasons;
     OptionSet<ThrottlingReason> m_throttlingReasonsOverridenForTesting;
 
@@ -1739,6 +1742,10 @@ private:
 
 #if ENABLE(DEVICE_ORIENTATION) && PLATFORM(IOS_FAMILY)
     RefPtr<DeviceOrientationUpdateProvider> m_deviceOrientationUpdateProvider;
+#endif
+
+#if ENABLE(DEVICE_ORIENTATION)
+    std::unique_ptr<DeviceOrientationAndMotionAccessController> m_deviceOrientationAndMotionAccessController;
 #endif
 
 #if ENABLE(MEDIA_SESSION_COORDINATOR)
@@ -1846,6 +1853,7 @@ private:
     bool m_shouldDeferResizeEvents { false };
     bool m_shouldDeferScrollEvents { false };
     bool m_shouldDeferIntersectionObservations { false };
+    MonotonicTime m_lastResizeTimeForIOQuirk;
 
     Ref<DocumentSyncData> m_topDocumentSyncData;
 

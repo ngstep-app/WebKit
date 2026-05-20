@@ -163,12 +163,23 @@ auto HTMLOptionElement::insertionSteps(InsertionType insertionType, ContainerNod
 {
     auto result = HTMLElement::insertionSteps(insertionType, parentOfInsertedTree);
 
-    if (!document().settings().htmlEnhancedSelectParsingEnabled() || m_ownerSelect)
+    if (!document().settings().htmlEnhancedSelectParsingEnabled())
         return result;
 
-    if (RefPtr select = HTMLSelectElement::findOwnerSelect(parentNode(), HTMLSelectElement::ExcludeOptGroup::No)) {
-        m_ownerSelect = select.get();
-        select->setRecalcListItems();
+    if (!m_ownerSelect) {
+        if (RefPtr select = HTMLSelectElement::findOwnerSelect(parentNode(), HTMLSelectElement::ExcludeOptGroup::No)) {
+            m_ownerSelect = select.get();
+            select->setRecalcListItems();
+            // If this non-selected option is the first non-disabled option in a
+            // single-select that has no explicitly selected option, select it by
+            // default. This maintains m_isSelected incrementally so that
+            // finishParsingChildren() can use selectedWithoutUpdate() (O(1))
+            // instead of selected() which triggers O(n) recalcListItems().
+            // Only do this during parsing — for API insertions, the existing
+            // childrenChanged → optionToSelectFromChildChangeScope path handles it.
+            if (!select->isFinishedParsingChildren() && !selectedWithoutUpdate() && !m_disabled)
+                select->selectDefaultOptionIfNeeded(*this);
+        }
     }
 
     if (insertionType.connectedToDocument && m_shadowTreeNeedsUpdate)
@@ -208,22 +219,30 @@ void HTMLOptionElement::finishParsingChildren()
 
     ASSERT(document().settings().htmlEnhancedSelectParsingEnabled());
 
-    if (m_disabled || !selected())
+    if (m_disabled)
         return;
 
-    RefPtr select = m_ownerSelect.get();
+    RefPtr select = m_ownerSelect;
     if (!select)
         return;
 
-    select->updateSelectedContent();
+    // When the owning <select> is still being parsed, use selectedWithoutUpdate()
+    // instead of selected() to avoid triggering recalcListItems() for each
+    // option, which would be O(n²). The selection state (m_isSelected) is
+    // maintained incrementally at insertion time — see insertionSteps() and
+    // optionToSelectFromChildChangeScope().
+    bool isSelected = select->isFinishedParsingChildren() ? selected() : selectedWithoutUpdate();
+    if (!isSelected)
+        return;
+
+    // Pass `this` to avoid updateSelectedContent() calling listItems() to find
+    // the selected option, which would also trigger recalcListItems().
+    select->updateSelectedContent(this);
 }
 
 bool HTMLOptionElement::supportsFocus() const
 {
-    if (HTMLElement::supportsFocus())
-        return true;
-    RefPtr select = ownerSelectElement();
-    return select && select->usesBaseAppearancePicker();
+    return HTMLElement::supportsFocus() || belongsToBaseAppearancePicker();
 }
 
 bool HTMLOptionElement::isFocusable() const
@@ -263,11 +282,15 @@ void HTMLOptionElement::setText(String&& text)
 bool HTMLOptionElement::accessKeyAction(bool)
 {
     RefPtr select = ownerSelectElement();
-    if (select) {
+    if (!select)
+        return false;
+
+    if (select->usesBaseAppearancePicker()) {
+        select->optionSelectedByUser(index(), true);
+        select->hidePickerPopoverElement();
+    } else
         select->accessKeySetSelectedIndex(index());
-        return true;
-    }
-    return false;
+    return true;
 }
 
 void HTMLOptionElement::defaultEventHandler(Event& event)
@@ -287,6 +310,12 @@ void HTMLOptionElement::defaultEventHandler(Event& event)
             return HTMLElement::defaultEventHandler(event);
 
         const String& keyIdentifier = keyboardEvent->keyIdentifier();
+
+        // [Shift+]Tab closes the picker; fall through to move focus.
+        if (keyIdentifier == "U+0009"_s) {
+            select->hidePickerPopoverElement();
+            return HTMLElement::defaultEventHandler(event);
+        }
 
         int currentIndex = select->optionToListIndex(index());
         int listIndex = select->computeNavigationIndex(keyIdentifier, currentIndex, select->pickerNavigationKeyIdentifiers());
@@ -386,9 +415,8 @@ void HTMLOptionElement::attributeChanged(const QualifiedName& name, const AtomSt
         Style::PseudoClassChangeInvalidation defaultInvalidation(*this, CSSSelector::PseudoClass::Default, !newValue.isNull());
         m_isDefault = !newValue.isNull();
 
-        // FIXME: WebKit still need to implement 'dirtiness'. See: https://bugs.webkit.org/show_bug.cgi?id=258073
         // https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-selectedness
-        if (oldValue.isNull() != newValue.isNull())
+        if (oldValue.isNull() != newValue.isNull() && !m_isDirty)
             setSelected(!newValue.isNull());
         break;
     }
@@ -434,6 +462,26 @@ void HTMLOptionElement::setSelected(bool selected)
         select->optionSelectionStateChanged(*this, selected);
 }
 
+bool HTMLOptionElement::selectedForBindings() const
+{
+    return selected();
+}
+
+void HTMLOptionElement::setSelectedForBindings(bool selected)
+{
+    bool wasSelected = m_isSelected;
+    setSelected(selected);
+
+    // https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-dirtiness
+    // The spec says dirtiness becomes true unconditionally. However, for web
+    // compatibility, don't set dirtiness if the option is owned by a select
+    // element and selectedness did not actually change.
+    if (ownerSelectElement() && wasSelected == m_isSelected)
+        return;
+
+    m_isDirty = true;
+}
+
 void HTMLOptionElement::setSelectedState(bool selected, AllowStyleInvalidation allowStyleInvalidation)
 {
     if (m_isSelected == selected)
@@ -463,6 +511,14 @@ void HTMLOptionElement::childrenChanged(const ChildChange& change)
     HTMLElement::childrenChanged(change);
 }
 
+void HTMLOptionElement::willResetComputedStyle()
+{
+    if (RefPtr select = ownerSelectElement()) {
+        if (CheckedPtr selectRenderer = select->renderer())
+            selectRenderer->repaint();
+    }
+}
+
 HTMLSelectElement* HTMLOptionElement::ownerSelectElement() const
 {
     if (document().settings().htmlEnhancedSelectParsingEnabled())
@@ -477,6 +533,12 @@ HTMLSelectElement* HTMLOptionElement::ownerSelectElement() const
     return nullptr;
 }
 
+bool HTMLOptionElement::belongsToBaseAppearancePicker() const
+{
+    RefPtr select = ownerSelectElement();
+    return select && select->usesBaseAppearancePicker();
+}
+
 String HTMLOptionElement::label() const
 {
     String label = attributeWithoutSynchronization(labelAttr);
@@ -485,39 +547,30 @@ String HTMLOptionElement::label() const
     return collectOptionInnerTextCollapsingWhitespace();
 }
 
-// Same as label() but ignores the label content attribute in quirks mode for compatibility with other browsers.
 String HTMLOptionElement::displayLabel() const
 {
-    if (document().inQuirksMode())
+    String label = attributeWithoutSynchronization(labelAttr);
+    if (label.isEmpty())
         return collectOptionInnerTextCollapsingWhitespace();
-    return label();
-}
-
-void HTMLOptionElement::willResetComputedStyle()
-{
-    // FIXME: This is nasty, we ask our owner select to repaint even if the new
-    // style is exactly the same.
-    if (RefPtr select = ownerSelectElement()) {
-        if (CheckedPtr renderer = select->renderer())
-            renderer->repaint();
-    }
+    return label;
 }
 
 String HTMLOptionElement::textIndentedToRespectGroupLabel() const
 {
     if (!document().settings().htmlEnhancedSelectParsingEnabled()) {
         if (is<HTMLOptGroupElement>(parentNode()))
-            return makeString("    "_s, label());
-        return label();
+            return makeString("    "_s, displayLabel());
+        return displayLabel();
     }
 
     for (Ref ancestor : ancestorsOfType<HTMLElement>(*this)) {
         if (is<HTMLOptGroupElement>(ancestor))
-            return makeString("    "_s, label());
+            return makeString("    "_s, displayLabel());
+
         if (isAnyOf<HTMLDataListElement, HTMLSelectElement, HTMLOptionElement, HTMLHRElement>(ancestor))
-            return label();
+            return displayLabel();
     }
-    return label();
+    return displayLabel();
 }
 
 bool HTMLOptionElement::isDisabledFormControl() const
@@ -537,6 +590,14 @@ bool HTMLOptionElement::isDisabledFormControl() const
             return false;
     }
     return false;
+}
+
+bool HTMLOptionElement::isActuallyDisabled() const
+{
+    if (HTMLElement::isActuallyDisabled())
+        return true;
+    RefPtr select = ownerSelectElement();
+    return select && select->isDisabledFormControl();
 }
 
 String HTMLOptionElement::collectOptionInnerText() const

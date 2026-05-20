@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018 Apple Inc. All rights reserved.
+ * Copyright (C) 2018-2026 Apple Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -36,6 +36,7 @@
 #include "InlineQuirks.h"
 #include "LayoutBoxInlines.h"
 #include "LayoutElementBox.h"
+#include "RenderObjectDocument.h"
 #include "RenderStyle+GettersInlines.h"
 #include "RubyFormattingContext.h"
 #include "Settings.h"
@@ -56,11 +57,6 @@ InlineLayoutUnit InlineFormattingUtils::logicalTopForNextLine(const LineLayoutRe
         auto logicalTopCandidateByContent = [&] {
             // Normally the next line's logical top is the previous line's logical bottom, but when the line ends
             // with the clear property set, the next line needs to clear the existing floats.
-            if (!lineLayoutResult.hasContentfulInFlowContent() && lineLayoutResult.floatContent.placedFloats.isEmpty()) {
-                // We didn't manage to put any contentful inflow box on the last line, so next line should just be where the last one was.
-                // Normally line's bottom matches initial top (no content!) but block-in-inline's margin may push the line down.
-                return lineLayoutResult.lineGeometry.initialLogicalTopLeft.y();
-            }
             if (!lineLayoutResult.hasContentfulInlineContent())
                 return lineLogicalRect.bottom();
             CheckedRef lastRunLayoutBox = lineLayoutResult.runs.last().layoutBox();
@@ -110,8 +106,11 @@ bool InlineFormattingUtils::inlineLevelBoxAffectsLineBox(const InlineLevelBox& i
     if (!inlineLevelBox.mayStretchLineBox())
         return false;
 
-    if (inlineLevelBox.isLineBreakBox())
-        return false;
+    if (inlineLevelBox.isLineBreakBox()) {
+        // A line break box affects the line box when it has a non-default
+        // line-height (e.g. br { line-height: 200px }).
+        return !inlineLevelBox.isPreferredLineHeightFontMetricsBased();
+    }
     if (inlineLevelBox.isListMarker()) {
         // This does not match other browser engines. see webkit.org/b/256390.
         return true;
@@ -168,10 +167,12 @@ InlineLayoutUnit InlineFormattingUtils::computedTextIndent(IsIntrinsicWidthMode 
     auto& textIndentLength = root->style().textIndent().length;
     if (textIndentLength == 0_css_px)
         return { };
-    if (isIntrinsicWidthMode == IsIntrinsicWidthMode::Yes && textIndentLength.isPercent()) {
-        // Percentages must be treated as 0 for the purpose of calculating intrinsic size contributions.
+    if (isIntrinsicWidthMode == IsIntrinsicWidthMode::Yes && textIndentLength.isPercentOrCalculated()) {
+        // Percentages and calc() expressions containing percentages must be treated as 0
+        // for the purpose of calculating intrinsic size contributions, with a zero percentage
+        // basis so fixed-length components in calc() are still preserved.
         // https://drafts.csswg.org/css-text/#text-indent-property
-        return { };
+        return Style::evaluate<InlineLayoutUnit>(textIndentLength, 0, root->style().usedZoomForLength());
     }
     return Style::evaluate<InlineLayoutUnit>(textIndentLength, availableWidth, root->style().usedZoomForLength());
 }

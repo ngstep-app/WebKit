@@ -84,6 +84,7 @@ static auto toStyle(const CSSCalc::SiblingCount&, const ToStyleConversionOptions
 static auto toStyle(const CSSCalc::SiblingIndex&, const ToStyleConversionOptions&) -> Child;
 static auto toStyle(const CSSCalc::IndirectNode<CSSCalc::Anchor>&, const ToStyleConversionOptions&) -> Child;
 static auto toStyle(const CSSCalc::IndirectNode<CSSCalc::AnchorSize>&, const ToStyleConversionOptions&) -> Child;
+static auto toStyle(const CSSCalc::IndirectNode<CSSCalc::Deg2Rad>&, const ToStyleConversionOptions&) -> Child;
 template<typename Op> auto toStyle(const CSSCalc::IndirectNode<Op>&, const ToStyleConversionOptions&) -> Child;
 
 static CSSCalc::CanonicalDimension::Dimension NODELETE determineCanonicalDimension(CSS::Category category)
@@ -223,16 +224,30 @@ auto toStyle(const CSSCalc::Random::Sharing& randomSharing, const ToStyleConvers
 
     return WTF::switchOn(randomSharing,
         [&](const CSSCalc::Random::SharingOptions& sharingOptions) -> Random::Fixed {
-            if (!sharingOptions.elementShared.has_value()) {
-                ASSERT(options.evaluation.conversionData->styleBuilderState()->element());
+            CheckedPtr builderState = options.evaluation.conversionData->styleBuilderState();
+
+            if (!sharingOptions.elementScoped.has_value()) {
+                ASSERT(builderState->element());
             }
 
-            auto baseValue = protect(options.evaluation.conversionData->styleBuilderState())->lookupCSSRandomBaseValue(
-                sharingOptions.identifier,
-                sharingOptions.elementShared
+            return WTF::switchOn(sharingOptions.identifier,
+                [&](const CSSCalc::Random::SharingOptions::Auto& autoValue) {
+                    return Random::Fixed {
+                        builderState->lookupCSSRandomBaseValue(
+                            autoValue,
+                            sharingOptions.elementScoped
+                        )
+                    };
+                },
+                [&](const CSS::CustomIdent& customIdent) {
+                    return Random::Fixed {
+                        builderState->lookupCSSRandomBaseValue(
+                            Style::toStyle(customIdent, *builderState),
+                            sharingOptions.elementScoped
+                        )
+                    };
+                }
             );
-
-            return Random::Fixed { baseValue };
         },
         [&](const CSSCalc::Random::SharingFixed& sharingFixed) -> Random::Fixed {
             return WTF::switchOn(sharingFixed.value,
@@ -337,6 +352,13 @@ Child toStyle(const CSSCalc::IndirectNode<CSSCalc::AnchorSize>&, const ToStyleCo
 {
     ASSERT_NOT_REACHED("Unevaluated anchor-size() functions are not supported in the Tree");
     return number(0);
+}
+
+Child toStyle(const CSSCalc::IndirectNode<CSSCalc::Deg2Rad>& root, const ToStyleConversionOptions& options)
+{
+    // Style::Calculation::Tree has no Deg2Rad node, so express it as a multiplication by the
+    // radians-per-degree constant.
+    return multiply(toStyle(root->angle, options), number(radiansPerDegreeDouble));
 }
 
 template<typename Op> Child toStyle(const CSSCalc::IndirectNode<Op>& root, const ToStyleConversionOptions& options)

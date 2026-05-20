@@ -306,16 +306,25 @@ ParserError BytecodeGenerator::generate(unsigned& size)
         AsyncFuncParametersTryCatchInfo& info = m_asyncFuncParametersTryCatchInfo.value();
         ASSERT(info.catchStartLabel && info.thrownValue);
         emitLabel(*info.catchStartLabel.get());
-        // @rejectPromiseWithFirstResolvingFunctionCallCheck(@promise, thrownValue);
-        // return @promise;
-        RefPtr<RegisterID> rejectPromise = moveLinkTimeConstant(nullptr, LinkTimeConstant::rejectPromiseWithFirstResolvingFunctionCallCheck);
-        CallArguments args(*this, nullptr, 2);
-        emitLoad(args.thisRegister(), jsUndefined());
-        move(args.argumentRegister(0), promiseRegister());
-        move(args.argumentRegister(1), info.thrownValue.get());
         JSTextPosition divot(m_scopeNode->firstLine(), m_scopeNode->startOffset(), m_scopeNode->lineStartOffset());
-        emitCallIgnoreResult(newTemporary(), rejectPromise.get(), NoExpectedFunction, args, divot, divot, divot, DebuggableCall::No);
-        emitReturn(promiseRegister());
+        if (promiseRegister()) {
+            RefPtr<RegisterID> rejectPromise = moveLinkTimeConstant(nullptr, LinkTimeConstant::rejectPromiseWithFirstResolvingFunctionCallCheck);
+            CallArguments args(*this, nullptr, 2);
+            emitLoad(args.thisRegister(), jsUndefined());
+            move(args.argumentRegister(0), promiseRegister());
+            move(args.argumentRegister(1), info.thrownValue.get());
+            emitCallIgnoreResult(newTemporary(), rejectPromise.get(), NoExpectedFunction, args, divot, divot, divot, DebuggableCall::No);
+            emitReturn(promiseRegister());
+        } else {
+            // If we are not creating a promise yet, we can just do `return @newRejectedPromise(thrownValue)`.
+            RefPtr<RegisterID> newRejectedPromise = moveLinkTimeConstant(nullptr, LinkTimeConstant::newRejectedPromise);
+            CallArguments args(*this, nullptr, 1);
+            emitLoad(args.thisRegister(), jsUndefined());
+            move(args.argumentRegister(0), info.thrownValue.get());
+            RefPtr<RegisterID> result = newTemporary();
+            emitCall(result.get(), newRejectedPromise.get(), NoExpectedFunction, args, divot, divot, divot, DebuggableCall::No);
+            emitReturn(result.get());
+        }
     }
 
     m_staticPropertyAnalyzer.kill();
@@ -429,6 +438,7 @@ BytecodeGenerator::BytecodeGenerator(VM& vm, FunctionNode* functionNode, Unlinke
     , m_usesExceptions(false)
     , m_expressionTooDeep(false)
     , m_isBuiltinFunction(codeBlock->isBuiltinFunction())
+    , m_isBuiltinDefaultClassConstructor(codeBlock->isBuiltinDefaultClassConstructor())
     , m_usesSloppyEval(functionNode->usesEval() && !functionNode->isStrictMode())
     // FIXME: We should be able to have tail call elimination with the profiler
     // enabled. This is currently not possible because the profiler expects
@@ -822,9 +832,10 @@ IGNORE_GCC_WARNINGS_END
         bool isAsyncFunctionWithoutAwait = m_scopeNode->isAsyncFunctionWithoutAwait();
         // Check if this async function body doesn't use await.
         // If so, we can skip generator creation entirely.
-        if (!isAsyncFunctionWithoutAwait)
+        if (!isAsyncFunctionWithoutAwait) {
             m_generatorRegister = addVar();
-        m_promiseRegister = addVar();
+            m_promiseRegister = addVar();
+        }
 
         bool willEmitToThis = false;
         if (parseMode != SourceParseMode::AsyncArrowFunctionMode) {
@@ -838,14 +849,10 @@ IGNORE_GCC_WARNINGS_END
         if (willEmitToThis)
             emitToThis();
 
-        bool isInternalPromise = false;
-        if (m_isBuiltinFunction)
-            isInternalPromise = !functionNode->ident().string().startsWith("defaultAsync"_s);
-        emitNewPromise(promiseRegister(), isInternalPromise);
-
         if (!isAsyncFunctionWithoutAwait) {
-            emitNewGenerator(m_generatorRegister);
-            emitPutInternalField(generatorRegister(), static_cast<unsigned>(JSGenerator::Field::Context), promiseRegister());
+            emitNewPromise(promiseRegister());
+            emitNewAsyncFunctionGenerator(m_generatorRegister);
+            emitPutInternalField(generatorRegister(), static_cast<unsigned>(JSAsyncFunctionGenerator::Field::Context), promiseRegister());
         }
         break;
     }
@@ -3167,15 +3174,15 @@ RegisterID* BytecodeGenerator::emitCreateThis(RegisterID* dst)
     return dst;
 }
 
-RegisterID* BytecodeGenerator::emitCreatePromise(RegisterID* dst, RegisterID* newTarget, bool isInternalPromise)
+RegisterID* BytecodeGenerator::emitCreatePromise(RegisterID* dst, RegisterID* newTarget)
 {
-    OpCreatePromise::emit(this, dst, newTarget, isInternalPromise);
+    OpCreatePromise::emit(this, dst, newTarget);
     return dst;
 }
 
-RegisterID* BytecodeGenerator::emitNewPromise(RegisterID* dst, bool isInternalPromise)
+RegisterID* BytecodeGenerator::emitNewPromise(RegisterID* dst)
 {
-    OpNewPromise::emit(this, dst, isInternalPromise);
+    OpNewPromise::emit(this, dst);
     return dst;
 }
 
@@ -3188,6 +3195,12 @@ RegisterID* BytecodeGenerator::emitCreateGenerator(RegisterID* dst, RegisterID* 
 RegisterID* BytecodeGenerator::emitNewGenerator(RegisterID* dst)
 {
     OpNewGenerator::emit(this, dst);
+    return dst;
+}
+
+RegisterID* BytecodeGenerator::emitNewAsyncFunctionGenerator(RegisterID* dst)
+{
+    OpNewAsyncFunctionGenerator::emit(this, dst);
     return dst;
 }
 
@@ -3250,7 +3263,7 @@ void BytecodeGenerator::emitTDZCheckIfNecessary(const Variable& variable, Regist
 
 void BytecodeGenerator::liftTDZCheckIfPossible(const Variable& variable)
 {
-    RefPtr<UniquedStringImpl> identifier(variable.ident().impl());
+    UniquedStringImpl* identifier = variable.ident().impl();
     for (unsigned i = m_TDZStack.size(); i--;) {
         auto iter = m_TDZStack[i].first.find(identifier);
         if (iter != m_TDZStack[i].first.end()) {
@@ -3586,7 +3599,7 @@ RegisterID* BytecodeGenerator::emitNewClassFieldInitializerFunction(RegisterID* 
 
     FunctionMetadataNode metadata(parserArena(), JSTokenLocation(), JSTokenLocation(), 0, 0, 0, 0, 0, ImplementationVisibility::Private, StrictModeLexicallyScopedFeature, ConstructorKind::None, superBinding, 0, parseMode, false);
     metadata.finishParsing(m_scopeNode->source(), Identifier(), FunctionMode::MethodDefinition);
-    auto initializer = UnlinkedFunctionExecutable::create(m_vm, m_scopeNode->source(), &metadata, isBuiltinFunction() ? UnlinkedBuiltinFunction : UnlinkedNormalFunction, constructAbility, InlineAttribute::Always, scriptMode(), WTF::move(variablesUnderTDZ), { }, WTF::move(parentPrivateNameEnvironment), newDerivedContextType, NeedsClassFieldInitializer::No, PrivateBrandRequirement::None);
+    auto initializer = UnlinkedFunctionExecutable::create(m_vm, m_scopeNode->source(), &metadata, isBuiltinFunction() ? UnlinkedBuiltinFunction : UnlinkedNormalFunction, constructAbility, InlineAttribute::Always, scriptMode(), WTF::move(variablesUnderTDZ), { }, WTF::move(parentPrivateNameEnvironment), newDerivedContextType, EvalContextType::InstanceFieldEvalContext, NeedsClassFieldInitializer::No, PrivateBrandRequirement::None);
     initializer->setClassElementDefinitions(WTF::move(classElementDefinitions));
 
     unsigned index = m_codeBlock->addFunctionExpr(initializer);
@@ -3955,14 +3968,14 @@ RegisterID* BytecodeGenerator::emitReturn(RegisterID* src)
 }
 
 template<typename ConstructOp>
-RegisterID* BytecodeGenerator::emitConstructImpl(RegisterID* dst, RegisterID* func, RegisterID* lazyThis, ExpectedFunction expectedFunction, CallArguments& callArguments, const JSTextPosition& divot, const JSTextPosition& divotStart, const JSTextPosition& divotEnd)
+RegisterID* BytecodeGenerator::emitConstructImpl(RegisterID* dst, RegisterID* func, RegisterID* lazyThis, ExpectedFunction expectedFunction, CallArguments& callArguments, const JSTextPosition& divot, const JSTextPosition& divotStart, const JSTextPosition& divotEnd, bool isDefaultDerivedConstructorCall)
 {
     ASSERT(func->refCount());
 
     // Generate code for arguments.
     unsigned argument = 0;
     if (ArgumentsNode* argumentsNode = callArguments.argumentsNode()) {
-        
+
         ArgumentListNode* n = callArguments.argumentsNode()->m_listNode;
         if (n && n->m_expr->isSpreadExpression()) {
             RELEASE_ASSERT(!n->m_next);
@@ -3972,7 +3985,9 @@ RegisterID* BytecodeGenerator::emitConstructImpl(RegisterID* dst, RegisterID* fu
                 if (elements && !elements->next() && elements->value()->isSpreadExpression()) {
                     ExpressionNode* expression = static_cast<SpreadExpressionNode*>(elements->value())->expression();
                     RefPtr<RegisterID> argumentRegister = tempDestination(emitNode(callArguments.argumentRegister(0), expression));
-                    OpSpread::emit(this, argumentRegister.get(), argumentRegister.get());
+
+                    if (!isDefaultDerivedConstructorCall)
+                        OpSpread::emit(this, argumentRegister.get(), argumentRegister.get());
 
                     move(callArguments.thisRegister(), lazyThis);
                     return emitCallVarargs<typename VarArgsOp<ConstructOp>::type>(dst, func, callArguments.thisRegister(), argumentRegister.get(), newTemporary(), 0, divot, divotStart, divotEnd, DebuggableCall::No);
@@ -4010,12 +4025,12 @@ RegisterID* BytecodeGenerator::emitConstructImpl(RegisterID* dst, RegisterID* fu
 
 RegisterID* BytecodeGenerator::emitConstruct(RegisterID* dst, RegisterID* func, RegisterID* lazyThis, ExpectedFunction expectedFunction, CallArguments& callArguments, const JSTextPosition& divot, const JSTextPosition& divotStart, const JSTextPosition& divotEnd)
 {
-    return emitConstructImpl<OpConstruct>(dst, func, lazyThis, expectedFunction, callArguments, divot, divotStart, divotEnd);
+    return emitConstructImpl<OpConstruct>(dst, func, lazyThis, expectedFunction, callArguments, divot, divotStart, divotEnd, false);
 }
 
-RegisterID* BytecodeGenerator::emitSuperConstruct(RegisterID* dst, RegisterID* func, RegisterID* lazyThis, ExpectedFunction expectedFunction, CallArguments& callArguments, const JSTextPosition& divot, const JSTextPosition& divotStart, const JSTextPosition& divotEnd)
+RegisterID* BytecodeGenerator::emitSuperConstruct(RegisterID* dst, RegisterID* func, RegisterID* lazyThis, ExpectedFunction expectedFunction, CallArguments& callArguments, const JSTextPosition& divot, const JSTextPosition& divotStart, const JSTextPosition& divotEnd, bool isDefaultDerivedConstructorCall)
 {
-    return emitConstructImpl<OpSuperConstruct>(dst, func, lazyThis, expectedFunction, callArguments, divot, divotStart, divotEnd);
+    return emitConstructImpl<OpSuperConstruct>(dst, func, lazyThis, expectedFunction, callArguments, divot, divotStart, divotEnd, isDefaultDerivedConstructorCall);
 }
 
 RegisterID* BytecodeGenerator::emitStrcat(RegisterID* dst, RegisterID* src, int count)
@@ -4734,7 +4749,7 @@ void BytecodeGenerator::emitUsingBodyScope(unsigned usingCount, bool hasAwaitUsi
         // Shared temporaries for the catch handler (one pair is enough across all slots).
         RefPtr<RegisterID> caughtException = newTemporary();
         RefPtr<RegisterID> caughtValue = newTemporary();
-        RefPtr<RegisterID> createSuppressedErrorFunc = newTemporary();
+        RefPtr<RegisterID> suppressedErrorCtor = newTemporary();
 
         auto emitSuppressedErrorCatch = [&](TryData* trySlotData, Label& catchLabel) {
             emitLabel(catchLabel);
@@ -4744,12 +4759,11 @@ void BytecodeGenerator::emitUsingBodyScope(unsigned usingCount, bool hasAwaitUsi
             Ref<Label> firstError = newLabel();
             emitJumpIfFalse(hasError.get(), firstError.get());
 
-            moveLinkTimeConstant(createSuppressedErrorFunc.get(), LinkTimeConstant::createSuppressedError);
+            moveLinkTimeConstant(suppressedErrorCtor.get(), LinkTimeConstant::SuppressedError);
             CallArguments seArgs(*this, nullptr, 2);
-            emitLoad(seArgs.thisRegister(), jsUndefined());
             move(seArgs.argumentRegister(0), caughtValue.get());
             move(seArgs.argumentRegister(1), pendingError.get());
-            emitCall(pendingError.get(), createSuppressedErrorFunc.get(), NoExpectedFunction, seArgs, divot, divot, divot, DebuggableCall::No);
+            emitConstruct(pendingError.get(), suppressedErrorCtor.get(), suppressedErrorCtor.get(), NoExpectedFunction, seArgs, divot, divot, divot);
             emitJump(afterCatch.get());
 
             emitLabel(firstError.get());
@@ -5826,6 +5840,11 @@ void BytecodeGenerator::pushOptionalChainTarget()
     m_optionalChainTargetStack.append(newLabel());
 }
 
+void BytecodeGenerator::pushOptionalChainTarget(Label& existingTarget)
+{
+    m_optionalChainTargetStack.append(existingTarget);
+}
+
 void BytecodeGenerator::popOptionalChainTarget()
 {
     ASSERT(m_optionalChainTargetStack.size());
@@ -5841,6 +5860,12 @@ void BytecodeGenerator::popOptionalChainTarget(RegisterID* dst, bool isDelete)
     emitLoad(dst, isDelete ? jsBoolean(true) : jsUndefined());
 
     emitLabel(endLabel.get());
+}
+
+void BytecodeGenerator::discardOptionalChainTarget()
+{
+    ASSERT(m_optionalChainTargetStack.size());
+    m_optionalChainTargetStack.removeLast();
 }
 
 void BytecodeGenerator::emitOptionalCheck(RegisterID* src)

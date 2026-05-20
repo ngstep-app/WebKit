@@ -3342,14 +3342,7 @@ class GenerateCSSPropertyInitialValues:
     # MARK: - Helper generator functions for CSSPropertyInitialValuesGeneratedInlines.h
 
     def _generate_css_property_initial_values_generated_inlines_h_types(self, *, to):
-        to.write(f"struct InitialNumericValue {{")
-        with to.indent():
-            to.write(f"double number;")
-            to.write(f"CSSUnitType type {{ CSSUnitType::CSS_NUMBER }};")
-        to.write(f"}};")
-        to.newline()
-
-        to.write(f"using InitialValue = Variant<CSSValueID, InitialNumericValue>;")
+        to.write(f"using InitialValue = Variant<CSSValueID, CSSPrimitiveValue::Raw>;")
         to.newline()
 
     def _generate_css_property_initial_values_generated_inlines_h_initial_value_for_longhand(self, *, to):
@@ -3383,7 +3376,7 @@ class GenerateCSSPropertyInitialValues:
 
                 with to.indent():
                     if isinstance(initial.list[0], NumericLiteral):
-                        to.write(f"return InitialNumericValue {{ {initial.list[0].digits}, {initial.list[0].cpp_unit_type} }};")
+                        to.write(f"return CSSPrimitiveValue::Raw {{ {initial.list[0].cpp_unit_type}, {initial.list[0].digits} }};")
                     elif isinstance(initial.list[0], ValueKeywordName):
                         to.write(f"return {initial.list[0].id_without_scope};")
 
@@ -3409,8 +3402,8 @@ class GenerateCSSPropertyInitialValues:
             self.generation_context.generate_includes(
                 to=writer,
                 headers=[
+                    "CSSPrimitiveValue.h",
                     "CSSPropertyNames.h",
-                    "CSSUnits.h",
                     "CSSValueKeywords.h",
                 ],
                 system_headers=[
@@ -3512,11 +3505,12 @@ class GenerateCSSPropertyNames:
         to.write("};")
         to.newline()
 
-        all_property_name_strings = quote_iterable((f"{property.name}" for property in self.properties_and_descriptors.all_unique), suffix="_s,")
-        to.write(f"constexpr ASCIILiteral propertyNameStrings[numCSSProperties] = {{")
+        property_count = len(self.properties_and_descriptors.all_unique)
+        to.write(f"static constexpr std::array<StringImpl::StaticStringImpl, {property_count}> propertyNameData = {{{{")
         with to.indent():
-            to.write_lines(all_property_name_strings)
-        to.write("};")
+            for property in self.properties_and_descriptors.all_unique:
+                to.write(f'StringImpl::StaticStringImpl("{property.name}", StringImpl::StringAtom),')
+        to.write("}};")
         to.newline()
 
         to.write("%}")
@@ -3583,7 +3577,7 @@ class GenerateCSSPropertyNames:
                 unsigned index = id - firstCSSProperty;
                 if (index >= numCSSProperties)
                     return { };
-                return propertyNameStrings[index];
+                return propertyNameData[index].literal();
             }
 
             const AtomString& nameString(CSSPropertyID id)
@@ -3597,7 +3591,7 @@ class GenerateCSSPropertyNames:
                 static NeverDestroyed<std::array<AtomString, numCSSProperties>> atomStrings;
                 auto& string = atomStrings.get()[index];
                 if (string.isNull())
-                    string = propertyNameStrings[index];
+                    string = propertyNameData[index];
                 return string;
             }
 
@@ -4780,7 +4774,7 @@ class GenerateStyleBuilderGenerated:
 
         with to.indent():
             if property in self.style_properties.all_by_name["font"].codegen_properties.longhands and "Initial" not in property.codegen_properties.style_builder_custom and property.codegen_properties.style_builder_requires_system_font_shorthand_check:
-                to.write(f"if (CSSPropertyParserHelpers::isSystemFontShorthand(value.valueID())) {{")
+                to.write(f"if (CSSPropertyParserHelpers::isSystemFontShorthand(valueID(value))) {{")
                 with to.indent():
                     to.write(f"applyInitial{property.id_without_prefix}(builderState);")
                     to.write(f"return;")
@@ -4903,13 +4897,13 @@ class GenerateStyleBuilderGenerated:
             self.generation_context.generate_includes(
                 to=writer,
                 headers=[
-                    "CSSPrimitiveValueMappings.h",
                     "CSSProperty.h",
                     "RenderStyle+GettersInlines.h",
                     "RenderStyle+SettersInlines.h",
                     "StyleBuilderCustom.h",
                     "StyleBuilderState.h",
                     "StyleComputedStyle+InitialInlines.h",
+                    "StyleKeyword+Mappings.h",
                     "StylePropertyShorthand.h",
                 ]
             )
@@ -5178,12 +5172,12 @@ class GenerateStyleExtractorGenerated:
             self.generation_context.generate_includes(
                 to=writer,
                 headers=[
-                    "CSSPrimitiveValueMappings.h",
                     "CSSProperty.h",
                     "ColorSerialization.h",
                     "RenderStyle.h",
                     "StyleExtractorCustom.h",
                     "StyleExtractorState.h",
+                    "StyleKeyword+Mappings.h",
                     "StylePropertyShorthand.h",
                 ]
             )
@@ -9419,8 +9413,8 @@ class TermGeneratorReferenceTerm(TermGenerator):
                 return f"consumeImage({range_string}, {state_string}, {{ }})"
             elif isinstance(builtin, BuiltinCustomIdentConsumer):
                 if builtin.excluding:
-                    return f"consumeCustomIdentExcluding({range_string}, {{ { ', '.join(ValueKeywordName(id).id for id in builtin.excluding)} }})"
-                return f"consumeCustomIdent({range_string})"
+                    return f"consumeCustomIdentExcluding({range_string}, {state_string}, {{ { ', '.join(ValueKeywordName(id).id for id in builtin.excluding)} }})"
+                return f"consumeCustomIdent({range_string}, {state_string})"
             elif isinstance(builtin, BuiltinURLConsumer):
                 if builtin.allowed_modifiers:
                     return f"consumeURL({range_string}, {state_string}, {{ {builtin.allowed_modifiers} }})"
@@ -9477,9 +9471,9 @@ class TermGeneratorReferenceTerm(TermGenerator):
             elif isinstance(builtin, BuiltinStringConsumer):
                 return False
             elif isinstance(builtin, BuiltinCustomIdentConsumer):
-                return False
+                return True
             elif isinstance(builtin, BuiltinDashedIdentConsumer):
-                return False
+                return True
             elif isinstance(builtin, BuiltinURLConsumer):
                 return True
             elif isinstance(builtin, BuiltinFeatureTagValueConsumer):
@@ -9559,7 +9553,7 @@ class TermGeneratorNonFastPathKeywordTerm(TermGenerator):
                         to.write(f"{default_string};")
 
                 to.write(f"{range_string}.consumeIncludingWhitespace();")
-                to.write(f"return CSSPrimitiveValue::create({return_expression.return_value});")
+                to.write(f"return CSSKeywordValue::create(CSS::Keyword {{ {return_expression.return_value} }});")
 
         to.write(f"default:")
         with to.indent():

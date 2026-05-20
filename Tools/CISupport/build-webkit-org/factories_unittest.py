@@ -1115,8 +1115,7 @@ class TestExpectedBuildSteps(unittest.TestCase):
             'delete-WebKitBuild-directory',
             'delete-stale-build-files',
             'jhbuild',
-            'download-built-product',
-            'extract-built-product',
+            'compile-webkit',
             'perf-test',
             'benchmark-test'
         ],
@@ -1215,21 +1214,6 @@ class TestExpectedBuildSteps(unittest.TestCase):
             'builtins-generator-tests',
             'archive-built-product',
             'upload-built-product'
-        ],
-        'GTK-Linux-64bit-Release-GNOMEWebCanary-Packaging-Nightly': [
-            'configure-build',
-            'configuration',
-            'clean-and-update-working-directory',
-            'checkout-specific-revision',
-            'show-identifier',
-            'kill-old-processes',
-            'delete-WebKitBuild-directory',
-            'delete-stale-build-files',
-            'jhbuild',
-            'compile-webkit',
-            'install-built-product',
-            'archive-built-product',
-            'upload-built-product-via-sftp'
         ],
         'GTK-Linux-64-bit-Release-MVT-Tests': [
             'configure-build',

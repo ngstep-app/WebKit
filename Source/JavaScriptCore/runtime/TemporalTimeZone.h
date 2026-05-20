@@ -25,9 +25,9 @@
 
 #pragma once
 
-#include "ISO8601.h"
-#include "IntlObject.h"
-#include "JSObject.h"
+#include <JavaScriptCore/ISO8601.h>
+#include <JavaScriptCore/IntlObject.h>
+#include <JavaScriptCore/JSObject.h>
 
 namespace JSC {
 
@@ -41,13 +41,10 @@ public:
         return vm.temporalTimeZoneSpace<mode>();
     }
 
-    static TemporalTimeZone* createFromID(VM&, Structure*, TimeZoneID);
-    static TemporalTimeZone* createFromUTCOffset(VM&, Structure*, int64_t);
+    static TemporalTimeZone* create(VM&, Structure*, TimeZone);
     static Structure* createStructure(VM&, JSGlobalObject*, JSValue);
 
     DECLARE_INFO;
-
-    using TimeZone = ISO8601::TimeZone;
 
     TimeZone timeZone() const { return m_timeZone; }
 
@@ -56,7 +53,6 @@ public:
 private:
     TemporalTimeZone(VM&, Structure*, TimeZone);
 
-    // TimeZoneID or UTC offset.
     TimeZone m_timeZone;
 };
 

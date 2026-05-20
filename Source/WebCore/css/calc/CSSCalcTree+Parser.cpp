@@ -57,7 +57,7 @@ static constexpr int maxExpressionDepth = 100;
 
 static std::optional<std::pair<Number, Type>> lookupConstantNumber(CSSValueID symbol)
 {
-    static constexpr SortedArrayMap constantMap { std::to_array<std::pair<CSSValueID, double>>({
+    static constexpr SortedArrayMap constantMap { WTF::toArray<std::pair<CSSValueID, double>>({
         { CSSValueE,                     std::numbers::e                          },
         { CSSValuePi,                    std::numbers::pi                         },
         { CSSValueInfinity,              std::numeric_limits<double>::infinity()  },
@@ -235,6 +235,24 @@ template<typename Op> static std::optional<TypedChild> consumeExactlyOneArgument
     }
 
     Op op { WTF::move(sum->child) };
+
+    // Sin, Cos, and Tan accept either a <number> (already in radians) or an <angle> (in the
+    // canonical unit of degrees). Wrap angle arguments in a Deg2Rad node so that evaluation no
+    // longer has to inspect types to decide whether to convert — the conversion is explicit in
+    // the tree. Simplify the Deg2Rad eagerly so that fully-resolved angles collapse into a Number
+    // (which then lets the trig simplification below reduce the whole expression to a Number).
+    if constexpr (std::same_as<Op, Sin> || std::same_as<Op, Cos> || std::same_as<Op, Tan>) {
+        if (sum->type.template matchesAny<Type::Match::Angle>({ .allowsPercentHint = true })) {
+            Deg2Rad conversion { .angle = WTF::move(op.a) };
+            if (auto* simplificationOptions = state.simplificationOptions) {
+                if (auto replacement = simplify(conversion, *simplificationOptions))
+                    op.a = WTF::move(*replacement);
+                else
+                    op.a = makeChild(WTF::move(conversion), Type { });
+            } else
+                op.a = makeChild(WTF::move(conversion), Type { });
+        }
+    }
 
     if (auto* simplificationOptions = state.simplificationOptions) {
         if (auto replacement = simplify(op, *simplificationOptions))
@@ -669,10 +687,10 @@ static Random::SharingOptions::Auto NODELETE makeRandomSharingAuto(ParserState& 
 
 static std::optional<Random::SharingOptions> consumeOptionalRandomSharingOptions(CSSParserTokenRange& tokens, ParserState& state)
 {
-    // <random-value-sharing-options> = [ [ auto | <dashed-ident> ] || element-shared ]
+    // <random-value-sharing> = [ auto | <dashed-ident> ] || element-scoped | fixed <number [0,1]>
 
-    std::optional<Variant<Random::SharingOptions::Auto, AtomString>> identifier;
-    std::optional<CSS::Keyword::ElementShared> elementShared;
+    std::optional<Variant<Random::SharingOptions::Auto, CSS::CustomIdent>> identifier;
+    std::optional<CSS::Keyword::ElementScoped> elementScoped;
 
     CSSParserTokenRangeGuard guard { tokens };
 
@@ -684,43 +702,43 @@ static std::optional<Random::SharingOptions> consumeOptionalRandomSharingOptions
             identifier = makeRandomSharingAuto(state);
             return true;
         }
-        if (tokens.peek().type() == IdentToken && isValidCustomIdentifier(tokens.peek().id()) && tokens.peek().value().startsWith("--"_s)) {
-            identifier = tokens.consumeIncludingWhitespace().value().toAtomString();
+        if (auto dashedIdent = CSSPropertyParserHelpers::consumeUnresolvedDashedIdent(tokens, state.propertyParserState)) {
+            identifier = WTF::move(*dashedIdent);
             return true;
         }
         return false;
     };
-    auto consumeElementShared = [&] -> bool {
-        if (elementShared)
+    auto consumeElementScoped = [&] -> bool {
+        if (elementScoped)
             return false;
-        if (tokens.peek().id() == CSSValueElementShared) {
+        if (tokens.peek().id() == CSSValueElementScoped) {
             tokens.consumeIncludingWhitespace();
-            elementShared = CSS::Keyword::ElementShared { };
+            elementScoped = CSS::Keyword::ElementScoped { };
             return true;
         }
         return false;
     };
 
     for (unsigned i = 0; i < 2; ++i) {
-        if (consumeIdentifier() || consumeElementShared())
+        if (consumeIdentifier() || consumeElementScoped())
             continue;
         break;
     }
 
-    if (!identifier && !elementShared)
+    if (!identifier && !elementScoped)
         return { };
 
     guard.commit();
 
     return Random::SharingOptions {
-        .identifier = identifier.value_or(makeRandomSharingAuto(state)),
-        .elementShared = elementShared
+        .identifier = identifier.value_or(CSS::CustomIdent { nullAtom() }),
+        .elementScoped = elementScoped
     };
 }
 
 static std::optional<Random::Sharing> consumeOptionalRandomSharing(CSSParserTokenRange& tokens, ParserState& state)
 {
-    // <random-value-sharing> = [ [ auto | <dashed-ident> ] || element-shared ] | fixed <number [0,1]>
+    // <random-value-sharing> = [ auto | <dashed-ident> ] || element-scoped | fixed <number [0,1]>
 
     if (tokens.peek().id() == CSSValueFixed) {
         if (auto fixed = consumeOptionalRandomSharingFixed(tokens, state))
@@ -762,7 +780,7 @@ static std::optional<TypedChild> consumeRandom(CSSParserTokenRange& tokens, int 
     } else {
         sharing = Random::SharingOptions {
             .identifier = makeRandomSharingAuto(state),
-            .elementShared = { },
+            .elementScoped = CSS::Keyword::ElementScoped { },
         };
     }
 
@@ -1037,7 +1055,7 @@ static std::optional<TypedChild> consumeAnchor(CSSParserTokenRange& tokens, int 
     if (!state.propertyParserState.context.propertySettings.cssAnchorPositioningEnabled)
         return { };
 
-    auto anchorElement = CSSPropertyParserHelpers::consumeDashedIdentRaw(tokens);
+    auto anchorElement = CSSPropertyParserHelpers::consumeUnresolvedDashedIdent(tokens, state.propertyParserState);
 
     // <anchor-side> = inside | outside | top | left | right | bottom | start | end | self-start | self-end | <percentage> | center
     auto anchorSide = [&]() -> std::optional<AnchorSide> {
@@ -1071,8 +1089,8 @@ static std::optional<TypedChild> consumeAnchor(CSSParserTokenRange& tokens, int 
     if (!anchorSide)
         return { };
 
-    if (anchorElement.isNull())
-        anchorElement = CSSPropertyParserHelpers::consumeDashedIdentRaw(tokens);
+    if (!anchorElement)
+        anchorElement = CSSPropertyParserHelpers::consumeUnresolvedDashedIdent(tokens, state.propertyParserState);
 
     auto type = Type::makeLength();
     std::optional<Child> fallback;
@@ -1093,7 +1111,7 @@ static std::optional<TypedChild> consumeAnchor(CSSParserTokenRange& tokens, int 
     state.requiresConversionData = true;
 
     auto anchor = Anchor {
-        .elementName = AtomString { WTF::move(anchorElement) },
+        .elementName = WTF::move(anchorElement),
         .side = WTF::move(*anchorSide),
         .fallback = WTF::move(fallback)
     };
@@ -1134,20 +1152,20 @@ static std::optional<TypedChild> consumeAnchorSize(CSSParserTokenRange& tokens, 
         return { };
 
     // parse <anchor-element>
-    auto maybeAnchorElement = CSSPropertyParserHelpers::consumeDashedIdentRaw(tokens);
+    auto maybeAnchorElement = CSSPropertyParserHelpers::consumeUnresolvedDashedIdent(tokens, state.propertyParserState);
 
     // then parse <anchor-size>
     auto maybeAnchorSize = CSSPropertyParserHelpers::consumeIdentRaw<CSSValueWidth, CSSValueHeight, CSSValueBlock, CSSValueInline, CSSValueSelfBlock, CSSValueSelfInline>(tokens);
 
     // if we could parse <anchor-size> but not <anchor-element>, it's possible <anchor-element> is specified
     // after <anchor-size>, so re-parse <anchor-element>
-    if (maybeAnchorSize && maybeAnchorElement.isNull())
-        maybeAnchorElement = CSSPropertyParserHelpers::consumeDashedIdentRaw(tokens);
+    if (maybeAnchorSize && !maybeAnchorElement)
+        maybeAnchorElement = CSSPropertyParserHelpers::consumeUnresolvedDashedIdent(tokens, state.propertyParserState);
 
     std::optional<TypedChild> fallback;
 
     // if either <anchor-element> or <anchor-size> is present
-    if (maybeAnchorSize || !maybeAnchorElement.isNull()) {
+    if (maybeAnchorSize || maybeAnchorElement) {
         // if a comma follows...
         if (CSSPropertyParserHelpers::consumeCommaIncludingWhitespace(tokens)) {
             // it must be followed by the fallback value.
@@ -1175,7 +1193,7 @@ static std::optional<TypedChild> consumeAnchorSize(CSSParserTokenRange& tokens, 
     state.requiresConversionData = true;
 
     auto anchorSize = AnchorSize {
-        .elementName = AtomString { WTF::move(maybeAnchorElement) },
+        .elementName = WTF::move(maybeAnchorElement),
         .dimension = maybeAnchorSize ? cssValueIDToAnchorSizeDimension(*maybeAnchorSize) : std::nullopt,
         .fallback = fallback ? std::make_optional(WTF::move(fallback->child)) : std::nullopt
     };
@@ -1339,6 +1357,7 @@ std::optional<TypedChild> parseCalcFunction(CSSParserTokenRange& tokens, CSSValu
             return { };
         if (state.propertyParserState.currentProperty == CSSPropertyInvalid)
             return { };
+        state.requiresConversionData = true;
         return consumeZeroArguments<SiblingCount>(tokens, depth, state);
 
     case CSSValueSiblingIndex:
@@ -1351,6 +1370,7 @@ std::optional<TypedChild> parseCalcFunction(CSSParserTokenRange& tokens, CSSValu
             return { };
         if (state.propertyParserState.currentProperty == CSSPropertyInvalid)
             return { };
+        state.requiresConversionData = true;
         return consumeZeroArguments<SiblingIndex>(tokens, depth, state);
 
     case CSSValueAnchor:

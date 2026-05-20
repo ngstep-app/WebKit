@@ -22,7 +22,6 @@
 #include "config.h"
 #include "SVGTests.h"
 
-#include "EventTarget.h"
 #include "HTMLNames.h"
 #include "NodeName.h"
 #include "SVGElement.h"
@@ -92,10 +91,10 @@ void SVGTests::parseAttribute(const QualifiedName& attributeName, const AtomStri
 {
     switch (attributeName.nodeName()) {
     case AttributeNames::requiredExtensionsAttr:
-        protect(requiredExtensions())->reset(value);
+        protect(requiredExtensions())->setFromSpaceSeparatedTokens(value);
         break;
     case AttributeNames::systemLanguageAttr:
-        protect(systemLanguage())->reset(value);
+        protect(systemLanguage())->setFromCommaSeparatedTokens(value);
         break;
     default:
         break;

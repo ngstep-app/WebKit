@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2006 Eric Seidel <eric@webkit.org>
- * Copyright (C) 2008-2025 Apple Inc. All rights reserved.
+ * Copyright (C) 2008-2026 Apple Inc. All rights reserved.
  * Copyright (C) Research In Motion Limited 2011. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -28,7 +28,6 @@
 #include "config.h"
 #include "SVGImage.h"
 
-#include "CacheStorageProvider.h"
 #include "Chrome.h"
 #include "CommonVM.h"
 #include "ContainerNodeInlines.h"
@@ -101,6 +100,45 @@ RefPtr<SVGSVGElement> SVGImage::rootElement() const
     return DocumentSVG::rootElement(*localMainFrame->document());
 }
 
+FloatSize SVGImage::resolvedIntrinsicSize(float density) const
+{
+    constexpr float defaultWidth = 300;
+    constexpr float defaultHeight = 150;
+
+    RefPtr rootElement = this->rootElement();
+    if (!rootElement)
+        return { defaultWidth, defaultHeight };
+
+    std::optional<float> aspectRatio;
+    auto viewBox = rootElement->viewBox();
+    if (!viewBox.isEmpty())
+        aspectRatio = viewBox.width() / viewBox.height();
+
+    constexpr float defaultRatio = defaultWidth / defaultHeight;
+    float width = defaultWidth;
+    float height = defaultHeight;
+
+    // Four cases for { hasIntrinsicWidth, hasIntrinsicHeight }.
+    if (rootElement->hasIntrinsicWidth()) {
+        width = rootElement->intrinsicWidth() * density;
+        if (rootElement->hasIntrinsicHeight())
+            height = rootElement->intrinsicHeight() * density;  // Case 1: { true, true }
+        else if (aspectRatio)                                   // Case 2: { true, false }
+            height = width / *aspectRatio;
+    } else if (rootElement->hasIntrinsicHeight()) {
+        height = rootElement->intrinsicHeight() * density;
+        if (aspectRatio)                                        // Case 3: { false, true }
+            width = height * *aspectRatio;
+    } else if (aspectRatio) {
+        if (*aspectRatio >= defaultRatio)                       // Case 4: { false, false }
+            height = width / *aspectRatio;
+        else
+            width = height * *aspectRatio;
+    }
+
+    return { width, height };
+}
+
 bool SVGImage::renderingTaintsOrigin() const
 {
     RefPtr rootElement = this->rootElement();
@@ -133,9 +171,6 @@ void SVGImage::setContainerSize(const FloatSize& size)
     if (!rootElement || !rootElement->renderer() || !rootElement->renderer()->isRenderOrLegacyRenderSVGRoot())
         return;
 
-    RefPtr view = frameView();
-    view->resize(containerSize());
-
     if (CheckedPtr renderer = dynamicDowncast<LegacyRenderSVGRoot>(rootElement->renderer())) {
         renderer->setContainerSize(IntSize(size));
         return;
@@ -155,10 +190,10 @@ IntSize SVGImage::containerSize() const
 
     // If a container size is available it has precedence.
     auto computeContainerSize = [&]() -> IntSize {
-        if (CheckedPtr renderer = dynamicDowncast<LegacyRenderSVGRoot>(rootElement->renderer()))
+        if (auto* renderer = dynamicDowncast<LegacyRenderSVGRoot>(rootElement->renderer()))
             return renderer->containerSize();
 
-        if (CheckedPtr renderer = dynamicDowncast<RenderSVGRoot>(rootElement->renderer()))
+        if (auto* renderer = dynamicDowncast<RenderSVGRoot>(rootElement->renderer()))
             return renderer->containerSize();
 
         return { };
@@ -238,8 +273,8 @@ RefPtr<NativeImage> SVGImage::nativeImage(const FloatSize& size, const Destinati
     auto renderingMode = m_page->settings().acceleratedDrawingEnabled() ? RenderingMode::Accelerated : RenderingMode::Unaccelerated;
 
     HostWindow* hostWindow = nullptr;
-    if (CheckedPtr contentRenderer = embeddedContentBox())
-        hostWindow = contentRenderer->hostWindow();
+    if (CheckedPtr svgRoot = embeddedSVGRoot())
+        hostWindow = svgRoot->hostWindow();
 
     RefPtr imageBuffer = ImageBuffer::create(size, renderingMode, RenderingPurpose::DOM, 1, colorSpace, PixelFormat::BGRA8, hostWindow);
     if (!imageBuffer)
@@ -354,12 +389,12 @@ ImageDrawResult SVGImage::draw(GraphicsContext& context, const FloatRect& dstRec
     return ImageDrawResult::DidDraw;
 }
 
-RenderBox* SVGImage::embeddedContentBox() const
+RenderReplaced* SVGImage::embeddedSVGRoot() const
 {
     RefPtr rootElement = this->rootElement();
     if (!rootElement)
         return nullptr;
-    return downcast<RenderBox>(rootElement->renderer());
+    return downcast<RenderReplaced>(rootElement->renderer());
 }
 
 LocalFrameView* SVGImage::frameView() const
@@ -374,16 +409,36 @@ LocalFrameView* SVGImage::frameView() const
     return localMainFrame->view();
 }
 
+bool SVGImage::hasIntrinsicWidth() const
+{
+    RefPtr rootElement = this->rootElement();
+    return rootElement && rootElement->hasIntrinsicWidth();
+}
+
+bool SVGImage::hasIntrinsicHeight() const
+{
+    RefPtr rootElement = this->rootElement();
+    return rootElement && rootElement->hasIntrinsicHeight();
+}
+
 bool SVGImage::hasRelativeWidth() const
 {
-    // FIXME: This seems wrong.
+    // FIXME: Delete this function and replace all the calls to it with !hasIntrinsicWidth().
     return false;
 }
 
 bool SVGImage::hasRelativeHeight() const
 {
-    // FIXME: This seems wrong.
+    // FIXME: Delete this function and replace all the calls to it with !hasIntrinsicHeight().
     return false;
+}
+
+bool SVGImage::hasNaturalAspectRatio() const
+{
+    RefPtr rootElement = this->rootElement();
+    if (!rootElement)
+        return false;
+    return rootElement->hasIntrinsicDimensions();
 }
 
 void SVGImage::computeIntrinsicDimensions(float& intrinsicWidth, float& intrinsicHeight, FloatSize& intrinsicRatio)
@@ -394,9 +449,6 @@ void SVGImage::computeIntrinsicDimensions(float& intrinsicWidth, float& intrinsi
 
     intrinsicWidth = rootElement->intrinsicWidth();
     intrinsicHeight = rootElement->intrinsicHeight();
-
-    if (rootElement->preserveAspectRatio().align() == SVGPreserveAspectRatioValue::SVG_PRESERVEASPECTRATIO_NONE)
-        return;
 
     intrinsicRatio = rootElement->viewBox().size();
     if (intrinsicRatio.isEmpty())
@@ -502,6 +554,7 @@ EncodedDataStatus SVGImage::dataChanged(bool allDataReceived)
                 m_page->settings().setLayerBasedSVGEngineEnabled(parentSettings->layerBasedSVGEngineEnabled());
                 m_page->settings().fontGenericFamilies() = parentSettings->fontGenericFamilies();
                 m_page->settings().setCSSDPropertyEnabled(parentSettings->cssDPropertyEnabled());
+                m_page->settings().setDownloadableBinaryFontTrustedTypes(parentSettings->downloadableBinaryFontTrustedTypes());
             }
             m_page->setUseColorAppearance(observer->useSystemDarkAppearance(), false);
         }

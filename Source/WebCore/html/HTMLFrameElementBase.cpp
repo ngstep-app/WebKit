@@ -26,6 +26,8 @@
 
 #include "ContainerNodeInlines.h"
 #include "Document.h"
+#include "DocumentPage.h"
+#include "FrameDestructionObserverInlines.h"
 #include "DocumentEventLoop.h"
 #include "DocumentQuirks.h"
 #include "DocumentView.h"
@@ -71,7 +73,7 @@ bool HTMLFrameElementBase::canLoad() const
 
 bool HTMLFrameElementBase::canLoadURL(const String& relativeURL) const
 {
-    return canLoadURL(protect(document())->completeURL(relativeURL));
+    return canLoadURL(protect(document())->encodingParseURL(relativeURL));
 }
 
 // Note that unlike HTMLPlugInElement::canLoadURL this uses ScriptController::canAccessFromCurrentOrigin.
@@ -107,7 +109,7 @@ void HTMLFrameElementBase::openURL(LockHistory lockHistory, LockBackForwardList 
             frameName = getIdAttribute();
     }
 
-    auto completeURL = document->completeURL(m_frameURL);
+    auto completeURL = document->encodingParseURL(m_frameURL);
     auto finishOpeningURL = [weakThis = WeakPtr { *this }, frameName, lockHistory, lockBackForwardList, parentFrame = WTF::move(parentFrame), completeURL] {
         RefPtr protectedThis = weakThis.get();
         if (!protectedThis)

@@ -50,7 +50,6 @@
 #include "HTMLStyleElement.h"
 #include "ImageOverlayController.h"
 #include "MediaControlsHost.h"
-#include "NodeInlines.h"
 #include "RenderBoxInlines.h"
 #include "RenderElementStyleInlines.h"
 #include "RenderImage.h"
@@ -276,9 +275,9 @@ static Elements updateSubtree(HTMLElement& element, const TextRecognitionResult&
             return nullptr;
 
         auto& containerClass = controlsHost->mediaControlsContainerClassName();
-        for (Ref child : childrenOfType<HTMLDivElement>(*shadowRoot)) {
-            if (child->hasClassName(containerClass))
-                return &child.get();
+        for (auto& child : childrenOfType<HTMLDivElement>(*shadowRoot)) {
+            if (child.hasClassName(containerClass))
+                return &child;
         }
         return nullptr;
     })();

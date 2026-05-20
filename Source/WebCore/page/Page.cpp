@@ -61,6 +61,7 @@
 #include "DatabaseProvider.h"
 #include "DebugOverlayRegions.h"
 #include "DebugPageOverlays.h"
+#include "DeviceOrientationAndMotionAccessController.h"
 #include "DiagnosticLoggingClient.h"
 #include "DiagnosticLoggingKeys.h"
 #include "DisplayRefreshMonitorManager.h"
@@ -124,11 +125,13 @@
 #include "LoginStatus.h"
 #include "LowPowerModeNotifier.h"
 #include "MediaCanStartListener.h"
+#include "MediaSession.h"
 #include "MemoryCache.h"
 #include "ModelPlayerProvider.h"
 #include "NavigationScheduler.h"
 #include "Navigator.h"
 #include "NavigatorGamepad.h"
+#include "NavigatorMediaSession.h"
 #include "OpportunisticTaskScheduler.h"
 #include "PageColorSampler.h"
 #include "PageConfiguration.h"
@@ -217,6 +220,7 @@
 #include "WorkerOrWorkletScriptController.h"
 #include <JavaScriptCore/VM.h>
 #include <ranges>
+#include <wtf/Borrow.h>
 #include <wtf/FileSystem.h>
 #include <wtf/StdLibExtras.h>
 #include <wtf/SystemTracing.h>
@@ -386,6 +390,7 @@ WTF_MAKE_STRUCT_TZONE_ALLOCATED_IMPL(Page::Internals);
 Page::Page(PageConfiguration&& pageConfiguration)
     : m_internals(makeUniqueRef<Internals>())
     , m_identifier(pageConfiguration.identifier)
+    , m_browsingContextGroupIdentifier(pageConfiguration.browsingContextGroupIdentifier)
     , m_chrome(makeUniqueRef<Chrome>(*this, WTF::move(pageConfiguration.chromeClient)))
     , m_dragCaretController(makeUniqueRef<DragCaretController>())
 #if ENABLE(DRAG_SUPPORT)
@@ -441,7 +446,10 @@ Page::Page(PageConfiguration&& pageConfiguration)
     , m_isUtilityPage(isUtilityPageChromeClient(chrome().client()))
     , m_performanceMonitor(isUtilityPage() ? nullptr : makeUniqueWithoutRefCountedCheck<PerformanceMonitor>(*this))
     , m_lowPowerModeNotifier(makeUniqueRef<LowPowerModeNotifier>([this](bool isLowPowerModeEnabled) { handleLowPowerModeChange(isLowPowerModeEnabled); }))
-    , m_thermalMitigationNotifier(makeUniqueRef<ThermalMitigationNotifier>([this](bool thermalMitigationEnabled) { handleThermalMitigationChange(thermalMitigationEnabled); }))
+    , m_thermalMitigationNotifier(ThermalMitigationNotifier::create([weakThis = WeakPtr { *this }](bool thermalMitigationEnabled) {
+        if (RefPtr protectedThis = weakThis)
+            protectedThis->handleThermalMitigationChange(thermalMitigationEnabled);
+    }))
     , m_performanceLogging(makeUniqueRef<PerformanceLogging>(*this))
 #if PLATFORM(MAC) && (ENABLE(SERVICE_CONTROLS) || ENABLE(TELEPHONE_NUMBER_DETECTION))
     , m_servicesOverlayController(makeUniqueRefWithoutRefCountedCheck<ServicesOverlayController>(*this))
@@ -852,11 +860,10 @@ void Page::setMainFrame(Ref<Frame>&& frame)
 {
     m_mainFrame = WTF::move(frame);
 
-    RefPtr<Document> document;
-    if (RefPtr localFrame = dynamicDowncast<LocalFrame>(m_mainFrame.get()))
-        document = localFrame->document();
-
-    m_topDocumentSyncData = document ? document->syncData() : DocumentSyncData::create();
+    if (RefPtr localFrame = dynamicDowncast<LocalFrame>(m_mainFrame.get())) {
+        if (RefPtr document = localFrame->document())
+            m_topDocumentSyncData = document->syncData();
+    }
 
     // Notify the web page that the frame changed, so that we can re-intitialize the remote token.
     chrome().client().mainFrameDidChange();
@@ -987,13 +994,6 @@ void Page::updateTopDocumentSyncData(const DocumentSyncSerializationData& data)
 
 void Page::updateTopDocumentSyncData(Ref<DocumentSyncData>&& data)
 {
-    if (auto* localFrame = dynamicDowncast<LocalFrame>(m_mainFrame.get())) {
-        // Prefer the main LocalFrame document's data, but if the main LocalFrame
-        // has no document, accept the remote pushed data.
-        if (localFrame->document())
-            return;
-    }
-
     m_topDocumentSyncData = WTF::move(data);
 }
 
@@ -1195,7 +1195,7 @@ Page::FindStringData Page::findString(const String& target, FindOptions options,
     CanWrap canWrap = options.contains(FindOption::WrapAround) ? CanWrap::Yes : CanWrap::No;
     RefPtr frame = m_focusController->focusedFrame() ? m_focusController->focusedFrame() : m_mainFrame.ptr();
     RefPtr startFrame = frame;
-    RefPtr focusedLocalFrame = dynamicDowncast<LocalFrame>(frame);
+    RefPtr localFocusedFrame = dynamicDowncast<LocalFrame>(frame);
     do {
         RefPtr localFrame = dynamicDowncast<LocalFrame>(frame.get());
         if (!localFrame) {
@@ -1205,8 +1205,8 @@ Page::FindStringData Page::findString(const String& target, FindOptions options,
         auto foundRange = protect(localFrame->editor())->findString(target, (options - FindOption::WrapAround) | FindOption::StartInSelection);
         if (foundRange) {
             if (!options.contains(FindOption::DoNotSetSelection)) {
-                if (focusedLocalFrame && localFrame != focusedLocalFrame)
-                    protect(focusedLocalFrame->selection())->clear();
+                if (localFocusedFrame && localFrame != localFocusedFrame)
+                    protect(localFocusedFrame->selection())->clear();
                 m_focusController->setFocusedFrame(localFrame.get());
             }
             return { std::make_optional(localFrame->frameID()), foundRange };
@@ -1216,15 +1216,15 @@ Page::FindStringData Page::findString(const String& target, FindOptions options,
 
     // Search contents of startFrame, on the other side of the selection that we did earlier.
     // We cheat a bit and just research with wrap on
-    if (canWrap == CanWrap::Yes && focusedLocalFrame && !focusedLocalFrame->selection().isNone()) {
+    if (canWrap == CanWrap::Yes && localFocusedFrame && !localFocusedFrame->selection().isNone()) {
         if (didWrap)
             *didWrap = DidWrap::Yes;
-        auto foundRange = protect(focusedLocalFrame->editor())->findString(target, options | FindOption::WrapAround | FindOption::StartInSelection);
+        auto foundRange = protect(localFocusedFrame->editor())->findString(target, options | FindOption::WrapAround | FindOption::StartInSelection);
         if (!options.contains(FindOption::DoNotSetSelection))
             m_focusController->setFocusedFrame(frame.get());
         if (!foundRange)
             return { std::nullopt, std::nullopt };
-        return { std::make_optional(focusedLocalFrame->frameID()), foundRange };
+        return { std::make_optional(localFocusedFrame->frameID()), foundRange };
     }
 
     return { std::nullopt, std::nullopt };
@@ -1752,12 +1752,6 @@ void Page::setDeviceScaleFactor(float scaleFactor)
 
 void Page::screenPropertiesDidChange(bool affectsStyle)
 {
-#if ENABLE(VIDEO)
-    auto mode = preferredDynamicRangeMode(protect(protect(mainFrame())->virtualView()).get());
-    forEachMediaElement([mode] (auto& element) {
-        element.setPreferredDynamicRangeMode(mode);
-    });
-#endif
 #if HAVE(SUPPORT_HDR_DISPLAY)
     updateDisplayEDRHeadroom();
 #endif
@@ -2201,9 +2195,13 @@ void Page::syncLocalFrameInfoToRemote()
             for (RefPtr child = frame.tree().firstChild(); child; child = child->tree().nextSibling()) {
                 auto visibleRect = frameView->visibleRectOfChild(*child.get());
                 float usedZoom = frame.usedZoomForChild(*child);
-                bool useDarkAppearance = frameView->ownerElementOfChildFrameUsesDarkAppearance(*child);
+                auto frameOwnerElementAppearance = frameView->appearanceOfOwnerElementOfChildFrame(*child);
 
-                childrenFrameLayoutInfo.add(child->frameID(), RemoteFrameLayoutInfo { .visibleRectInParent = visibleRect, .usedZoom = usedZoom, .useDarkAppearance = useDarkAppearance });
+                childrenFrameLayoutInfo.add(child->frameID(), RemoteFrameLayoutInfo {
+                    .visibleRectInParent = visibleRect,
+                    .usedZoom = usedZoom,
+                    .ownerElementAppearance = frameOwnerElementAppearance
+                });
             }
 
             frame.loader().client().broadcastChildrenFrameLayoutInfoToOtherProcesses(childrenFrameLayoutInfo);
@@ -2479,6 +2477,12 @@ void Page::doAfterUpdateRendering()
             axObjectCache->onAccessibilityPaintFinished();
     }
 #endif
+
+    // Check if focus is still inside an aria-hidden region after rAF callbacks
+    // have had a chance to run. This must happen after AnimationFrameCallbacks
+    // to give web developers a chance to move focus in a focus event handler.
+    if (CheckedPtr axObjectCache = existingAXObjectCache())
+        axObjectCache->onPostRenderingUpdate();
 
     DebugPageOverlays::doAfterUpdateRendering(*this);
 
@@ -3123,18 +3127,12 @@ void Page::incrementModelElementCount()
         chrome().client().setHasModelElement(true);
 }
 
-void Page::decrementModelElementCount(unsigned count)
+void Page::decrementModelElementCount()
 {
-    m_modelElementCount -= count;
-    if (!m_modelElementCount) {
+    ASSERT(m_modelElementCount > 0);
+    m_modelElementCount--;
+    if (!m_modelElementCount)
         chrome().client().setHasModelElement(false);
-        return;
-    }
-
-    if (m_modelElementCount < 0) [[unlikely]] {
-        m_modelElementCount = 0;
-        ASSERT_NOT_REACHED();
-    }
 }
 
 #endif
@@ -3906,6 +3904,15 @@ void Page::captionPreferencesChanged()
     forEachDocument([] (Document& document) {
         document.captionPreferencesChanged();
     });
+
+#if ENABLE(MEDIA_SESSION)
+    if (RefPtr localMainFrame = this->localMainFrame()) {
+        if (RefPtr window = localMainFrame->window()) {
+            if (RefPtr navigator = window->optionalNavigator())
+                protect(NavigatorMediaSession::mediaSession(*navigator))->captionPreferencesChanged();
+        }
+    }
+#endif
 }
 
 #endif
@@ -4206,33 +4213,18 @@ void Page::setAllowsMediaDocumentInlinePlayback(bool flag)
 
 IDBClient::IDBConnectionToServer& Page::idbConnection()
 {
+    if (RefPtr cached = m_idbConnectionToServer; cached && !cached->isValid())
+        m_idbConnectionToServer = nullptr;
+
     if (!m_idbConnectionToServer)
         m_idbConnectionToServer = m_databaseProvider->idbConnectionToServerForSession(m_sessionID);
-    
+
     return *m_idbConnectionToServer;
 }
 
 IDBClient::IDBConnectionToServer* Page::optionalIDBConnection()
 {
     return m_idbConnectionToServer.get();
-}
-
-void Page::clearIDBConnection()
-{
-    m_idbConnectionToServer = nullptr;
-}
-
-void Page::clearIDBConnectionOnAllDocuments()
-{
-    clearIDBConnection();
-    forEachDocument([](Document& document) {
-        document.clearIDBConnectionProxy();
-    });
-}
-
-void Page::refreshIDBConnectionForWorkers()
-{
-    WorkerGlobalScope::replaceIDBConnectionProxyOnAllWorkers(idbConnection().proxy());
 }
 
 #if ENABLE(RESOURCE_USAGE)
@@ -4368,24 +4360,22 @@ void Page::setUseColorAppearance(bool useDarkAppearance, bool useElevatedUserInt
 bool Page::useDarkAppearance() const
 {
 #if ENABLE(DARK_MODE_CSS)
-    RefPtr localMainFrame = this->localMainFrame();
-
-    // FIXME: If this page is being printed, this function should return false.
-    // Currently remote mainFrame() does not have this information.
-    if (!localMainFrame)
-        return m_useDarkAppearance;
-
-    RefPtr view = localMainFrame->view();
-    if (!view || view->mediaType() != screenAtom())
-        return false;
-
+    // This overrides everything else.
     if (m_useDarkAppearanceOverride)
         return m_useDarkAppearanceOverride.value();
 
-    if (auto* documentLoader = localMainFrame->loader().documentLoader()) {
-        auto colorSchemePreference = documentLoader->colorSchemePreference();
-        if (colorSchemePreference != ColorSchemePreference::NoPreference)
-            return colorSchemePreference == ColorSchemePreference::Dark;
+    if (RefPtr localMainFrame = this->localMainFrame()) {
+        // Printed page should always use light appearance (i.e return false)
+        // FIXME: implement this logic for remote main frames.
+        RefPtr view = localMainFrame->view();
+        if (!view || view->mediaType() != screenAtom())
+            return false;
+
+        if (auto* documentLoader = localMainFrame->loader().documentLoader()) {
+            auto colorSchemePreference = documentLoader->colorSchemePreference();
+            if (colorSchemePreference != ColorSchemePreference::NoPreference)
+                return colorSchemePreference == ColorSchemePreference::Dark;
+        }
     }
 
     return m_useDarkAppearance;
@@ -4502,6 +4492,10 @@ void Page::didChangeMainDocument(Document* newDocument)
 
     clearSampledPageTopColor();
 
+#if ENABLE(DEVICE_ORIENTATION)
+    clearDeviceOrientationAndMotionPermissions();
+#endif
+
     m_elementTargetingController->didChangeMainDocument(newDocument);
 
     updateActiveNowPlayingSessionNow();
@@ -4538,6 +4532,21 @@ void Page::forEachDocument(NOESCAPE const Function<void(Document&)>& functor) co
 {
     forEachDocumentFromMainFrame(protect(mainFrame()), functor);
 }
+
+#if ENABLE(DEVICE_ORIENTATION)
+DeviceOrientationAndMotionAccessController& Page::deviceOrientationAndMotionAccessController()
+{
+    if (!m_deviceOrientationAndMotionAccessController)
+        m_deviceOrientationAndMotionAccessController = makeUnique<DeviceOrientationAndMotionAccessController>(*this);
+    return *m_deviceOrientationAndMotionAccessController;
+}
+
+void Page::clearDeviceOrientationAndMotionPermissions()
+{
+    if (m_deviceOrientationAndMotionAccessController)
+        protect(m_deviceOrientationAndMotionAccessController)->clearPermissions();
+}
+#endif
 
 bool Page::findMatchingLocalDocument(NOESCAPE const Function<bool(Document&)>& functor) const
 {
@@ -4880,8 +4889,8 @@ OptionSet<FilterRenderingMode> Page::preferredFilterRenderingModes(const Graphic
         modes.add(FilterRenderingMode::Accelerated);
 #endif
 
-#if USE(SKIA)
-    if (settings().acceleratedCompositingEnabled())
+#if USE(SKIA) && !PLATFORM(WIN) && (!PLATFORM(WPE) || ENABLE(WPE_PLATFORM))
+    if (settings().hardwareAccelerationEnabled())
         modes.add(FilterRenderingMode::Accelerated);
 #endif
 
@@ -4891,7 +4900,8 @@ OptionSet<FilterRenderingMode> Page::preferredFilterRenderingModes(const Graphic
 #if !HAVE(FIX_FOR_RADAR_104392017)
     if (context.renderingMode() == RenderingMode::Accelerated || !context.knownToHaveFloatBasedBacking()) {
 #endif
-        if (!context.hasDropShadow() && settings().graphicsContextFiltersEnabled())
+        // FIXME: Remove the RenderingMode::PDFDocument check once CG applies filters correctly on PDF contexts (rdar://176473171).
+        if (!context.hasDropShadow() && context.renderingMode() != RenderingMode::PDFDocument && settings().graphicsContextFiltersEnabled())
             modes.add(FilterRenderingMode::GraphicsContext);
 #if !HAVE(FIX_FOR_RADAR_104392017)
     }
@@ -4982,7 +4992,7 @@ void Page::mainFrameDidChangeToNonInitialEmptyDocument()
 {
     RefPtr localMainFrame = dynamicDowncast<LocalFrame>(m_mainFrame.get());
     ASSERT_UNUSED(localMainFrame, !localMainFrame || !localMainFrame->loader().stateMachine().isDisplayingInitialEmptyDocument());
-    for (auto& userStyleSheet : m_userStyleSheetsPendingInjection)
+    for (auto& userStyleSheet : borrow(m_userStyleSheetsPendingInjection).get())
         injectUserStyleSheet(userStyleSheet);
     m_userStyleSheetsPendingInjection.clear();
 }
@@ -5044,7 +5054,7 @@ ImageOverlayController& Page::imageOverlayController()
 
 Page* Page::serviceWorkerPage(ScriptExecutionContextIdentifier serviceWorkerPageIdentifier)
 {
-    RefPtr serviceWorkerPageDocument = Document::allDocumentsMap().get(serviceWorkerPageIdentifier);
+    auto* serviceWorkerPageDocument = Document::allDocumentsMap().get(serviceWorkerPageIdentifier);
     return serviceWorkerPageDocument ? serviceWorkerPageDocument->page() : nullptr;
 }
 
@@ -5306,8 +5316,7 @@ void Page::setMediaKeysStorageDirectory(const String& directory)
 
 void Page::reloadExecutionContextsForOrigin(const ClientOrigin& origin, std::optional<FrameIdentifier> triggeringFrame) const
 {
-    RefPtr localMainFrame = dynamicDowncast<LocalFrame>(m_mainFrame.get());
-    if (!localMainFrame || protect(localMainFrame->document())->topOrigin().data() != origin.topOrigin)
+    if (mainFrameOrigin().data() != origin.topOrigin)
         return;
 
     for (RefPtr frame = m_mainFrame.get(); frame;) {
@@ -5365,6 +5374,7 @@ void Page::deleteRemovedNodesAndDetachedRenderers()
         if (!frameView)
             return;
         protect(frameView->layoutContext())->deleteDetachedRenderersNow();
+        protect(frameView->layoutContext())->deleteDetachedInlineContentNow();
     });
 }
 
@@ -6050,7 +6060,7 @@ void Page::addHardwareKeyboardAttachmentObserver(HardwareKeyboardAttachmentObser
 void Page::flushHardwareKeyboardAttachmentObservers()
 {
     bool attached = m_hardwareKeyboardAttached;
-    std::ranges::for_each(m_hardwareKeyboardAttachmentObservers, [attached](auto& observer) {
+    std::ranges::for_each(borrow(m_hardwareKeyboardAttachmentObservers).get(), [attached](auto& observer) {
         observer(attached);
     });
     m_hardwareKeyboardAttachmentObservers.clear();

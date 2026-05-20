@@ -305,12 +305,12 @@ NSArray *renderWidgetChildren(const AXCoreObject& object)
     if (!object.isWidget()) [[likely]]
         return nil;
 
-    id child = Accessibility::retrieveAutoreleasedValueFromMainThread<id>([object = Ref { object }] () -> RetainPtr<id> {
+    auto result = Accessibility::retrieveValueFromMainThreadWithTimeout([object = Ref { object }] () -> RetainPtr<id> {
         RefPtr widget = object->widget();
         return widget ? widget->accessibilityObject() : nil;
-    });
+    }, Accessibility::PluginTimeout);
 
-    if (child)
+    if (id child = result.value ? (*result.value).autorelease() : nil)
         return @[child];
 ALLOW_DEPRECATED_DECLARATIONS_BEGIN
     return [object.platformWidget() accessibilityAttributeValue:NSAccessibilityChildrenAttribute];
@@ -441,10 +441,9 @@ ALLOW_DEPRECATED_DECLARATIONS_BEGIN
 ALLOW_DEPRECATED_DECLARATIONS_END
 
     auto role = this->role();
-    if (role == AccessibilityRole::Label) {
+    if (isStaticTextLabel()) {
         // Labels that only contain static text should just be mapped to static text.
-        if (containsOnlyStaticText())
-            role = AccessibilityRole::StaticText;
+        role = AccessibilityRole::StaticText;
     } else if (isAnonymousMathOperator()) {
         // The mfenced element creates anonymous RenderMathMLOperators with no RenderText
         // descendants. These anonymous renderers are the only accessible objects
@@ -510,7 +509,7 @@ PlatformRoleMap createPlatformRoleMap()
         AccessibilityRole value;
         RetainPtr<NSString> string;
     };
-    static const NeverDestroyed roles = std::to_array<RoleEntry>({
+    static const NeverDestroyed roles = WTF::toArray<RoleEntry>({
         { AccessibilityRole::Unknown, NSAccessibilityUnknownRole },
         { AccessibilityRole::Button, NSAccessibilityButtonRole },
         { AccessibilityRole::RadioButton, NSAccessibilityRadioButtonRole },

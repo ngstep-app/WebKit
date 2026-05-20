@@ -25,13 +25,14 @@
 
 #pragma once
 
-#include <JavaScriptCore/Options.h>
-#include <JavaScriptCore/SpeculatedType.h>
 #include <cstdint>
+#include <wtf/Forward.h>
 #include <wtf/LockAlgorithm.h>
-#include <wtf/StdLibExtras.h>
+#include <wtf/PrintStream.h>
 
 namespace JSC {
+
+class JSValue;
 
 /*
     Structure of the IndexingType
@@ -211,22 +212,11 @@ inline unsigned arrayIndexFromIndexingType(IndexingType indexingType)
     return (indexingType & IndexingShapeMask) >> IndexingShapeShift;
 }
 
-inline IndexingType indexingTypeForValue(JSValue value)
-{
-    if (value.isInt32())
-        return Int32Shape;
-
-    if (value.isNumber() && value.asNumber() == value.asNumber() && Options::allowDoubleShape())
-        return DoubleShape;
-
-    return ContiguousShape;
-}
+inline IndexingType indexingTypeForValue(JSValue); // Defined in IndexingTypeInlines.h
 
 // Return an indexing type that can handle all of the elements of both indexing types.
 IndexingType leastUpperBoundOfIndexingTypes(IndexingType, IndexingType);
 
-bool NODELETE isProvenValidTypeForIndexingShapeStorage(IndexingType, SpeculatedType);
-IndexingType NODELETE leastUpperBoundOfIndexingTypeAndTypeForSpeculation(IndexingType, SpeculatedType);
 IndexingType leastUpperBoundOfIndexingTypeAndValue(IndexingType, JSValue);
 
 void dumpIndexingType(PrintStream&, IndexingType);

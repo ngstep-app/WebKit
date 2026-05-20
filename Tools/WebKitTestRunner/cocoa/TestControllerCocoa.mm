@@ -65,6 +65,7 @@
 #import <wtf/MainThread.h>
 #import <wtf/RunLoop.h>
 #import <wtf/UniqueRef.h>
+#import <wtf/cocoa/TypeCastsCocoa.h>
 #import <wtf/cocoa/VectorCocoa.h>
 #import <wtf/spi/cocoa/SecuritySPI.h>
 #import <wtf/text/MakeString.h>
@@ -318,7 +319,7 @@ void TestController::platformCreateWebView(WKPageConfigurationRef configuration,
 #endif
 
 #if ENABLE(MODEL_ELEMENT_IMMERSIVE)
-    [cocoaConfiguration _setAllowsImmersiveEnvironments:YES];
+    [cocoaConfiguration setAllowsImmersiveEnvironments:YES];
 #endif
 
     if (options.enableAttachmentElement())
@@ -521,8 +522,6 @@ void TestController::cocoaResetStateToConsistentValues(const TestOptions& option
     [LayoutTestSpellChecker uninstallAndReset];
 
     WebCoreTestSupport::setAdditionalSupportedImageTypesForTesting(String::fromLatin1(options.additionalSupportedImageTypes().c_str()));
-
-    [globalWebsiteDataStoreDelegateClient() clearReportedWindowProxyAccessDomains];
 }
 
 void TestController::platformSetStatisticsCrossSiteLoadWithLinkDecoration(WKStringRef fromHost, WKStringRef toHost, bool wasFiltered, void* context, SetStatisticsCrossSiteLoadWithLinkDecorationCallBack callback)
@@ -636,13 +635,19 @@ void TestController::addTestKeyToKeychain(const String& privateKeyBase64, const 
         (id)kSecAttrKeyClass: (id)kSecAttrKeyClassPrivate,
         (id)kSecAttrKeySizeInBits: @256
     };
-    CFErrorRef errorRef = nullptr;
-    auto key = adoptCF(SecKeyCreateWithData(
-        (__bridge CFDataRef)adoptNS([[NSData alloc] initWithBase64EncodedString:privateKeyBase64.createNSString().get() options:NSDataBase64DecodingIgnoreUnknownCharacters]).get(),
-        (__bridge CFDictionaryRef)options,
-        &errorRef
-    ));
-    ASSERT(!errorRef);
+    RetainPtr<SecKeyRef> key;
+    RetainPtr<CFErrorRef> keyError;
+    {
+        // FIXME: The Security framework API is missing the `CF_RETURNS_RETAINED` annotation (rdar://161546781).
+        CFErrorRef rawError = NULL;
+        key = adoptCF(SecKeyCreateWithData(
+            bridge_cast(adoptNS([[NSData alloc] initWithBase64EncodedString:privateKeyBase64.createNSString().get() options:NSDataBase64DecodingIgnoreUnknownCharacters]).get()),
+            bridge_cast(options),
+            &rawError
+        ));
+        SUPPRESS_RETAINPTR_CTOR_ADOPT keyError = adoptCF(rawError);
+    }
+    ASSERT(!keyError);
 
     NSDictionary* addQuery = @{
         (id)kSecValueRef: (id)key.get(),
@@ -767,25 +772,6 @@ void TestController::configureWebpagePreferences(WKWebViewConfiguration *configu
 WKRetainPtr<WKStringRef> TestController::takeViewPortSnapshot()
 {
     return adoptWK(WKImageCreateDataURLFromImage(mainWebView()->windowSnapshotImage().get()));
-}
-
-static WKRetainPtr<WKArrayRef> createWKArray(NSArray *nsArray)
-{
-    auto array = adoptWK(WKMutableArrayCreate());
-
-    for (NSString *nsString in nsArray) {
-        auto string = adoptWK(WKStringCreateWithCFString((CFStringRef)nsString));
-        WKArrayAppendItem(array.get(), string.get());
-    }
-
-    return array;
-}
-
-WKRetainPtr<WKArrayRef> TestController::getAndClearReportedWindowProxyAccessDomains()
-{
-    auto domains = createWKArray([globalWebsiteDataStoreDelegateClient() reportedWindowProxyAccessDomains]);
-    [globalWebsiteDataStoreDelegateClient() clearReportedWindowProxyAccessDomains];
-    return domains;
 }
 
 WKRetainPtr<WKStringRef> TestController::getBackgroundFetchIdentifier()

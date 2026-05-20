@@ -29,7 +29,6 @@
 #include <WebCore/CSSPropertyNames.h>
 #include <WebCore/LoadedFromOpaqueSource.h>
 #include <WebCore/StyleRuleType.h>
-#include <pal/text/TextEncoding.h>
 #include <wtf/HashFunctions.h>
 #include <wtf/Hasher.h>
 #include <wtf/URL.h>
@@ -84,6 +83,7 @@ struct CSSParserContext {
     bool cssDynamicRangeLimitMixEnabled : 1 { false };
     bool cssConstrainedDynamicRangeLimitEnabled : 1 { false };
     bool cssTextTransformMathAutoEnabled : 1 { false };
+    bool cssFontSynthesisStyleObliqueOnlyEnabled : 1 { false };
     bool cssInternalAutoBaseParsingEnabled : 1 { false };
     bool webkitMediaTextTrackDisplayQuirkEnabled : 1 { false };
     bool cssMathDepthEnabled : 1 { false };

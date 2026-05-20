@@ -38,12 +38,13 @@
 #include "HTMLEmbedElement.h"
 #include "HTMLImageElement.h"
 #include "HTMLInputElement.h"
+#include "HTMLModelElement.h"
 #include "HTMLObjectElement.h"
 #include "HTMLTextAreaElement.h"
 #include "HTMLVideoElement.h"
 #include "ImageOverlay.h"
 #include "LocalFrame.h"
-#include "NodeInlines.h"
+#include "LocalFrameInlines.h"
 #include "OriginAccessPatterns.h"
 #include "PseudoElement.h"
 #include "Range.h"
@@ -62,6 +63,7 @@
 #include "VisibleUnits.h"
 #include "XLinkNames.h"
 #include <wtf/TZoneMallocInlines.h>
+#include "FrameDestructionObserverInlines.h"
 
 #if ENABLE(SERVICE_CONTROLS)
 #include "ImageControlsMac.h"
@@ -482,7 +484,7 @@ URL HitTestResult::absoluteImageURL() const
 
     if (RefPtr element = dynamicDowncast<Element>(*imageNode); element
         && isAnyOf<HTMLEmbedElement, HTMLImageElement, HTMLInputElement, HTMLObjectElement, SVGImageElement>(*element)) {
-        auto imageURL = imageNode->document().completeURL(element->imageSourceURL());
+        auto imageURL = imageNode->document().encodingParseURL(element->imageSourceURL());
         if (RefPtr page = imageNode->document().page())
             return page->applyLinkDecorationFiltering(imageURL, LinkDecorationFilteringTrigger::Unspecified);
         return imageURL;
@@ -500,7 +502,7 @@ URL HitTestResult::absolutePDFURL() const
     if (!element)
         return URL();
 
-    auto url = m_innerNonSharedNode->document().completeURL(element->url());
+    auto url = m_innerNonSharedNode->document().encodingParseURL(element->url());
     if (!url.isValid())
         return URL();
 
@@ -513,6 +515,19 @@ URL HitTestResult::absoluteMediaURL() const
 {
 #if ENABLE(VIDEO)
     if (RefPtr element = mediaElement()) {
+        auto sourceURL = element->currentSrc();
+        if (RefPtr page = element->document().page())
+            return page->applyLinkDecorationFiltering(sourceURL, LinkDecorationFilteringTrigger::Unspecified);
+        return sourceURL;
+    }
+#endif
+    return { };
+}
+
+URL HitTestResult::absoluteModelURL() const
+{
+#if ENABLE(MODEL_ELEMENT)
+    if (RefPtr element = dynamicDowncast<HTMLModelElement>(m_innerNonSharedNode.get())) {
         auto sourceURL = element->currentSrc();
         if (RefPtr page = element->document().page())
             return page->applyLinkDecorationFiltering(sourceURL, LinkDecorationFilteringTrigger::Unspecified);
@@ -802,7 +817,7 @@ bool HitTestResult::isContentEditable() const
     if (is<HTMLTextAreaElement>(*m_innerNonSharedNode))
         return true;
 
-    if (RefPtr input = dynamicDowncast<HTMLInputElement>(*m_innerNonSharedNode))
+    if (auto* input = dynamicDowncast<HTMLInputElement>(*m_innerNonSharedNode))
         return input->isTextField();
 
     return m_innerNonSharedNode->hasEditableStyle();

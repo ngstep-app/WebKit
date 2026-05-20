@@ -334,7 +334,7 @@ ExceptionOr<void> XMLHttpRequest::setWithCredentials(bool value)
 ExceptionOr<void> XMLHttpRequest::open(const String& method, const String& url)
 {
     // If the async argument is omitted, set async to true.
-    return open(method, protect(scriptExecutionContext())->completeURL(url), true);
+    return open(method, protect(scriptExecutionContext())->encodingParseURL(url), true);
 }
 
 ExceptionOr<void> XMLHttpRequest::open(const String& method, const URL& url, bool async)
@@ -398,7 +398,7 @@ ExceptionOr<void> XMLHttpRequest::open(const String& method, const URL& url, boo
 
 ExceptionOr<void> XMLHttpRequest::open(const String& method, const String& url, bool async, const String& user, const String& password)
 {
-    auto urlWithCredentials = protect(scriptExecutionContext())->completeURL(url);
+    auto urlWithCredentials = protect(scriptExecutionContext())->encodingParseURL(url);
     if (!user.isNull())
         urlWithCredentials.setUser(user);
     if (!password.isNull())
@@ -416,7 +416,8 @@ std::optional<ExceptionOr<void>> XMLHttpRequest::prepareToSend()
         return ExceptionOr<void> { };
 
     Ref context = *scriptExecutionContext();
-    if (RefPtr contextDocument = dynamicDowncast<Document>(context); contextDocument && contextDocument->shouldIgnoreSyncXHRs()) {
+    RefPtr contextDocument = dynamicDowncast<Document>(context);
+    if (contextDocument && contextDocument->shouldIgnoreSyncXHRs()) {
         logConsoleError(contextDocument.get(), makeString("Ignoring XMLHttpRequest.send() call for '"_s, m_url.url().string(), "' because the maximum number of synchronous failures was reached."_s));
         return ExceptionOr<void> { };
     }
@@ -426,8 +427,11 @@ std::optional<ExceptionOr<void>> XMLHttpRequest::prepareToSend()
     ASSERT(!m_loadingActivity);
 
     // FIXME: Convert this to check the isolated world's Content Security Policy once webkit.org/b/104520 is solved.
-    if (context->requiresScriptTrackingPrivacyProtection(ScriptTrackingPrivacyCategory::NetworkRequests)
-        || (!context->shouldBypassMainWorldContentSecurityPolicy() && !protect(context->contentSecurityPolicy())->allowConnectToSource(m_url))) {
+    std::optional<TextPosition> sourcePosition;
+    if (contextDocument)
+        sourcePosition = contextDocument->currentParserSourcePosition();
+
+    if (!context->shouldBypassMainWorldContentSecurityPolicy() && !protect(context->contentSecurityPolicy())->allowConnectToSource(m_url, WTF::move(sourcePosition))) {
         if (!m_async)
             return ExceptionOr<void> { Exception { ExceptionCode::NetworkError } };
         m_timeoutTimer.stop();
@@ -1093,7 +1097,7 @@ void XMLHttpRequest::dispatchEvent(Event& event)
 {
     RELEASE_ASSERT(!scriptExecutionContext()->activeDOMObjectsAreSuspended());
 
-    if (m_userGestureToken && RefPtr { m_userGestureToken }->hasExpired(UserGestureToken::maximumIntervalForUserGestureForwardingForFetch()))
+    if (m_userGestureToken && protect(m_userGestureToken)->hasExpired(UserGestureToken::maximumIntervalForUserGestureForwardingForFetch()))
         m_userGestureToken = nullptr;
 
     if (readyState() != DONE || !m_userGestureToken || !m_userGestureToken->processingUserGesture()) {

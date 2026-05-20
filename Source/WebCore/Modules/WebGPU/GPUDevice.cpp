@@ -86,7 +86,7 @@ GPUDevice::GPUDevice(ScriptExecutionContext* scriptExecutionContext, Ref<WebGPU:
     : ActiveDOMObject { scriptExecutionContext }
     , m_lostPromise(makeUniqueRef<LostPromise>())
     , m_backing(WTF::move(backing))
-    , m_queue(GPUQueue::create(Ref { m_backing->queue() }, this->backing()))
+    , m_queue(GPUQueue::create(m_backing->queue(), this->backing()))
     , m_autoPipelineLayout(createAutoPipelineLayout())
     , m_features(GPUSupportedFeatures::create(m_backing->features()))
     , m_limits(GPUSupportedLimits::create(m_backing->limits()))
@@ -430,7 +430,7 @@ ExceptionOr<Ref<GPUExternalTexture>> GPUDevice::importExternalTexture(GPUExterna
     m_previouslyImportedExternalTexture.first = videoElementRef.ptr();
     m_previouslyImportedExternalTexture.second = externalTexture.ptr();
 
-    videoElementPtr->requestVideoFrameCallback(GPUDeviceVideoFrameRequestCallback::create(externalTexture.get(), *videoElementPtr, *this, RefPtr { scriptExecutionContext() }.get()));
+    videoElementPtr->requestVideoFrameCallback(GPUDeviceVideoFrameRequestCallback::create(externalTexture.get(), *videoElementPtr, *this, protect(scriptExecutionContext()).get()));
     queueTaskKeepingObjectAlive(*this, TaskSource::WebGPU, [videoElementPtr, externalTextureRef = externalTexture](auto& gpuDevice) {
         if (!videoElementPtr)
             return;
@@ -687,21 +687,33 @@ bool GPUDevice::addEventListener(const AtomString& eventType, Ref<EventListener>
 {
     auto result = EventTarget::addEventListener(eventType, WTF::move(eventListener), options);
 #if PLATFORM(COCOA)
-    if (eventType == WebCore::eventNames().uncapturederrorEvent) {
-        m_backing->resolveUncapturedErrorEvent([eventType, pendingActivity = makePendingActivity(*this), weakThis = WeakPtr { *this }](bool hasUncapturedError, std::optional<WebGPU::Error>&& error) {
-            RefPtr protectedThis = weakThis.get();
-            if (!protectedThis || !hasUncapturedError)
-                return;
-
-            RefPtr context = protectedThis->scriptExecutionContext();
-            if (!context)
-                return;
-
-            queueTaskToDispatchEvent(*protectedThis, TaskSource::WebGPU, GPUUncapturedErrorEvent::create(WebCore::eventNames().uncapturederrorEvent, GPUUncapturedErrorEventInit { .error = createGPUErrorFromWebGPUError(error) }));
-        });
-    }
+    if (eventType == WebCore::eventNames().uncapturederrorEvent)
+        listenForUncapturedErrors();
 #endif
     return result;
+}
+
+void GPUDevice::listenForUncapturedErrors()
+{
+    if (m_listeningForUncapturedErrors)
+        return;
+#if PLATFORM(COCOA)
+    m_listeningForUncapturedErrors = true;
+    m_backing->resolveUncapturedErrorEvent([pendingActivity = makePendingActivity(*this), weakThis = WeakPtr { *this }](bool hasUncapturedError, std::optional<WebGPU::Error>&& error) {
+        RefPtr protectedThis = weakThis.get();
+        if (!protectedThis || !hasUncapturedError)
+            return;
+
+        protectedThis->m_listeningForUncapturedErrors = false;
+
+        RefPtr context = protectedThis->scriptExecutionContext();
+        if (!context)
+            return;
+
+        queueTaskToDispatchEvent(*protectedThis, TaskSource::WebGPU, GPUUncapturedErrorEvent::create(WebCore::eventNames().uncapturederrorEvent, GPUUncapturedErrorEventInit { .error = createGPUErrorFromWebGPUError(error) }));
+        protectedThis->listenForUncapturedErrors();
+    });
+#endif
 }
 
 #if ENABLE(VIDEO)

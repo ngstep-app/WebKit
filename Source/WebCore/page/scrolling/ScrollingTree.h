@@ -47,6 +47,7 @@
 #include <wtf/MonotonicTime.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/ThreadSafeRefCounted.h>
+#include <wtf/ThreadSafeWeakHashSet.h>
 #include <wtf/TypeCasts.h>
 
 namespace WebCore {
@@ -125,6 +126,7 @@ public:
     bool commitTreeStateInternal(std::unique_ptr<ScrollingStateTree>&&, std::optional<LayerHostingContextIdentifier>) WTF_REQUIRES_LOCK(m_treeLock);
 
     WEBCORE_EXPORT virtual void applyLayerPositions();
+    void setNeedsApplyLayerPositions() { m_needsApplyLayerPositions = true; }
 
     virtual Ref<ScrollingTreeNode> createScrollingTreeNode(ScrollingNodeType, ScrollingNodeID) = 0;
     
@@ -231,6 +233,21 @@ public:
 
     virtual void lockLayersForHitTesting() { }
     virtual void unlockLayersForHitTesting() { }
+
+    class HitTestLocker {
+    public:
+        HitTestLocker(ScrollingTree& tree)
+            : m_tree(tree)
+        {
+            m_tree->lockLayersForHitTesting();
+        }
+        ~HitTestLocker()
+        {
+            m_tree->unlockLayersForHitTesting();
+        }
+    private:
+        const Ref<ScrollingTree> m_tree;
+    };
 
     virtual bool isScrollingSynchronizedWithMainThread() WTF_REQUIRES_LOCK(m_treeLock) { return true; }
 
@@ -393,6 +410,7 @@ protected:
 private:
     ThreadSafeWeakHashSet<ScrollingTreeNode> m_fixedOrStickyNodes;
     std::atomic<bool> m_isHandlingProgrammaticScroll { false };
+    std::atomic<bool> m_needsApplyLayerPositions { false };
     bool m_isMonitoringWheelEvents { false };
     bool m_scrollingPerformanceTestingEnabled { false };
     bool m_overlayScrollbarsEnabled { false };

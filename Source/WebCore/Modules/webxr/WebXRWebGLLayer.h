@@ -80,7 +80,7 @@ public:
 
     static double getNativeFramebufferScaleFactor(const WebXRSession&);
 
-    const WebXRSession* session() { return m_session.get(); }
+    const WebXRSession* session();
 
     bool isCompositionEnabled() const { return m_isCompositionEnabled; }
 
@@ -91,6 +91,7 @@ public:
     // WebXRLayer
     void startFrame(PlatformXR::FrameData&) final;
     PlatformXR::DeviceLayer endFrame() final;
+    PlatformXR::LayerHandle layerHandle() const final;
 
 private:
     WebXRWebGLLayer(WebXRSession&, WebXRRenderingContext&&, std::unique_ptr<WebXROpaqueFramebuffer>&&, bool antialias, bool ignoreDepthValues, bool isCompositionEnabled);

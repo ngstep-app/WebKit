@@ -55,6 +55,7 @@
 #include "WebFrameProxyMessages.h"
 #include "WebHistoryItemClient.h"
 #include "WebImage.h"
+#include "WebInspectorBackend.h"
 #include "WebKeyboardEvent.h"
 #include "WebLocalFrameLoaderClient.h"
 #include "WebPage.h"
@@ -71,7 +72,9 @@
 #include <WebCore/ArchiveResource.h>
 #include <WebCore/CertificateInfo.h>
 #include <WebCore/Chrome.h>
+#include <WebCore/ContainerNodeInlines.h>
 #include <WebCore/ContextMenuController.h>
+#include <WebCore/DOMWrapperWorld.h>
 #include <WebCore/DocumentInlines.h>
 #include <WebCore/DocumentLoader.h>
 #include <WebCore/DocumentPage.h>
@@ -81,6 +84,7 @@
 #include <WebCore/DocumentWindow.h>
 #include <WebCore/Editor.h>
 #include <WebCore/ElementChildIteratorInlines.h>
+#include <WebCore/ElementInlines.h>
 #include <WebCore/ElementTargetingController.h>
 #include <WebCore/EventHandler.h>
 #include <WebCore/File.h>
@@ -177,6 +181,9 @@ Ref<WebFrame> WebFrame::createSubframe(WebPage& page, WebFrame& parent, const At
     coreFrame->tree().setSpecifiedName(frameName);
     ASSERT(ownerElement.document().frame());
     coreFrame->init();
+
+    if (RefPtr backend = Ref { page }->inspector(WebPage::LazyCreationPolicy::UseExistingOnly))
+        backend->ensureInstrumentationForFrame(coreFrame.get());
 
     return frame;
 }
@@ -474,6 +481,13 @@ void WebFrame::createProvisionalFrame(ProvisionalFrameCreationParameters&& param
     localFrame->init();
     if (!localFrame->isMainFrame())
         protect(localFrame->document())->setURL(URL { aboutBlankURL() });
+
+    // If network instrumentation was enabled via WebPageCreationParameters (before
+    // this frame existed), create the FrameNetworkAgentProxy for it now.
+    if (RefPtr page = m_page.get()) {
+        if (RefPtr backend = page->inspector(WebPage::LazyCreationPolicy::UseExistingOnly))
+            backend->ensureInstrumentationForFrame(localFrame.get());
+    }
 
     if (parameters.layerHostingContextIdentifier)
         setLayerHostingContextIdentifier(*parameters.layerHostingContextIdentifier);
@@ -1181,7 +1195,7 @@ String WebFrame::counterValue(JSObjectRef element)
     if (!toJS(element)->inherits<JSElement>())
         return String();
 
-    Ref coreElement = jsCast<JSElement*>(toJS(element))->wrapped();
+    Ref coreElement = downcast<JSElement>(toJS(element))->wrapped();
     return counterValueForElement(coreElement.ptr());
 }
 
@@ -1522,9 +1536,20 @@ String WebFrame::frameTextForTesting(bool includeSubframes)
     if (!m_coreFrame)
         return { };
 
+    RefPtr localFrame = dynamicDowncast<LocalFrame>(m_coreFrame.get());
+    if (!localFrame || !localFrame->document() || !localFrame->document()->documentElement())
+        return { };
+
     StringBuilder builder;
 
-    String text = innerText();
+    // Use plainText() directly instead of innerText() to avoid the WHATWG
+    // spec-compliant newline changes (e.g. blank lines around <p>) that
+    // would require rebaselining hundreds of layout tests.
+    Ref documentElement = *protect(protect(localFrame->document())->documentElement());
+    protect(localFrame->document())->updateLayoutIgnorePendingStylesheets();
+    String text = documentElement->renderer()
+        ? plainText(makeRangeSelectingNodeContents(documentElement))
+        : documentElement->textContent(true);
     if (text.isNull())
         return { };
 
@@ -1558,7 +1583,7 @@ static Ref<WebKitJSHandle> createJSHandle(Node& node)
     Ref document = node.document();
     auto* lexicalGlobalObject = document->globalObject();
     RELEASE_ASSERT(lexicalGlobalObject->template inherits<JSDOMGlobalObject>());
-    auto* domGlobalObject = jsCast<JSDOMGlobalObject*>(lexicalGlobalObject);
+    auto* domGlobalObject = downcast<JSDOMGlobalObject>(lexicalGlobalObject);
     JSLockHolder locker { lexicalGlobalObject };
     return WebKitJSHandle::create(toJS(lexicalGlobalObject, domGlobalObject, node).toObject(lexicalGlobalObject));
 }
@@ -1645,7 +1670,7 @@ static RefPtr<Node> NODELETE nodeFromJSHandleIdentifier(JSHandleIdentifier ident
     if (!object)
         return { };
 
-    auto* jsNode = jsDynamicCast<JSNode*>(object);
+    auto* jsNode = dynamicDowncast<JSNode>(object);
     if (!jsNode)
         return { };
 
@@ -1732,13 +1757,18 @@ void WebFrame::describeTextExtractionInteraction(TextExtraction::Interaction&& i
     completion(TextExtraction::interactionDescription(interaction, *frame));
 }
 
-void WebFrame::handleTextExtractionInteraction(TextExtraction::Interaction&& interaction, CompletionHandler<void(bool, String&&)>&& completion)
+void WebFrame::handleTextExtractionInteraction(TextExtraction::Interaction&& interaction, CompletionHandler<void(bool, String&&, FloatRect)>&& completion)
 {
     RefPtr frame = coreLocalFrame();
     if (!frame)
-        return completion(false, "Browsing context is unavailable"_s);
+        return completion(false, "Browsing context is unavailable"_s, { });
 
-    TextExtraction::handleInteraction(WTF::move(interaction), *frame, WTF::move(completion));
+    auto summary = TextExtraction::interactionDescription(interaction, *frame, TextExtraction::Tense::Past).description;
+    TextExtraction::handleInteraction(WTF::move(interaction), *frame, [completion = WTF::move(completion), summary = WTF::move(summary)](bool success, String&& message, FloatRect interactedElementBounds) mutable {
+        if (success && message.isEmpty())
+            message = WTF::move(summary);
+        completion(success, WTF::move(message), interactedElementBounds);
+    });
 }
 
 void WebFrame::requestJSHandleForExtractedText(TextExtraction::ExtractedText&& extractedText, CompletionHandler<void(std::optional<JSHandleInfo>&&)>&& completion)

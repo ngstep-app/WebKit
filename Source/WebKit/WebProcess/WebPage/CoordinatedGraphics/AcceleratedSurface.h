@@ -30,6 +30,7 @@
 #include "MessageReceiver.h"
 #include <WebCore/Color.h>
 #include <WebCore/CoordinatedCompositionReason.h>
+#include <WebCore/DMABufBuffer.h>
 #include <WebCore/Damage.h>
 #include <WebCore/IntSize.h>
 WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
@@ -97,10 +98,8 @@ public:
         NonComposited,
     };
 
-    static Ref<AcceleratedSurface> create(WebPage&, Function<void()>&& frameCompleteHandler, RenderingPurpose = RenderingPurpose::Composited);
+    static Ref<AcceleratedSurface> create(WebPage&, Function<void()>&& frameCompleteHandler, RenderingPurpose, bool useSkia);
     ~AcceleratedSurface();
-
-    using ColorComponents = WebCore::ColorComponents<float, 4>;
 
 #if PLATFORM(GTK) || ENABLE(WPE_PLATFORM)
     void ref() const final { ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr::ref(); }
@@ -120,6 +119,8 @@ public:
 
 #if PLATFORM(GTK) || ENABLE(WPE_PLATFORM)
     bool usesGL() const { return m_renderingPurpose == RenderingPurpose::Composited || m_hardwareAccelerationEnabled; }
+#elif PLATFORM(WPE)
+    constexpr bool usesGL() const { return true; }
 #endif
 
     SkCanvas* canvas();
@@ -147,10 +148,13 @@ public:
     void backgroundColorDidChange();
 
 private:
-    AcceleratedSurface(WebPage&, Function<void()>&& frameCompleteHandler, RenderingPurpose);
+    AcceleratedSurface(WebPage&, Function<void()>&& frameCompleteHandler, RenderingPurpose, bool useSkia);
 
     RenderingPurpose renderingPurpose() const { return m_renderingPurpose; }
+#if PLATFORM(GTK) || ENABLE(WPE_PLATFORM)
     bool hardwareAccelerationEnabled() const { return m_hardwareAccelerationEnabled; }
+#endif
+    bool useSkia() const { return m_useSkia; }
     bool isOpaque() const;
 
 #if PLATFORM(GTK) || ENABLE(WPE_PLATFORM)
@@ -267,7 +271,9 @@ private:
     class RenderTargetEGLImage final : public RenderTargetShareableBuffer {
     public:
         static std::unique_ptr<RenderTarget> create(AcceleratedSurface&, const WebCore::IntSize&, const BufferFormat&);
-        RenderTargetEGLImage(AcceleratedSurface&, const WebCore::IntSize&, EGLImage, uint32_t format, Vector<WTF::UnixFileDescriptor>&&, Vector<uint32_t>&& offsets, Vector<uint32_t>&& strides, uint64_t modifier, RendererBufferFormat::Usage);
+#if USE(GBM)
+        RenderTargetEGLImage(AcceleratedSurface&, const WebCore::IntSize&, EGLImage, WebCore::DMABufBufferAttributes&&, RendererBufferFormat::Usage);
+#endif
 #if OS(ANDROID)
         RenderTargetEGLImage(AcceleratedSurface&, const WebCore::IntSize&, EGLImage, RefPtr<AHardwareBuffer>&&);
 #endif
@@ -295,6 +301,7 @@ private:
 
         unsigned m_colorBuffer { 0 };
         const Ref<WebCore::ShareableBitmap> m_bitmap;
+        RefPtr<WebCore::BitmapTexture> m_texture;
     };
 
     class RenderTargetTexture final : public RenderTargetShareableBuffer {
@@ -325,6 +332,7 @@ private:
         void didRenderFrame() override;
 
         struct wpe_renderer_backend_egl_target* m_backend { nullptr };
+        WebCore::IntSize m_size;
     };
 #endif
 
@@ -394,9 +402,12 @@ private:
 
     const WeakRef<WebPage> m_webPage;
     Function<void()> m_frameCompleteHandler;
+    bool m_useSkia { false };
     uint64_t m_id { 0 };
     RenderingPurpose m_renderingPurpose { RenderingPurpose::Composited };
+#if PLATFORM(GTK) || ENABLE(WPE_PLATFORM)
     bool m_hardwareAccelerationEnabled { true };
+#endif
     Lock m_backgroundColorLock;
     std::optional<WebCore::Color> m_backgroundColor WTF_GUARDED_BY_LOCK(m_backgroundColorLock);
     SwapChain m_swapChain;

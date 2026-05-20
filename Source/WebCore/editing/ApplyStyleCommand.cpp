@@ -40,7 +40,6 @@
 #include "HTMLNames.h"
 #include "HTMLSpanElement.h"
 #include "LocalFrame.h"
-#include "NodeInlines.h"
 #include "NodeList.h"
 #include "NodeTraversal.h"
 #include "RenderLineBreak.h"
@@ -49,6 +48,7 @@
 #include "RenderText.h"
 #include "ScriptDisallowedScope.h"
 #include "StyleExtractor.h"
+#include "StylePrimitiveNumericTypes+DeprecatedCSSValueConversion.h"
 #include "StyleProperties.h"
 #include "StyleResolver.h"
 #include "Text.h"
@@ -475,7 +475,7 @@ RefPtr<HTMLElement> ApplyStyleCommand::splitAncestorsWithUnicodeBidi(Node* node,
     RefPtr<Node> highestAncestorWithUnicodeBidi;
     RefPtr<Node> nextHighestAncestorWithUnicodeBidi;
     int highestAncestorUnicodeBidi = 0;
-    for (auto ancestor = RefPtr { node->parentNode() }; ancestor != block; ancestor = ancestor->parentNode()) {
+    for (RefPtr ancestor { node->parentNode() }; ancestor != block; ancestor = ancestor->parentNode()) {
         int unicodeBidi = valueID(Style::Extractor(ancestor.get()).propertyValue(CSSPropertyUnicodeBidi).get());
         if (unicodeBidi && unicodeBidi != CSSValueNormal) {
             highestAncestorUnicodeBidi = unicodeBidi;
@@ -1454,7 +1454,7 @@ void ApplyStyleCommand::applyInlineStyleChange(Node& passedStart, Node& passedEn
         startNode = startNodeFirstChild;
     }
 
-    // Font tags need to go outside of CSS so that CSS font sizes override leagcy font sizes.
+    // Font tags need to go outside of CSS so that CSS font sizes override legacy font sizes.
     if (styleChange.applyFontColor() || styleChange.applyFontFace() || styleChange.applyFontSize()) {
         if (fontContainer) {
             if (styleChange.applyFontColor())
@@ -1516,10 +1516,11 @@ float ApplyStyleCommand::computedFontSize(Node* node)
     if (!node)
         return 0;
 
-    auto value = Style::Extractor(node).propertyValue(CSSPropertyFontSize);
+    // FIXME: This should not be using Style::Extractor to extract a CSSValue. Instead, we should make it possible to get at the computed style that exists on Style::ComputedStyle/RenderStyle directly, avoiding unnecessary and lossy conversion through CSSValue.
+    RefPtr value = dynamicDowncast<CSSPrimitiveValue>(Style::Extractor(node).propertyValue(CSSPropertyFontSize));
     if (!value)
         return 0;
-    return downcast<CSSPrimitiveValue>(*value).resolveAsLengthDeprecated();
+    return Style::deprecatedToStyleFromCSSValue<Style::Length<CSS::Nonnegative, float>>(*value)->resolveZoom(Style::ZoomNeeded { });
 }
 
 void ApplyStyleCommand::joinChildTextNodes(Node* node, const Position& start, const Position& end)

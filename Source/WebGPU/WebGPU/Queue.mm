@@ -286,14 +286,14 @@ void Queue::commitMTLCommandBuffer(id<MTLCommandBuffer> commandBuffer)
     }
 
     ASSERT(commandBuffer.commandQueue == m_commandQueue);
-    [commandBuffer addScheduledHandler:[protectedThis = Ref { *this }](id<MTLCommandBuffer>) {
+    [commandBuffer addScheduledHandler:[protectedThis = protect(*this)](id<MTLCommandBuffer>) {
         protectedThis->scheduleWork([protectedThis = protectedThis.copyRef()]() {
             ++(protectedThis->m_scheduledCommandBufferCount);
             for (auto& callback : protectedThis->m_onSubmittedWorkScheduledCallbacks.take(protectedThis->m_scheduledCommandBufferCount))
                 callback();
         });
     }];
-    [commandBuffer addCompletedHandler:[protectedThis = Ref { *this }](id<MTLCommandBuffer> mtlCommandBuffer) {
+    [commandBuffer addCompletedHandler:[protectedThis = protect(*this)](id<MTLCommandBuffer> mtlCommandBuffer) {
         MTLCommandBufferStatus status = mtlCommandBuffer.status;
         bool loseTheDevice = false;
         if (NSError *error = mtlCommandBuffer.error; status != MTLCommandBufferStatusCompleted) {
@@ -305,6 +305,7 @@ void Queue::commitMTLCommandBuffer(id<MTLCommandBuffer> commandBuffer)
                 else {
 #define makeCase(N) case N: crashGPUProcess<N>(error, underlyingError);
                     switch (underlyingError.code) {
+                        makeCase(8); // kIOGPUCommandBufferCallbackErrorOutOfMemory = 8,
                         makeCase(9); // kIOGPUCommandBufferCallbackErrorInvalidResource = 9,
                         makeCase(10); // kIOGPUCommandBufferCallbackErrorInvalidInput = 10,
                         makeCase(11); // kIOGPUCommandBufferCallbackErrorPageFault = 11,
@@ -413,7 +414,7 @@ uint64_t Queue::retainCounterSampleBuffer(CommandEncoder& encoder)
 
 void Queue::releaseCounterSampleBuffer(uint64_t encoderHandle)
 {
-    scheduleWork([protectedThis = Ref { *this }, encoderHandle]() {
+    scheduleWork([protectedThis = protect(*this), encoderHandle]() {
         [protectedThis->m_retainedCounterSampleBuffers removeObjectForKey:[NSNumber numberWithUnsignedLongLong:encoderHandle]];
     });
 }
@@ -424,7 +425,7 @@ void Queue::retainTimestampsForOneUpdate(NSMutableSet<id<MTLCounterSampleBuffer>
     if (!timestamps)
         return;
 
-    scheduleWork([protectedThis = Ref { *this }, timestamps]() {
+    scheduleWork([protectedThis = protect(*this), timestamps]() {
         UNUSED_PARAM(timestamps);
     });
 }
@@ -457,11 +458,13 @@ bool Queue::validateWriteBuffer(const Buffer& buffer, uint64_t bufferOffset, siz
 void Queue::synchronizeResourceAndWait(id<MTLBuffer> buffer)
 {
 #if PLATFORM(MAC) || PLATFORM(MACCATALYST)
+    ALLOW_DEPRECATED_DECLARATIONS_BEGIN
     if (buffer.storageMode != MTLStorageModeManaged)
         return;
 
     ensureBlitCommandEncoder();
     [m_blitCommandEncoder synchronizeResource:buffer];
+    ALLOW_DEPRECATED_DECLARATIONS_END
     id<MTLCommandBuffer> commandBuffer = m_commandBuffer;
     finalizeBlitCommandEncoder();
     [commandBuffer waitUntilCompleted];
@@ -566,10 +569,12 @@ void Queue::writeBuffer(Buffer& buffer, uint64_t bufferOffset, std::span<uint8_t
             SUPPRESS_UNCOUNTED_ARG memcpySpan(borrow(buffer)->getBufferContents().subspan(bufferOffset, data.size()), data);
             return;
 #if PLATFORM(MAC) || PLATFORM(MACCATALYST)
+        ALLOW_DEPRECATED_DECLARATIONS_BEGIN
         case MTLStorageModeManaged:
             SUPPRESS_UNCOUNTED_ARG memcpySpan(borrow(buffer)->getBufferContents().subspan(bufferOffset, data.size()), data);
             [buffer.buffer() didModifyRange:NSMakeRange(bufferOffset, data.size())];
             return;
+        ALLOW_DEPRECATED_DECLARATIONS_END
 #endif
         case MTLStorageModePrivate:
             // The only way to get data into a private resource is to tell the GPU to copy it in.
@@ -955,7 +960,7 @@ void Queue::writeTexture(const WGPUImageCopyTexture& destination, std::span<uint
         auto checkedNewBytesPerImageTimesMaxZ = checkedProduct<uint32_t>(newBytesPerImage, maxZ);
         if (checkedNewBytesPerImageTimesMaxZ.hasOverflowed())
             return;
-        newData = Vector<uint8_t>(checkedNewBytesPerImageTimesMaxZ.value(), 0);
+        newData = Vector<uint8_t>(FillWith { }, checkedNewBytesPerImageTimesMaxZ.value(), 0);
         dataLayoutOffset = 0;
 
         auto verticalOffset = checkedProduct<uint64_t>(maxY ? (maxY - 1) : 0, bytesPerRow);
@@ -1017,7 +1022,9 @@ void Queue::writeTexture(const WGPUImageCopyTexture& destination, std::span<uint
         switch (mtlTexture.storageMode) {
         case MTLStorageModeShared:
 #if PLATFORM(MAC) || PLATFORM(MACCATALYST)
+        ALLOW_DEPRECATED_DECLARATIONS_BEGIN
         case MTLStorageModeManaged:
+        ALLOW_DEPRECATED_DECLARATIONS_END
 #endif
             {
                 switch (textureDimension) {

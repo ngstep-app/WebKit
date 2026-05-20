@@ -101,7 +101,7 @@ private:
     std::unique_ptr<RenderStyle> resolveAgainInDifferentContext(const ResolvedStyle&, const Styleable&, const RenderStyle& parentStyle,  OptionSet<PropertyCascade::PropertyType>, std::optional<BuilderPositionTryFallback>&&, const ResolutionContext&);
     const RenderStyle& parentAfterChangeStyle(const Styleable&, const ResolutionContext&) const;
 
-    HashSet<AnimatableCSSProperty> applyCascadeAfterAnimation(RenderStyle&, const HashSet<AnimatableCSSProperty>&, bool isTransition, const MatchResult&, const Element&, const ResolutionContext&);
+    HashSet<AnimatableCSSProperty> applyCascadeAfterAnimation(RenderStyle&, const HashMap<AnimatableCSSProperty, EnumSet<PropertyCascade::AnimationSource>>&, const MatchResult&, const Element&, const ResolutionContext&);
 
     std::optional<ElementUpdate> resolvePseudoElement(Element&, const PseudoElementIdentifier&, const ElementUpdate&, IsInDisplayNoneTree, const RenderStyle*);
     std::optional<ElementUpdate> resolveAncestorPseudoElement(Element&, const PseudoElementIdentifier&, const ElementUpdate&);
@@ -162,7 +162,7 @@ private:
 
     DescendantsToResolve computeDescendantsToResolve(const ElementUpdate&, const RenderStyle* existingStyle, Validity) const;
     static std::optional<ResolutionType> determineResolutionType(const Element&, const RenderStyle*, DescendantsToResolve, OptionSet<Change> parentChange);
-    static void resetDescendantStyleRelations(Element&, DescendantsToResolve);
+    void resetDescendantStyleRelations(Element&, DescendantsToResolve);
 
     ResolutionContext makeResolutionContext();
     ResolutionContext makeResolutionContextForPseudoElement(const ElementUpdate&, const PseudoElementIdentifier&);
@@ -187,11 +187,11 @@ private:
     const RenderStyle* beforeResolutionStyle(const Element&, std::optional<PseudoElementIdentifier>);
     void saveBeforeResolutionStyleForInterleaving(const Element&, const RenderStyle*);
 
-    bool NODELETE hasUnresolvedAnchorPosition(const Styleable&) const;
-    bool NODELETE hasResolvedAnchorPosition(const Styleable&) const;
+    bool hasUnresolvedAnchorPosition(const Styleable&) const;
+    bool hasResolvedAnchorPosition(const Styleable&) const;
     // Returns true if (1) the styleable specifies position fallbacks and
     // (2) we're in the middle of trying position options.
-    bool NODELETE isTryingPositionOption(const Styleable&) const;
+    bool isTryingPositionOption(const Styleable&) const;
 
     void collectChangedAnchorNames(const RenderStyle&, const RenderStyle* currentStyle);
 
@@ -203,6 +203,7 @@ private:
     Vector<Ref<Scope>, 4> m_scopeStack;
     Vector<Parent, 32> m_parentStack;
     bool m_didSeePendingStylesheet { false };
+    bool m_isFullDocumentStyleRebuild { false };
 
     // States relevant to deferring and resuming descendant resolution.
     // Also see deferDescendantResolution and resumeDescendantResolutionIfNeeded.
@@ -247,7 +248,7 @@ private:
         const RenderStyle& NODELETE originalStyle() const;
         std::unique_ptr<RenderStyle> currentOption() const;
     };
-    HashMap<AnchorPositionedKey, PositionOptions> m_positionOptions;
+    HashMap<WeakStyleable, PositionOptions> m_positionOptions;
 
     HashSet<AtomString> m_changedAnchorNames;
     bool m_allAnchorNamesInvalid { false };

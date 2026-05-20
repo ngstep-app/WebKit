@@ -29,6 +29,7 @@
 #include "MessageSenderInlines.h"
 #include "RemoteDisplayListRecorderProxy.h"
 #include "WebFrameProxyMessages.h"
+#include "WebMessagePortChannelProvider.h"
 #include "WebPage.h"
 #include "WebPageProxyMessages.h"
 #include <WebCore/AXObjectCache.h>
@@ -88,6 +89,9 @@ void WebRemoteFrameClient::paintContents(GraphicsContext& context, const IntRect
 
 void WebRemoteFrameClient::postMessageToRemote(FrameIdentifier source, const SecurityOriginData& sourceOrigin, FrameIdentifier target, std::optional<SecurityOriginData> targetOrigin, const MessageWithMessagePorts& message)
 {
+    for (auto& port : message.transferredPorts)
+        WebMessagePortChannelProvider::singleton().messagePortSentToRemote(port.first);
+
     if (RefPtr page = m_frame->page())
         page->send(Messages::WebPageProxy::PostMessageToRemote(source, sourceOrigin, target, targetOrigin, message));
 }
@@ -225,6 +229,16 @@ void WebRemoteFrameClient::broadcastFrameTreeSyncDataToOtherProcesses(const Fram
     WebFrameLoaderClient::broadcastFrameTreeSyncDataToOtherProcesses(data);
 }
 
+void WebRemoteFrameClient::didNotifyUserActivation(MonotonicTime activationTime)
+{
+    WebFrameLoaderClient::didNotifyUserActivation(activationTime);
+}
+
+void WebRemoteFrameClient::didConsumeUserActivation()
+{
+    WebFrameLoaderClient::didConsumeUserActivation();
+}
+
 void WebRemoteFrameClient::applyWebsitePolicies(WebsitePoliciesData&& websitePolicies)
 {
     RefPtr coreFrame = m_frame->coreRemoteFrame();
@@ -236,6 +250,7 @@ void WebRemoteFrameClient::applyWebsitePolicies(WebsitePoliciesData&& websitePol
     coreFrame->setCustomUserAgent(WTF::move(websitePolicies.customUserAgent));
     coreFrame->setCustomUserAgentAsSiteSpecificQuirks(WTF::move(websitePolicies.customUserAgentAsSiteSpecificQuirks));
     coreFrame->setAdvancedPrivacyProtections(websitePolicies.advancedPrivacyProtections);
+    coreFrame->setAllowPrivacyProxy(websitePolicies.allowPrivacyProxy);
     coreFrame->setCustomNavigatorPlatform(WTF::move(websitePolicies.customNavigatorPlatform));
     coreFrame->setAutoplayPolicy(core(websitePolicies.autoplayPolicy));
 }
@@ -252,6 +267,12 @@ void WebRemoteFrameClient::reportMixedContentViolation(bool blocked, const URL& 
         page->send(Messages::WebPageProxy::ReportMixedContentViolation(m_frame->frameID(), blocked, target));
 }
 
+void WebRemoteFrameClient::addResourceTimingFromChild(WebCore::ResourceTiming&& resourceTiming)
+{
+    if (RefPtr page = m_frame->page())
+        page->send(Messages::WebPageProxy::AddResourceTimingFromSubframe(m_frame->frameID(), WTF::move(resourceTiming)));
+}
+
 void WebRemoteFrameClient::findFocusableElementDescendingIntoRemoteFrame(WebCore::FocusDirection direction, const WebCore::FocusEventData& focusEventData, WebCore::ShouldFocusElement shouldFocusElement, CompletionHandler<void(WebCore::FoundElementInRemoteFrame)>&& completionHandler)
 {
     m_frame->sendWithAsyncReply(Messages::WebFrameProxy::FindFocusableElementDescendingIntoRemoteFrame(direction, focusEventData, shouldFocusElement), WTF::move(completionHandler));
@@ -260,6 +281,12 @@ void WebRemoteFrameClient::findFocusableElementDescendingIntoRemoteFrame(WebCore
 void WebRemoteFrameClient::findFocusableElementContinuingFromFrame(WebCore::FocusDirection direction, WebCore::FrameIdentifier frameID, const WebCore::FocusEventData& focusEventData, WebCore::ShouldFocusElement shouldFocusElement)
 {
     m_frame->send(Messages::WebFrameProxy::FindFocusableElementContinuingFromFrame(direction, frameID, focusEventData, shouldFocusElement));
+}
+
+void WebRemoteFrameClient::dispatchCrossOriginBeforeUnloadCheck(const WebCore::SecurityOriginData& navigatingFrameOrigin)
+{
+    if (RefPtr page = m_frame->page())
+        page->send(Messages::WebPageProxy::DispatchCrossOriginBeforeUnloadCheckForFrame(m_frame->frameID(), navigatingFrameOrigin));
 }
 
 }

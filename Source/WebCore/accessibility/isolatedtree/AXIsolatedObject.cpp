@@ -41,7 +41,9 @@
 #include "Element.h"
 #include "HTMLNames.h"
 #include "Logging.h"
+#include "PathUtilities.h"
 #include "RenderObject.h"
+#include "SharedBuffer.h"
 #include "WebAnimation.h"
 #include <wtf/text/MakeString.h>
 
@@ -162,7 +164,6 @@ bool isDefaultValue(AXProperty property, AXPropertyValueVariant& value)
         [](Vector<AXID>& typedValue) { return typedValue.isEmpty(); },
         [](Vector<std::pair<Markable<AXID>, Markable<AXID>>>& typedValue) { return typedValue.isEmpty(); },
         [](Vector<String>& typedValue) { return typedValue.isEmpty(); },
-        [](std::unique_ptr<Path>& typedValue) { return !typedValue || typedValue->isEmpty(); },
         [](OptionSet<AXAncestorFlag>& typedValue) { return typedValue.isEmpty(); },
 #if PLATFORM(COCOA)
         [](RetainPtr<NSAttributedString>& typedValue) { return !typedValue; },
@@ -242,8 +243,15 @@ void AXIsolatedObject::setProperty(AXProperty property, AXPropertyValueVariant&&
 
     if (isDefaultValue(property, value))
         removePropertyInVector(property);
-    else
+    else {
         setPropertyInVector(property, WTF::move(value));
+
+        if (property == AXProperty::RelativeFrame) {
+            // If we're setting a RelativeFrame, clear the getsGeometryFromChildren flag
+            // since the element now has an explicit frame (e.g., from drawFocusIfNeeded).
+            m_getsGeometryFromChildren = false;
+        }
+    }
 }
 
 void AXIsolatedObject::detachRemoteParts(AccessibilityDetachmentType)
@@ -308,11 +316,145 @@ const AXCoreObject::AccessibilityChildrenVector& AXIsolatedObject::children(bool
         // exist in tree().objectForID(), so we were never able to hydrate it into an object.
         AX_BROKEN_ASSERT(m_unresolvedChildrenIDs.isEmpty());
 
-#ifndef NDEBUG
+#if ASSERT_ENABLED
         verifyChildrenIndexInParent();
 #endif
     }
     return m_children;
+}
+
+AXIsolatedTree::CachedUnignoredChildren& AXIsolatedObject::ensureCachedUnignoredChildren()
+{
+    auto& cache = tree().cachedUnignoredChildrenMap();
+    auto result = cache.ensure(objectID(), [&] {
+        auto children = AXCoreObject::unignoredChildren();
+        bool hasPotentialStitchable = false;
+        for (const auto& child : children) {
+            if (child->hasStitchableRole()) {
+                hasPotentialStitchable = true;
+                break;
+            }
+        }
+        return AXIsolatedTree::CachedUnignoredChildren { WTF::move(children), hasPotentialStitchable };
+    });
+    return result.iterator->value;
+}
+
+#if ENABLE(INCLUDE_IGNORED_IN_CORE_AX_TREE)
+AXCoreObject::AccessibilityChildrenVector AXIsolatedObject::unignoredChildren(bool)
+{
+    AX_ASSERT(!isMainThread());
+    return ensureCachedUnignoredChildren().children;
+}
+#endif
+
+AXCoreObject::AccessibilityChildrenVector AXIsolatedObject::stitchedUnignoredChildren()
+{
+    AX_ASSERT(!isMainThread());
+    auto& entry = ensureCachedUnignoredChildren();
+    if (!entry.hasPotentialStitchable)
+        return entry.children;
+    auto copy = entry.children;
+    copy.removeAllMatching([] (const auto& child) {
+        if (!child->hasStitchableRole())
+            return false;
+        std::optional stitchedIntoID = child->stitchedIntoID();
+        return stitchedIntoID && *stitchedIntoID != child->objectID();
+    });
+    return copy;
+}
+
+size_t AXIsolatedObject::stitchedUnignoredChildrenCount()
+{
+    AX_ASSERT(!isMainThread());
+    auto& entry = ensureCachedUnignoredChildren();
+    if (!entry.hasPotentialStitchable)
+        return entry.children.size();
+    size_t count = 0;
+    for (const auto& child : entry.children) {
+        if (!child->hasStitchableRole()) {
+            ++count;
+            continue;
+        }
+        std::optional stitchedIntoID = child->stitchedIntoID();
+        if (!stitchedIntoID || *stitchedIntoID == child->objectID())
+            ++count;
+    }
+    return count;
+}
+
+const AXCoreObject::AccessibilityChildrenVector* AXIsolatedObject::cachedUnignoredChildren()
+{
+    AX_ASSERT(!isMainThread());
+    return &ensureCachedUnignoredChildren().children;
+}
+
+const AXCoreObject::AccessibilityChildrenVector* AXIsolatedObject::cachedStitchedUnignoredChildren()
+{
+    AX_ASSERT(!isMainThread());
+    auto& entry = ensureCachedUnignoredChildren();
+    if (!entry.hasPotentialStitchable)
+        return &entry.children;
+    return nullptr;
+}
+
+AXCoreObject::AccessibilityChildrenVector AXIsolatedObject::crossFrameUnignoredChildrenInRange(size_t start, size_t maxCount)
+{
+    AX_ASSERT(!isMainThread());
+    auto& entry = ensureCachedUnignoredChildren();
+
+    if (entry.children.isEmpty()) {
+#if ENABLE_ACCESSIBILITY_LOCAL_FRAME
+        if (!start && maxCount) {
+            if (RefPtr crossFrameChild = crossFrameChildObject())
+                return { Ref { *crossFrameChild } };
+        }
+#endif
+        return { };
+    }
+
+    if (!entry.hasPotentialStitchable) {
+        if (start >= entry.children.size())
+            return { };
+        size_t end = std::min(start + maxCount, entry.children.size());
+
+        AccessibilityChildrenVector result;
+        result.reserveInitialCapacity(end - start);
+        for (size_t i = start; i < end; i++) {
+            Ref child = entry.children[i];
+#if ENABLE_ACCESSIBILITY_LOCAL_FRAME
+            if (RefPtr crossFrameChild = child->crossFrameChildObject())
+                result.append(crossFrameChild.releaseNonNull());
+            else
+#endif
+                result.append(WTF::move(child));
+        }
+        return result;
+    }
+
+    // Has potential stitchable children — need to skip stitched-away elements
+    // while computing the range relative to the stitched result.
+    AccessibilityChildrenVector result;
+    size_t stitchedIndex = 0;
+    for (const auto& child : entry.children) {
+        if (child->hasStitchableRole()) {
+            std::optional stitchedIntoID = child->stitchedIntoID();
+            if (stitchedIntoID && *stitchedIntoID != child->objectID())
+                continue;
+        }
+        if (stitchedIndex >= start + maxCount)
+            break;
+        if (stitchedIndex >= start) {
+#if ENABLE_ACCESSIBILITY_LOCAL_FRAME
+            if (RefPtr crossFrameChild = child->crossFrameChildObject())
+                result.append(*crossFrameChild);
+            else
+#endif
+                result.append(child);
+        }
+        ++stitchedIndex;
+    }
+    return result;
 }
 
 void AXIsolatedObject::setSelectedChildren(const AccessibilityChildrenVector& selectedChildren)
@@ -454,6 +596,24 @@ void AXIsolatedObject::performDismissActionIgnoringResult()
     performFunctionOnMainThread([] (auto* axObject) {
         axObject->performDismissActionIgnoringResult();
     });
+}
+
+FloatSize AXIsolatedObject::imageDataSize() const
+{
+    return Accessibility::retrieveValueFromMainThreadWithTimeoutAndDefault([context = mainThreadContext()] () -> FloatSize {
+        if (RefPtr axObject = context.axObjectOnMainThread())
+            return axObject->imageDataSize();
+        return { };
+    }, Accessibility::GeneralPropertyTimeout, FloatSize());
+}
+
+RefPtr<SharedBuffer> AXIsolatedObject::imageData(const AXImageDataParameters& parameters) const
+{
+    return Accessibility::retrieveValueFromMainThreadWithTimeoutAndDefault([parameters, context = mainThreadContext()] () -> RefPtr<SharedBuffer> {
+        if (RefPtr axObject = context.axObjectOnMainThread())
+            return axObject->imageData(parameters);
+        return nullptr;
+    }, Accessibility::ImageDataTimeout, nullptr);
 }
 
 void AXIsolatedObject::scrollToMakeVisible() const
@@ -871,19 +1031,236 @@ URL AXIsolatedObject::urlAttributeValue(AXProperty property) const
     );
 }
 
-Path AXIsolatedObject::pathAttributeValue(AXProperty property) const
+bool AXIsolatedObject::supportsPath() const
 {
-    size_t index = indexOfProperty(property);
-    if (index == notFound)
-        return Path();
+    return boolAttributeValue(AXProperty::SupportsPath) || AXCoreObject::supportsPath();
+}
 
-    return WTF::switchOn(m_properties[index].second,
-        [] (const std::unique_ptr<Path>& typedValue) -> Path {
-            AX_ASSERT(typedValue.get());
-            return *typedValue.get();
-        },
-        [] (auto&) { return Path(); }
-    );
+// Collects viewport-relative per-line rects for a text object, clamped to
+// the most recently painted (visible) lines. When trimming is enabled for a
+// side, one leading/trailing whitespace character is skipped so the
+// VoiceOver cursor hugs actual text content and doesn't clip adjacent elements.
+static Vector<FloatRect> collectPaintedLineRects(const AXIsolatedObject& object, const HashMap<AXID, LineRange>& paintedText, bool trimLeading = true, bool trimTrailing = true)
+{
+    const auto* runs = object.textRuns();
+    if (!runs || !runs->size())
+        return { };
+
+    unsigned start = 0;
+    unsigned end = runs->totalLength();
+    if (!paintedText.isEmpty()) {
+        // When paint data exists, only include lines that were actually painted
+        // (visible). If no paint data exists yet (e.g. before the first
+        // paint cycle), fall through and use all text so that paths are
+        // available immediately from text runs cached at tree-build time.
+        auto iterator = paintedText.find(object.objectID());
+        if (iterator == paintedText.end())
+            return { };
+        const auto& paintedRange = iterator->value;
+        start = paintedRange.startLineIndex ? runs->runLengthSumTo(paintedRange.startLineIndex - 1) : 0;
+        end = runs->runLengthSumTo(paintedRange.endLineIndex);
+        if (start >= end)
+            return { };
+    }
+
+    // Only skip the first/last whitespace, as multiple spaces may be intentional (e.g. &nbsp;)
+    // and thus should have some representation.
+    if (trimLeading && start < end && start < runs->text.length() && runs->text[start] == ' ')
+        ++start;
+    if (trimTrailing && end > start && end - 1 < runs->text.length() && runs->text[end - 1] == ' ')
+        --end;
+    if (start >= end)
+        return { };
+
+    auto rects = runs->localRectsPerLine(start, end, object.fontOrientation());
+    auto frame = object.relativeFrame();
+    for (auto& rect : rects)
+        rect.move(frame.x(), frame.y());
+    return rects;
+}
+
+// Clips, inflates, ensures overlap, and builds a shrink-wrapped path from
+// per-line rects. Returns an empty path if fewer than 2 rects remain, as
+// there's no point in exposing a path in that case (the element's rect is fine).
+static Path buildPathFromLineRects(Vector<FloatRect>&& rects, const FloatRect& clipRect, FontOrientation orientation)
+{
+    rects.removeAllMatching([&clipRect](auto& rect) {
+        return !rect.intersects(clipRect);
+    });
+
+    for (auto& rect : rects)
+        rect.intersect(clipRect);
+    if (rects.size() < 2)
+        return { };
+
+    // ATs like VoiceOver use the path to render their cursor.
+    // Add a bit of padding to guarantee we avoid visually clipping text
+    // underneath the cursor.
+    static constexpr float lineRectPadding = 2;
+    for (auto& rect : rects)
+        rect.inflate(lineRectPadding);
+
+    // Ensure adjacent line rects overlap by at least 1px in the block direction.
+    // Without this, pathWithShrinkWrappedRects may produce a path with hairline
+    // gaps between lines where the cursor appears to "break" visually.
+    bool isHorizontal = orientation == FontOrientation::Horizontal;
+    for (size_t i = 1; i < rects.size(); ++i) {
+        if (isHorizontal) {
+            float gap = rects[i].y() - rects[i - 1].maxY();
+            if (gap >= 0)
+                rects[i].shiftYEdgeTo(rects[i - 1].maxY() - 1);
+        } else {
+            // Columns may progress left-to-right (vertical-lr) or
+            // right-to-left (vertical-rl). Close gaps in either direction.
+            if (rects[i].x() > rects[i - 1].maxX())
+                rects[i].shiftXEdgeTo(rects[i - 1].maxX() - 1);
+            else if (rects[i].maxX() < rects[i - 1].x())
+                rects[i].shiftMaxXEdgeTo(rects[i - 1].x() + 1);
+        }
+    }
+
+    return PathUtilities::pathWithShrinkWrappedRects(rects, 0);
+}
+
+// Walks the link's entire subtree to determine if it qualifies for a
+// shrink-wrapped text path (2-3 lines of simple inline text). Returns an empty
+// path for non-qualifying links (non-text content, block-flow containers,
+// unignored groups, 1 or 4+ lines of text). We avoid 4+ line links because
+// sometimes authors put lots of content into one link, in which a case rect-cursor
+// looks better.
+static Path elementPathForLink(const AXIsolatedObject& link, AXIsolatedTree& tree, const HashMap<AXID, LineRange>& paintedText)
+{
+    // If the link has a cached path (border-radius, clip-path), use it.
+    if (RefPtr geometryManager = tree.geometryManager()) {
+        if (std::optional cachedPath = geometryManager->cachedPathForID(link.objectID()))
+            return *cachedPath;
+    }
+
+    // Walk the entire subtree collecting per-line rects from text descendants.
+    Vector<FloatRect> lineRects;
+    unsigned totalLines = 0;
+    bool bail = false;
+
+    auto walkDescendants = [&](const AXIsolatedObject& object, auto& self) -> void {
+        if (bail)
+            return;
+        for (const auto& child : const_cast<AXIsolatedObject&>(object).children()) {
+            if (bail)
+                return;
+
+            Ref isolatedChild = downcast<AXIsolatedObject>(child.get());
+            if (isolatedChild->isStaticText()) {
+                auto rects = collectPaintedLineRects(isolatedChild.get(), paintedText);
+                totalLines += rects.size();
+                lineRects.appendVector(WTF::move(rects));
+                if (totalLines >= 4) {
+                    bail = true;
+                    return;
+                }
+                continue;
+            }
+
+            // Pass through ignored, non-block-flow groups.
+            if (isolatedChild->isGroup() && isolatedChild->isIgnored() && !isolatedChild->isBlockFlow()) {
+                self(isolatedChild.get(), self);
+                continue;
+            }
+
+            // Non-text, unignored group, or block-flow group.
+            bail = true;
+            return;
+        }
+    };
+    walkDescendants(link, walkDescendants);
+
+    if (bail || totalLines <= 1)
+        return { };
+
+    // Build a shrink-wrapped path for 2-3 lines of text.
+    return buildPathFromLineRects(WTF::move(lineRects), link.relativeFrame(), link.fontOrientation());
+}
+
+Path AXIsolatedObject::elementPath() const
+{
+    const auto& paintedText = tree().mostRecentlyPaintedText();
+
+    // Stitch group representatives aggregate rects from all group members.
+    // Check this first because the representative's own text runs may not span
+    // multiple lines, even though the combined text of all members does.
+    if (auto group = stitchGroupIfRepresentative()) {
+        Vector<FloatRect> rects;
+        auto clipFrame = relativeFrame();
+        auto& members = group->members();
+        for (size_t i = 0; i < members.size(); ++i) {
+            RefPtr member = tree().objectForID(members[i]);
+            if (!member)
+                continue;
+            clipFrame.unite(member->relativeFrame());
+            // Only trim the leading space of the first member and trailing
+            // space of the last member. Internal spaces are part of the
+            // combined text and should not be trimmed.
+            bool isFirst = !i;
+            bool isLast = i == members.size() - 1;
+            rects.appendVector(collectPaintedLineRects(*member, paintedText, /* trimLeading */ isFirst, /* trimTrailing */ isLast));
+        }
+        auto path = buildPathFromLineRects(WTF::move(rects), clipFrame, fontOrientation());
+        if (!path.isEmpty())
+            return path;
+    }
+
+    // Multi-line text objects compute their path on-demand from text runs.
+    if (const auto* runs = textRuns(); runs && runs->size() >= 2) {
+        bool isMultiLine = false;
+        for (size_t i = 1; i < runs->size(); ++i) {
+            if (runs->lineID(i) != runs->lineID(i - 1)) {
+                isMultiLine = true;
+                break;
+            }
+        }
+        if (isMultiLine) {
+            auto rects = collectPaintedLineRects(*this, paintedText);
+            auto path = buildPathFromLineRects(WTF::move(rects), relativeFrame(), fontOrientation());
+            if (!path.isEmpty())
+                return path;
+        }
+    }
+
+    // Labels remapped to StaticText don't have their own text runs.
+    // Aggregate text runs from descendant objects (which may be ignored,
+    // since the label subsumes its text children).
+    if (isStaticTextLabel()) {
+        Vector<FloatRect> allRects;
+        auto clipFrame = relativeFrame();
+
+        auto collectFromDescendants = [&](const AXIsolatedObject& object, auto& self) -> void {
+            for (const auto& child : const_cast<AXIsolatedObject&>(object).children()) {
+                Ref isolatedChild = downcast<AXIsolatedObject>(child.get());
+                if (isolatedChild->isStaticText() && isolatedChild->textRuns()) {
+                    clipFrame.unite(isolatedChild->relativeFrame());
+                    allRects.appendVector(collectPaintedLineRects(isolatedChild.get(), paintedText));
+                } else
+                    self(isolatedChild.get(), self);
+            }
+        };
+        collectFromDescendants(*this, collectFromDescendants);
+
+        auto path = buildPathFromLineRects(WTF::move(allRects), clipFrame, fontOrientation());
+        if (!path.isEmpty())
+            return path;
+    }
+
+    // Links: build a shrink-wrapped path from descendant text if the link
+    // contains only simple inline text spanning 2-3 lines.
+    if (isLink())
+        return elementPathForLink(*this, tree(), paintedText);
+
+    // For other path types (border-radius, SVG, etc.), read from the geometry
+    // manager's cache.
+    if (RefPtr geometryManager = tree().geometryManager()) {
+        auto cachedPath = geometryManager->cachedPathForID(objectID());
+        return cachedPath.value_or(Path { });
+    }
+    return { };
 }
 
 static Color getColor(const AXPropertyValueVariant& value)
@@ -1402,6 +1779,14 @@ FloatRect AXIsolatedObject::convertFrameToSpace(const FloatRect& rect, Accessibi
         auto screenTransform = frameScreenTransform();
         auto scaledRect = screenTransform.mapRect(rect);
 
+        // screenPosition tracks the document origin, which moves with scroll.
+        // The viewport is fixed on screen, so subtract the scroll and content
+        // inset offsets that contentsToView baked into screenPosition.
+        if (isScrollArea() && !parent()) {
+            auto viewOriginScrollPosition = screenTransform.mapPoint(FloatPoint(tree().frameViewOriginScrollPosition()));
+            screenPosition.move(-roundToInt(viewOriginScrollPosition.x()), -roundToInt(viewOriginScrollPosition.y()));
+        }
+
         // Screen coordinates use bottom-left origin (on macOS).
         FloatPoint position = {
             screenPosition.x() + scaledRect.x(),
@@ -1456,6 +1841,15 @@ bool AXIsolatedObject::press()
     return false;
 }
 
+bool AXIsolatedObject::syncPress()
+{
+    return Accessibility::retrieveValueFromMainThreadWithTimeoutAndDefault([context = mainThreadContext()] () -> bool {
+        if (RefPtr axObject = context.axObjectOnMainThread())
+            return axObject->press();
+        return false;
+    }, Accessibility::InteractiveTimeout, false);
+}
+
 void AXIsolatedObject::increment()
 {
     performFunctionOnMainThread([] (auto* axObject) {
@@ -1468,6 +1862,22 @@ void AXIsolatedObject::decrement()
     performFunctionOnMainThread([] (auto* axObject) {
         axObject->decrement();
     });
+}
+
+void AXIsolatedObject::syncIncrement()
+{
+    Accessibility::performFunctionOnMainThreadAndWaitWithTimeout([context = mainThreadContext()] {
+        if (RefPtr axObject = context.axObjectOnMainThread())
+            axObject->increment();
+    }, Accessibility::InteractiveTimeout);
+}
+
+void AXIsolatedObject::syncDecrement()
+{
+    Accessibility::performFunctionOnMainThreadAndWaitWithTimeout([context = mainThreadContext()] {
+        if (RefPtr axObject = context.axObjectOnMainThread())
+            axObject->decrement();
+    }, Accessibility::InteractiveTimeout);
 }
 
 bool AXIsolatedObject::isAccessibilityNodeObject() const
@@ -1511,15 +1921,14 @@ int AXIsolatedObject::insertionPointLineNumber() const
 
 String AXIsolatedObject::identifierAttribute() const
 {
-#if !LOG_DISABLED
-    return stringAttributeValue(AXProperty::IdentifierAttribute);
-#else
+    if (AXIsolatedTree::shouldCacheIdentifierAttribute())
+        return stringAttributeValue(AXProperty::IdentifierAttribute);
+
     return Accessibility::retrieveValueFromMainThreadWithTimeoutAndDefault([context = mainThreadContext()] () -> String {
         if (RefPtr object = context.axObjectOnMainThread())
             return object->identifierAttribute().isolatedCopy();
         return { };
     }, Accessibility::GeneralPropertyTimeout, emptyString());
-#endif
 }
 
 CharacterRange AXIsolatedObject::doAXRangeForLine(unsigned lineIndex) const
@@ -1848,8 +2257,7 @@ AXIsolatedObject* AXIsolatedObject::crossFrameParentObject() const
 
     auto parentObjectID = *markableParentObjectID;
 
-    // FIXME: We don't actually hold the lock here.
-    RefPtr parentTree = AXIsolatedTree::treeForFrameIDAlreadyLocked(*parentFrameID);
+    RefPtr parentTree = AXIsolatedTree::treeForFrameID(*parentFrameID);
     if (!parentTree)
         return nullptr;
 
@@ -1862,8 +2270,7 @@ AXIsolatedObject* AXIsolatedObject::crossFrameChildObject() const
         return nullptr;
 
     auto frameID = optionalAttributeValue<FrameIdentifier>(AXProperty::CrossFrameChildFrameID);
-    // FIXME: We don't actually hold the lock here.
-    if (RefPtr childTree = frameID ? AXIsolatedTree::treeForFrameIDAlreadyLocked(*frameID) : nullptr) {
+    if (RefPtr childTree = frameID ? AXIsolatedTree::treeForFrameID(*frameID) : nullptr) {
         childTree->applyPendingChanges();
         return childTree->rootNode();
     }

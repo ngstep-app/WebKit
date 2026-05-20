@@ -160,7 +160,6 @@ endif ()
 
 if (USE_GBM)
     list(APPEND WebCore_PRIVATE_FRAMEWORK_HEADERS
-        platform/graphics/gbm/DMABufBuffer.h
         platform/graphics/gbm/DRMDevice.h
         platform/graphics/gbm/DRMDeviceManager.h
         platform/graphics/gbm/GBMDevice.h

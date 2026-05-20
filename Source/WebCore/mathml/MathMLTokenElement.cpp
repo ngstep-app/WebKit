@@ -34,6 +34,8 @@
 #include "HTTPParsers.h"
 #include "MathMLNames.h"
 #include "RenderMathMLToken.h"
+#include "RenderStyle+GettersInlines.h"
+#include "Settings.h"
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
@@ -79,6 +81,10 @@ bool MathMLTokenElement::childShouldCreateRenderer(const Node& child) const
     return StyledElement::childShouldCreateRenderer(child);
 }
 
+bool MathMLTokenElement::acceptsLegacyMathVariantAttribute()
+{
+    return !document().settings().coreMathMLDeprecateLegacyMathvariant();
+}
 }
 
 #endif // ENABLE(MATHML)

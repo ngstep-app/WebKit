@@ -26,6 +26,9 @@
 #pragma once
 
 #include "HashMapHelper.h"
+#include "JSCJSValueBigInt.h"
+#include "JSCJSValueInlines.h"
+#include "Symbol.h"
 #include "WeakMapImpl.h"
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
@@ -34,7 +37,7 @@ namespace JSC {
 
 ALWAYS_INLINE uint32_t jsWeakMapHash(JSCell* key)
 {
-    return wangsInt64Hash(JSValue::encode(key));
+    return rapidHashMix64(JSValue::encode(key));
 }
 
 ALWAYS_INLINE uint32_t nextCapacityAfterBatchRemoval(uint32_t capacity, uint32_t keyCount)

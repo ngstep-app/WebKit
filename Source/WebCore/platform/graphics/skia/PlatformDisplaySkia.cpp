@@ -32,6 +32,7 @@
 
 WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
 #include <skia/core/SkColorSpace.h>
+#include <skia/core/SkExecutor.h>
 #include <skia/gpu/ganesh/GrBackendSurface.h>
 #include <skia/gpu/ganesh/SkSurfaceGanesh.h>
 #include <skia/gpu/ganesh/gl/GrGLBackendSurface.h>
@@ -235,6 +236,11 @@ public:
         return adoptRef(*new SkiaGLContext(display));
     }
 
+    static Ref<SkiaGLContext> create(std::unique_ptr<GLContext>&& glContext)
+    {
+        return adoptRef(*new SkiaGLContext(WTF::move(glContext)));
+    }
+
     ~SkiaGLContext()
     {
         if (m_skiaGLContext) {
@@ -263,14 +269,20 @@ public:
 
 private:
     explicit SkiaGLContext(PlatformDisplay& display)
+        : SkiaGLContext(GLContext::createOffscreen(display))
     {
-        auto glContext = GLContext::createOffscreen(display);
+    }
+
+    explicit SkiaGLContext(std::unique_ptr<GLContext>&& glContext)
+    {
         if (!glContext || !glContext->makeContextCurrent())
             return;
 
-        // FIXME: add GrContextOptions, shader cache, etc.
+        // FIXME: Add shader cache.
         GrContextOptions options;
         options.fAllowMSAAOnNewIntel = shouldAllowMSAAOnNewIntel();
+        thread_local std::unique_ptr<SkExecutor> s_executor = SkExecutor::MakeFIFOThreadPool(2);
+        options.fExecutor = s_executor.get();
         if (auto grContext = GrDirectContexts::MakeGL(skiaGLInterface(), options)) {
             m_skiaGLContext = WTF::move(glContext);
             m_skiaGrContext = WTF::move(grContext);
@@ -298,6 +310,13 @@ GLContext* PlatformDisplay::skiaGLContext()
     // the current thread so Skia cannot use OpenGL with coordinated graphics.
     return nullptr;
 #endif
+}
+
+void PlatformDisplay::setSkiaGLContextForCurrentThread(std::unique_ptr<GLContext>&& glContext)
+{
+    ASSERT(!s_skiaGLContext);
+    s_skiaGLContext = SkiaGLContext::create(WTF::move(glContext));
+    m_skiaGLContexts.add(*s_skiaGLContext);
 }
 
 GrDirectContext* PlatformDisplay::skiaGrContext() const

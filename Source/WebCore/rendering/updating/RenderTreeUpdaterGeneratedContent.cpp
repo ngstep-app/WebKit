@@ -36,9 +36,11 @@
 #include "RenderCounter.h"
 #include "RenderDescendantIterator.h"
 #include "RenderElementInlines.h"
+#include "RenderElementStyleInlines.h"
 #include "RenderImage.h"
 #include "RenderQuote.h"
 #include "RenderStyle+GettersInlines.h"
+#include "RenderStyle+SettersInlines.h"
 #include "RenderTextFragment.h"
 #include "RenderTreeUpdater.h"
 #include "RenderView.h"
@@ -61,7 +63,29 @@ void RenderTreeUpdater::GeneratedContent::updateRemainingQuotes()
         return;
     updateQuotesUpTo(nullptr);
     m_previousUpdatedQuote = nullptr;
+    m_quoteScopeStack.clear();
     m_updater.renderView().setHasQuotesNeedingUpdate(false);
+}
+
+static RenderElement* findQuoteScopeRoot(const RenderObject& renderer)
+{
+    for (auto* ancestor = renderer.parent(); ancestor; ancestor = ancestor->parent()) {
+        if (ancestor->shouldApplyStyleContainment())
+            return ancestor;
+    }
+    return nullptr;
+}
+
+RenderElement* RenderTreeUpdater::GeneratedContent::popExitedQuoteScopes(const RenderQuote& quote)
+{
+    auto* scopeRoot = findQuoteScopeRoot(quote);
+    auto isCurrentScopeAncestorOfQuote = [&] {
+        auto* topScope = m_quoteScopeStack.last().scopeRoot.get();
+        return topScope == scopeRoot || (topScope && quote.isDescendantOf(topScope));
+    };
+    while (m_quoteScopeStack.size() > 1 && !isCurrentScopeAncestorOfQuote())
+        m_quoteScopeStack.removeLast();
+    return scopeRoot;
 }
 
 void RenderTreeUpdater::GeneratedContent::updateQuotesUpTo(RenderQuote* lastQuote)
@@ -69,10 +93,21 @@ void RenderTreeUpdater::GeneratedContent::updateQuotesUpTo(RenderQuote* lastQuot
     auto quoteRenderers = descendantsOfType<RenderQuote>(m_updater.renderView());
     auto it = m_previousUpdatedQuote ? ++quoteRenderers.at(*m_previousUpdatedQuote) : quoteRenderers.begin();
     auto end = quoteRenderers.end();
+
+    if (m_quoteScopeStack.isEmpty())
+        m_quoteScopeStack.append({ nullptr, m_previousUpdatedQuote.get() });
+
     for (; it != end; ++it) {
         auto& quote = *it;
-        // Quote character depends on quote depth so we chain the updates.
-        quote.updateRenderer(m_updater.m_builder, m_previousUpdatedQuote.get());
+        auto* scopeRoot = popExitedQuoteScopes(quote);
+
+        bool hasEnteredNewContainmentScope = scopeRoot != m_quoteScopeStack.last().scopeRoot.get();
+        if (hasEnteredNewContainmentScope)
+            m_quoteScopeStack.append({ scopeRoot, m_quoteScopeStack.last().lastQuote.get() });
+
+        quote.updateRenderer(m_updater.m_builder, m_quoteScopeStack.last().lastQuote.get());
+        m_quoteScopeStack.last().lastQuote = quote;
+
         m_previousUpdatedQuote = quote;
         if (&quote == lastQuote)
             return;
@@ -111,10 +146,10 @@ static bool needsPseudoElementForAnimation(const Element& element, PseudoElement
 
 static RenderPtr<RenderObject> createContentRenderer(const Style::Content::Text& value, const String& altText, Document& document, const RenderStyle&)
 {
-    if (value.text.isEmpty() && altText.isEmpty())
+    if (value.text.value.isEmpty() && altText.isEmpty())
         return { };
 
-    auto contentRenderer = createRenderer<RenderTextFragment>(document, value.text);
+    auto contentRenderer = createRenderer<RenderTextFragment>(document, value.text.value);
     contentRenderer->setAltText(altText);
     return contentRenderer;
 }
@@ -142,11 +177,11 @@ static RenderPtr<RenderObject> createContentRenderer(const Style::Content::Quote
 void RenderTreeUpdater::GeneratedContent::createContentRenderers(RenderTreeBuilder& builder, RenderElement& pseudoRenderer, const RenderStyle& style, PseudoElementType pseudoElementType)
 {
     if (auto* contentData = style.content().tryData()) {
-        auto altText = contentData->altText.value_or(String { });
+        auto altText = contentData->altText.value_or(String { nullString() });
         for (auto& contentItem : contentData->list) {
             WTF::switchOn(contentItem,
                 [&](const auto& item) {
-                    if (auto child = createContentRenderer(item, altText, pseudoRenderer.document(), style); child && pseudoRenderer.isChildAllowed(*child, style))
+                    if (auto child = createContentRenderer(item, altText.value, pseudoRenderer.document(), style); child && pseudoRenderer.isChildAllowed(*child, style))
                         builder.attach(pseudoRenderer, WTF::move(child));
                 }
             );
@@ -241,11 +276,6 @@ void RenderTreeUpdater::GeneratedContent::updateBeforeOrAfterPseudoElement(Eleme
         auto pseudoElementUpdateStyle = RenderStyle::cloneIncludingPseudoElements(*updateStyle);
         Style::ElementUpdate pseudoElementUpdate { makeUnique<RenderStyle>(WTF::move(pseudoElementUpdateStyle)), styleChanges, elementUpdate.recompositeLayer };
         m_updater.updateElementRenderer(*pseudoElement, WTF::move(pseudoElementUpdate));
-        if (updateStyle->display() == Style::DisplayType::None) {
-            auto pseudoElementUpdateStyle = RenderStyle::cloneIncludingPseudoElements(*updateStyle);
-            pseudoElement->storeDisplayContentsOrNoneStyle(makeUnique<RenderStyle>(WTF::move(pseudoElementUpdateStyle)));
-        } else
-            pseudoElement->clearDisplayContentsOrNoneStyle();
     }
 
     auto* pseudoElementRenderer = pseudoElement->renderer();

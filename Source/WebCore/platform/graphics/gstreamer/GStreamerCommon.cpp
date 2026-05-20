@@ -105,6 +105,10 @@
 #include <gst/webrtc/webrtc-enumtypes.h>
 #endif
 
+#if USE(GSTREAMER_GL)
+#include <gst/gl/gl.h>
+#endif
+
 #if USE(GSTREAMER_FULL) && GST_CHECK_VERSION(1, 18, 0) && !GST_CHECK_VERSION(1, 20, 0)
 #define IS_GST_FULL_1_18 1
 #include <gst/gstinitstaticplugins.h>
@@ -2283,7 +2287,6 @@ void dumpBinToDotFile(const GRefPtr<GstElement>& element, const String& filename
     dumpBinToDotFile(GST_BIN_CAST(element.get()), filename, details);
 }
 
-#if !RELEASE_LOG_DISABLED
 GstDebugLevel gstDebugLevelFromWTFLogLevel(WTFLogLevel level)
 {
     switch (level) {
@@ -2299,7 +2302,6 @@ GstDebugLevel gstDebugLevelFromWTFLogLevel(WTFLogLevel level)
     };
     return GST_LEVEL_NONE;
 }
-#endif
 
 #undef GST_CAT_DEFAULT
 

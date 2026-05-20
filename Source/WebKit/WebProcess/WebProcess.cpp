@@ -90,6 +90,7 @@
 #include "WebSharedWorkerContextManagerConnection.h"
 #include "WebSharedWorkerContextManagerConnectionMessages.h"
 #include "WebSharedWorkerProvider.h"
+#include "WebStorageNamespaceProvider.h"
 #include "WebTransportSession.h"
 #include "WebUserContentController.h"
 #include "WebsiteData.h"
@@ -145,6 +146,7 @@
 #include <WebCore/Settings.h>
 #include <WebCore/SharedWorkerContextManager.h>
 #include <WebCore/SharedWorkerThreadProxy.h>
+#include <WebCore/StorageNamespaceProvider.h>
 #include <WebCore/UserGestureIndicator.h>
 #include <WebCore/WebKitJSHandle.h>
 #include <WebCore/WorkerGlobalScope.h>
@@ -164,9 +166,6 @@
 #include <wtf/text/StringHash.h>
 #include <wtf/text/TextStream.h>
 
-#if ENABLE(ARKIT_INLINE_PREVIEW_MAC)
-#include "ARKitInlinePreviewModelPlayerMac.h"
-#endif
 
 #if !OS(WINDOWS)
 #include <unistd.h>
@@ -758,11 +757,10 @@ void WebProcess::initializeWebProcess(WebProcessCreationParameters&& parameters,
 
 #if ENABLE(WEBASSEMBLY_DEBUGGER) && ENABLE(REMOTE_INSPECTOR) && CPU(ARM64)
     if (JSC::Options::enableWasmDebugger()) [[unlikely]] {
-        bool success = JSC::Wasm::DebugServer::singleton().startRWI([](const String& response) {
+        JSC::Wasm::DebugServer::singleton().startRWI([](const String& response) {
             return WebKit::WebProcess::singleton().send(Messages::WebProcessProxy::SendWasmDebuggerResponse(response), 0);
         });
-        if (!success)
-            WEBPROCESS_RELEASE_LOG_ERROR(Inspector, "Failed to start WasmDebugServer in RWI mode");
+        send(Messages::WebProcessProxy::WasmDebugServerReady(), 0);
     }
 #endif
 
@@ -779,10 +777,6 @@ void WebProcess::setWebsiteDataStoreParameters(WebProcessDataStoreParameters&& p
         WebCore::HTMLMediaElement::setMediaCacheDirectory(parameters.mediaCacheDirectory);
 #endif
 
-#if ENABLE(ARKIT_INLINE_PREVIEW_MAC)
-    if (!parameters.modelElementCacheDirectory.isEmpty())
-        ARKitInlinePreviewModelPlayerMac::setModelElementCacheDirectory(parameters.modelElementCacheDirectory);
-#endif
 
     setTrackingPreventionEnabled(parameters.trackingPreventionEnabled);
 
@@ -866,6 +860,14 @@ void WebProcess::setIsInProcessCache(bool isInProcessCache, CompletionHandler<vo
 #else
     UNUSED_PARAM(isInProcessCache);
 #endif
+
+#if ENABLE(WEBASSEMBLY_DEBUGGER) && ENABLE(REMOTE_INSPECTOR) && CPU(ARM64)
+    // When exiting process cache, notify UIProcess that DebugServer is still running
+    // so it can recreate the debuggable. DebugServer never stops (process-lifetime).
+    if (!isInProcessCache && JSC::Options::enableWasmDebugger())
+        send(Messages::WebProcessProxy::WasmDebugServerReady(), 0);
+#endif
+
     completionHandler();
 }
 
@@ -1145,9 +1147,6 @@ void WebProcess::didClose(IPC::Connection& connection)
 #if ENABLE(VIDEO)
     FileSystem::markPurgeable(WebCore::HTMLMediaElement::mediaCacheDirectory());
 #endif
-#if ENABLE(ARKIT_INLINE_PREVIEW_MAC)
-    FileSystem::markPurgeable(ARKitInlinePreviewModelPlayerMac::modelElementCacheDirectory());
-#endif
     AuxiliaryProcess::didClose(connection);
 }
 
@@ -1230,6 +1229,12 @@ void WebProcess::isEnhancedSecurityEnabled(CompletionHandler<void(bool)>&& compl
 void WebProcess::garbageCollectJavaScriptObjects()
 {
     GarbageCollectionController::singleton().garbageCollectNow();
+}
+
+void WebProcess::getStorageAreaMapCountForTesting(CompletionHandler<void(uint64_t)>&& completionHandler)
+{
+    GarbageCollectionController::singleton().garbageCollectNow();
+    completionHandler(WebStorageNamespaceProvider::getOrCreate()->localStorageAreaMapCountForTesting());
 }
 
 void WebProcess::backgroundResponsivenessPing()
@@ -1399,11 +1404,8 @@ NetworkProcessConnection& WebProcess::ensureNetworkProcessConnection()
             for (auto& webPage : m_pageMap.values())
                 webPage->synchronizeCORSDisablingPatternsWithNetworkProcess();
         });
-
-        if (std::exchange(m_needsIDBConnectionRefreshForWorkers, false))
-            refreshIDBConnectionForWorkers();
     }
-    
+
     return *m_networkProcessConnection;
 }
 
@@ -1441,18 +1443,6 @@ void WebProcess::networkProcessConnectionClosed(NetworkProcessConnection* connec
     for (auto key : copyToVector(m_storageAreaMaps.keys())) {
         if (RefPtr map = m_storageAreaMaps.get(key))
             map->disconnect();
-    }
-
-    for (auto& page : m_pageMap.values()) {
-        RefPtr corePage = page->corePage();
-        RefPtr idbConnection = corePage->optionalIDBConnection();
-        if (!idbConnection)
-            continue;
-        
-        if (RefPtr existingIDBConnectionToServer = connection->existingIDBConnectionToServer()) {
-            ASSERT_UNUSED(existingIDBConnectionToServer, idbConnection.get() == &existingIDBConnectionToServer->coreConnectionToServer());
-            corePage->clearIDBConnectionOnAllDocuments();
-        }
     }
 
     if (SWContextManager::singleton().connection())
@@ -1495,14 +1485,6 @@ void WebProcess::networkProcessConnectionClosed(NetworkProcessConnection* connec
     for (auto& weakSession : sessions) {
         if (RefPtr webtransportSession = weakSession.get())
             webtransportSession->didFail(std::nullopt, String(emptyString()));
-    }
-}
-
-void WebProcess::refreshIDBConnectionForWorkers()
-{
-    for (auto& page : m_pageMap.values()) {
-        if (RefPtr corePage = page->corePage())
-            corePage->refreshIDBConnectionForWorkers();
     }
 }
 
@@ -1598,10 +1580,10 @@ ModelProcessConnection& WebProcess::ensureModelProcessConnection()
 
     // If we've lost our connection to the model process (e.g. it crashed) try to re-establish it.
     if (!m_modelProcessConnection) {
-        m_modelProcessConnection = ModelProcessConnection::create(Ref { *parentProcessConnection() });
+        m_modelProcessConnection = ModelProcessConnection::create(protect(*parentProcessConnection()));
 
         for (auto& page : m_pageMap.values())
-            page->modelProcessConnectionDidBecomeAvailable(Ref { *m_modelProcessConnection });
+            page->modelProcessConnectionDidBecomeAvailable(protect(*m_modelProcessConnection));
     }
 
     return *m_modelProcessConnection;
@@ -1792,7 +1774,7 @@ void WebProcess::prepareToSuspend(bool isSuspensionImminent, MonotonicTime estim
     double remainingRunTime = nowTime > estimatedSuspendTime ? (nowTime - estimatedSuspendTime).value() : 0.0;
 #endif
 
-    WEBPROCESS_RELEASE_LOG_FORWARDABLE(ProcessSuspension, WEBPROCESS_PREPARE_TO_SUSPEND, isSuspensionImminent, remainingRunTime);
+    WEBPROCESS_RELEASE_LOG_FORWARDABLE(ProcessSuspension, WebProcessPrepareToSuspend, isSuspensionImminent, remainingRunTime);
     SetForScope allowExitScope(m_allowExitOnMemoryPressure, false);
     m_processIsSuspended = true;
 
@@ -1800,7 +1782,7 @@ void WebProcess::prepareToSuspend(bool isSuspensionImminent, MonotonicTime estim
 
 #if PLATFORM(COCOA)
     if (m_processType == ProcessType::PrewarmedWebContent) {
-        WEBPROCESS_RELEASE_LOG_FORWARDABLE(ProcessSuspension, WEBPROCESS_READY_TO_SUSPEND);
+        WEBPROCESS_RELEASE_LOG_FORWARDABLE(ProcessSuspension, WebProcessReadyToSuspend);
         return completionHandler();
     }
 #endif
@@ -1833,7 +1815,7 @@ void WebProcess::prepareToSuspend(bool isSuspensionImminent, MonotonicTime estim
 #endif
 
     markAllLayersVolatile([this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)]() mutable {
-        WEBPROCESS_RELEASE_LOG_FORWARDABLE(ProcessSuspension, WEBPROCESS_READY_TO_SUSPEND);
+        WEBPROCESS_RELEASE_LOG_FORWARDABLE(ProcessSuspension, WebProcessReadyToSuspend);
         completionHandler();
     });
 }
@@ -1854,7 +1836,7 @@ void WebProcess::accessibilityRelayProcessSuspended(bool suspended)
 
 void WebProcess::markAllLayersVolatile(CompletionHandler<void()>&& completionHandler)
 {
-    WEBPROCESS_RELEASE_LOG_FORWARDABLE(ProcessSuspension, WEBPROCESS_MARK_ALL_LAYERS_VOLATILE);
+    WEBPROCESS_RELEASE_LOG_FORWARDABLE(ProcessSuspension, WebProcessMarkAllLayersVolatile);
     auto callbackAggregator = CallbackAggregator::create(WTF::move(completionHandler));
     for (auto& page : m_pageMap.values()) {
         page->markLayersVolatile([this, protectedThis = Ref { *this }, callbackAggregator, pageID = page->identifier()] (bool succeeded) {
@@ -1875,7 +1857,7 @@ void WebProcess::cancelMarkAllLayersVolatile()
 
 void WebProcess::freezeAllLayerTrees()
 {
-    WEBPROCESS_RELEASE_LOG_FORWARDABLE(ProcessSuspension, WEBPROCESS_FREEZE_ALL_LAYER_TREES);
+    WEBPROCESS_RELEASE_LOG_FORWARDABLE(ProcessSuspension, WebProcessFreezeAllLayerTrees);
     for (auto& page : m_pageMap.values())
         page->freezeLayerTree(WebPage::LayerTreeFreezeReason::ProcessSuspended);
 }
@@ -2213,7 +2195,7 @@ LibWebRTCNetwork& WebProcess::libWebRTCNetwork()
 }
 #endif
 
-void WebProcess::establishRemoteWorkerContextConnectionToNetworkProcess(RemoteWorkerType workerType, PageGroupIdentifier pageGroupID, WebPageProxyIdentifier webPageProxyID, PageIdentifier pageID, const WebPreferencesStore& store, Site&& site, std::optional<ScriptExecutionContextIdentifier> serviceWorkerPageIdentifier, RemoteWorkerInitializationData&& initializationData, CompletionHandler<void()>&& completionHandler)
+void WebProcess::establishRemoteWorkerContextConnectionToNetworkProcess(RemoteWorkerType workerType, PageGroupIdentifier pageGroupID, WebPageProxyIdentifier webPageProxyID, PageIdentifier pageID, const WebPreferencesStore& store, Site&& site, std::optional<ScriptExecutionContextIdentifier> serviceWorkerPageIdentifier, RemoteWorkerInitializationData&& initializationData, CrossOriginEmbedderPolicyValue workerCrossOriginEmbedderPolicy, CompletionHandler<void()>&& completionHandler)
 {
     // We are in the Remote Worker context process and the call below establishes our connection to the Network Process
     // by calling ensureNetworkProcessConnection. SWContextManager / SharedWorkerContextManager need to use the same underlying IPC::Connection as the
@@ -2221,11 +2203,11 @@ void WebProcess::establishRemoteWorkerContextConnectionToNetworkProcess(RemoteWo
     Ref ipcConnection = ensureNetworkProcessConnection().connection();
     switch (workerType) {
     case RemoteWorkerType::ServiceWorker:
-        SWContextManager::singleton().setConnection(WebSWContextManagerConnection::create(WTF::move(ipcConnection), WTF::move(site), serviceWorkerPageIdentifier, pageGroupID, webPageProxyID, pageID, store, WTF::move(initializationData)));
+        SWContextManager::singleton().setConnection(WebSWContextManagerConnection::create(WTF::move(ipcConnection), WTF::move(site), serviceWorkerPageIdentifier, pageGroupID, webPageProxyID, pageID, store, WTF::move(initializationData), workerCrossOriginEmbedderPolicy));
         protect(SWContextManager::singleton().connection())->establishConnection(WTF::move(completionHandler));
         break;
     case RemoteWorkerType::SharedWorker:
-        SharedWorkerContextManager::singleton().setConnection(WebSharedWorkerContextManagerConnection::create(WTF::move(ipcConnection), WTF::move(site), pageGroupID, webPageProxyID, pageID, store, WTF::move(initializationData)));
+        SharedWorkerContextManager::singleton().setConnection(WebSharedWorkerContextManagerConnection::create(WTF::move(ipcConnection), WTF::move(site), pageGroupID, webPageProxyID, pageID, store, WTF::move(initializationData), workerCrossOriginEmbedderPolicy));
         protect(SharedWorkerContextManager::singleton().connection())->establishConnection(WTF::move(completionHandler));
         break;
     }

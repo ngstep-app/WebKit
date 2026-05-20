@@ -42,7 +42,7 @@ class PredictionPropagationPhase : public Phase {
 public:
     PredictionPropagationPhase(Graph& graph)
         : Phase(graph, "prediction propagation"_s)
-        , m_tupleSpeculations(graph.m_tupleData.size(), SpecNone)
+        , m_tupleSpeculations(FillWith { }, graph.m_tupleData.size(), SpecNone)
     {
     }
     
@@ -1036,6 +1036,8 @@ private:
         case GetByValMegamorphic:
         case ArrayPop:
         case ArrayPush:
+        case ArrayShift:
+        case ArrayUnshift:
         case ArraySplice:
         case RegExpExec:
         case RegExpExecNonGlobalOrSticky:
@@ -1204,7 +1206,8 @@ private:
             break;
         }
 
-        case StringIndexOf: {
+        case StringIndexOf:
+        case StringLastIndexOf: {
             setPrediction(SpecInt32Only);
             break;
         }
@@ -1212,6 +1215,16 @@ private:
         case StringStartsWith:
         case StringEndsWith: {
             setPrediction(SpecBoolean);
+            break;
+        }
+
+        case StringSplit: {
+            setPrediction(SpecArray);
+            break;
+        }
+
+        case StringMatch: {
+            setPrediction(SpecOther | SpecArray);
             break;
         }
 
@@ -1223,6 +1236,8 @@ private:
         case StringValueOf:
         case StringSlice:
         case StringSubstring:
+        case StringSubstr:
+        case ToUpperCase:
         case ToLowerCase:
             setPrediction(SpecString);
             break;
@@ -1328,6 +1343,28 @@ private:
             break;
         }
 
+        case GetCellButterflySlot: {
+            switch (m_currentNode->arrayMode().type()) {
+            case Array::Int32:
+                setPrediction(SpecInt32Only);
+                break;
+            default:
+                setPrediction(SpecBytecodeTop);
+                break;
+            }
+            break;
+        }
+
+        case PutCellButterflySlot:
+        case ArraySortCommit: {
+            break;
+        }
+
+        case ArraySortCompact: {
+            setPrediction(SpecObjectOther);
+            break;
+        }
+
         case GetGlobalThis:
             setPrediction(SpecGlobalProxy);
             break;
@@ -1348,16 +1385,24 @@ private:
             setPrediction(SpecPromiseObject);
             break;
 
+        case NewResolvedPromise:
+        case NewRejectedPromise:
+            setPrediction(SpecPromiseObject);
+            break;
+
         case CreateGenerator:
         case CreateAsyncGenerator:
             setPrediction(SpecObjectOther);
             break;
 
         case NewInternalFieldObject:
+        case NewPromise:
             setPrediction(speculationFromStructure(m_currentNode->structure().get()));
             break;
             
         case ArraySlice:
+        case ArrayConcatArray:
+        case ArrayConcatAppendOne:
         case NewArrayWithSpread:
         case NewArray:
         case NewArrayWithSize:
@@ -1374,6 +1419,10 @@ private:
 
         case ObjectToString:
             setPrediction(SpecString);
+            break;
+
+        case SymbolToString:
+            setPrediction(SpecStringResolved);
             break;
 
         case Spread:
@@ -1637,6 +1686,7 @@ private:
         case PhantomNewArrayWithSpread:
         case PhantomNewArrayBuffer:
         case PhantomNewInternalFieldObject:
+        case PhantomNewPromise:
         case PhantomClonedArguments:
         case PhantomNewRegExp:
         case GetMyArgumentByVal:
@@ -1712,6 +1762,7 @@ private:
         case DefineDataProperty:
         case DefineAccessorProperty:
         case ObjectDefineProperty:
+        case ObjectDefinePropertyFromFields:
         case CallCustomAccessorSetter:
         case DFG::Jump:
         case Branch:
@@ -1773,6 +1824,7 @@ private:
         case PromiseReject:
         case PromiseThen:
         case PerformPromiseThen:
+        case PerformPromiseThenOneHandler:
             break;
             
         // This gets ignored because it only pretends to produce a value.

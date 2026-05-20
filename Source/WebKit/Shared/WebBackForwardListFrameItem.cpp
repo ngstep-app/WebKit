@@ -197,7 +197,11 @@ String WebBackForwardListFrameItem::loggingStringAtIndent(size_t indent)
         builder.append("FrameItemID:"_s, frameItemIDString, ", URL:"_s, url(), ", FrameID:"_s, frameIDString);
         if (!m_frameState->target.isEmpty())
             builder.append(", FrameUniqueName:"_s, m_frameState->target);
+        if (m_frameState->wasCreatedByJSWithoutUserInteraction)
+            builder.append(" (no user gesture)"_s);
         builder.append('\n');
+        builder.append(indentString);
+        builder.append("("_s, m_frameState->title, ")\n"_s);
     }
 
     for (size_t i = 0; i < m_children.size(); ++i) {

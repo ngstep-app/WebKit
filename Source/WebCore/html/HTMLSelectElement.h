@@ -67,6 +67,7 @@ public:
     static HTMLSelectElement* NODELETE findOwnerSelect(ContainerNode*, ExcludeOptGroup);
 
     WEBCORE_EXPORT int selectedIndex() const;
+    HTMLOptionElement* selectedOption();
     WEBCORE_EXPORT void setSelectedIndex(int);
 
     WEBCORE_EXPORT void optionSelectedByUser(int index, bool dispatchChangeEvent, bool allowMultipleSelection = false);
@@ -93,6 +94,9 @@ public:
 
     WEBCORE_EXPORT String value() const;
     WEBCORE_EXPORT void setValue(const String&);
+
+    enum class EmitNewlineForEmptyItems : bool { No, Yes };
+    String collectOptionInnerText(EmitNewlineForEmptyItems = EmitNewlineForEmptyItems::No) const;
 
     WEBCORE_EXPORT Ref<HTMLOptionsCollection> options();
     Ref<HTMLCollection> selectedOptions();
@@ -121,6 +125,7 @@ public:
 
     bool popupIsVisible() const { return m_popupIsVisible; }
     WEBCORE_EXPORT void setPopupIsVisible(bool);
+    std::optional<FloatPoint> lastPopupLocationForTesting() const { return m_lastPopupLocationForTesting; }
 
     bool NODELETE isOpen() const;
 
@@ -157,6 +162,7 @@ public:
     bool isSupportedPropertyIndex(unsigned index);
 
     void scrollToSelection();
+    void selectDefaultOptionIfNeeded(HTMLOptionElement&);
 
     bool canSelectAll() const { return m_multiple; }
     void selectAll();
@@ -187,6 +193,7 @@ public:
 
     WEBCORE_EXPORT bool usesBaseAppearancePicker() const;
     SelectPopoverElement* NODELETE pickerPopoverElement() const;
+    void openPickerForUserInteraction(std::optional<bool> focusVisible = std::nullopt);
     void hidePickerPopoverElement();
     void queuePickerCloseForAppearanceChange();
 
@@ -225,6 +232,8 @@ private:
     void restoreFormControlState(const FormControlState&) final;
 
     void attributeChanged(const QualifiedName&, const AtomString& oldValue, const AtomString& newValue, AttributeModificationReason) final;
+
+    void setDisabledInternal(bool disabled, bool disabledByAncestorFieldset) final;
 
     bool hasPresentationalHintsForAttribute(const QualifiedName&) const final;
 
@@ -285,7 +294,6 @@ private:
     void didAddUserAgentShadowRoot(ShadowRoot&) final;
 
     void showPickerInternal();
-    void openPickerForUserInteraction(std::optional<bool> focusVisible = std::nullopt);
 
     // TypeAheadDataSource functions.
     int indexOfSelectedOption() const final;
@@ -305,6 +313,7 @@ private:
     bool m_multiple;
     bool m_activeSelectionState;
     bool m_allowsNonContiguousSelection;
+    bool m_isCapturingMouseEvents { false };
     mutable bool m_shouldRecalcListItems;
     unsigned m_selectedContentDescendantCount { 0 };
 
@@ -316,6 +325,7 @@ private:
 #if !PLATFORM(IOS_FAMILY)
     RefPtr<PopupMenu> m_popup;
 #endif
+    std::optional<FloatPoint> m_lastPopupLocationForTesting;
     bool m_popupIsVisible { false };
     bool m_wasBaseAppearance { false };
 };

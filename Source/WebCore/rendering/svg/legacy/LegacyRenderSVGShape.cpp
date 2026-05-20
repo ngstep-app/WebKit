@@ -42,6 +42,7 @@
 #include "LegacyRenderSVGShapeInlines.h"
 #include "PointerEventsHitRules.h"
 #include "RenderStyle+GettersInlines.h"
+#include "SVGElementTypeHelpers.h"
 #include "SVGPathData.h"
 #include "SVGRenderingContext.h"
 #include "SVGResources.h"
@@ -93,9 +94,8 @@ void LegacyRenderSVGShape::strokeShape(GraphicsContext& context) const
 
 bool LegacyRenderSVGShape::shapeDependentStrokeContains(const FloatPoint& point, PointCoordinateSpace pointCoordinateSpace)
 {
-    ASSERT(m_path);
-
     if (hasNonScalingStroke() && pointCoordinateSpace != LocalCoordinateSpace) {
+        ASSERT(m_path);
         AffineTransform nonScalingTransform = nonScalingStrokeTransform();
         Path* usePath = nonScalingStrokePath(m_path.get(), nonScalingTransform);
         return usePath->strokeContains(nonScalingTransform.mapPoint(point), [this] (GraphicsContext& context) {
@@ -103,7 +103,7 @@ bool LegacyRenderSVGShape::shapeDependentStrokeContains(const FloatPoint& point,
         });
     }
 
-    return m_path->strokeContains(point, [this] (GraphicsContext& context) {
+    return ensurePath().strokeContains(point, [this] (GraphicsContext& context) {
         SVGRenderSupport::applyStrokeStyleToContext(context, style(), *this);
     });
 }
@@ -229,7 +229,7 @@ static AffineTransform legacyNonScalingStrokeCTM(const Ref<SVGGraphicsElement>& 
             if (CheckedPtr legacyRoot = dynamicDowncast<LegacyRenderSVGRoot>(*renderer)) {
                 FloatPoint location = legacyRoot->localToBorderBoxTransform().mapPoint(FloatPoint());
                 float zoomFactor = 1 / renderer->style().usedZoom();
-                location = renderer->localToAbsolute(location, UseTransforms);
+                location = renderer->localToAbsolute(location, MapCoordinatesMode::UseTransforms);
                 location.scale(zoomFactor);
                 ctm = AffineTransform::makeTranslation(toFloatSize(location)) * ctm;
             }
@@ -380,7 +380,7 @@ FloatPoint LegacyRenderSVGShape::getPointAtLength(float distance) const
 bool LegacyRenderSVGShape::nodeAtFloatPoint(const HitTestRequest& request, HitTestResult& result, const FloatPoint& pointInParent, HitTestAction hitTestAction)
 {
     // We only draw in the forground phase, so we only hit-test then.
-    if (hitTestAction != HitTestForeground)
+    if (hitTestAction != HitTestAction::Foreground)
         return false;
 
     static NeverDestroyed<SVGVisitedRendererTracking::VisitedSet> s_visitedSet;

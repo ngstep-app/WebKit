@@ -28,6 +28,7 @@
 #include "TemporalPlainYearMonth.h"
 
 #include "IntlObjectInlines.h"
+#include "Rounding.h"
 #include "JSCInlines.h"
 #include "LazyPropertyInlines.h"
 #include "TemporalDuration.h"
@@ -64,7 +65,7 @@ void TemporalPlainYearMonth::finishCreation(VM& vm)
     m_calendar.initLater(
         [] (const auto& init) {
             VM& vm = init.vm;
-            auto* plainYearMonth = jsCast<TemporalPlainYearMonth*>(init.owner);
+            auto* plainYearMonth = init.owner;
             auto* globalObject = plainYearMonth->realm();
             auto* calendar = TemporalCalendar::create(vm, globalObject->calendarStructure(), iso8601CalendarID());
             init.set(calendar);
@@ -76,7 +77,7 @@ void TemporalPlainYearMonth::visitChildrenImpl(JSCell* cell, Visitor& visitor)
 {
     Base::visitChildren(cell, visitor);
 
-    auto* thisObject = jsCast<TemporalPlainYearMonth*>(cell);
+    auto* thisObject = uncheckedDowncast<TemporalPlainYearMonth>(cell);
     thisObject->m_calendar.visit(visitor);
 }
 
@@ -148,13 +149,13 @@ TemporalPlainYearMonth* TemporalPlainYearMonth::from(JSGlobalObject* globalObjec
 
     if (item.isObject()) {
         if (item.inherits<TemporalPlainYearMonth>())
-            return jsCast<TemporalPlainYearMonth*>(item);
+            return uncheckedDowncast<TemporalPlainYearMonth>(item);
 
         JSObject* calendar = TemporalCalendar::getTemporalCalendarWithISODefault(globalObject, item);
         RETURN_IF_EXCEPTION(scope, { });
 
         // FIXME: Implement after fleshing out Temporal.Calendar.
-        if (!calendar->inherits<TemporalCalendar>() || !jsCast<TemporalCalendar*>(calendar)->isISO8601()) [[unlikely]] {
+        if (!calendar->inherits<TemporalCalendar>() || !uncheckedDowncast<TemporalCalendar>(calendar)->isISO8601()) [[unlikely]] {
             throwRangeError(globalObject, scope, "unimplemented: from non-ISO8601 calendar"_s);
             return { };
         }
@@ -260,7 +261,7 @@ ISO8601::Duration TemporalPlainYearMonth::sinceOrUntil(JSGlobalObject* globalObj
     RETURN_IF_EXCEPTION(scope, { });
 
     if (op == DifferenceOperation::Since)
-        roundingMode = negateTemporalRoundingMode(roundingMode);
+        roundingMode = TemporalCore::negateTemporalRoundingMode(roundingMode);
 
     RELEASE_AND_RETURN(scope, TemporalCalendar::differenceTemporalPlainYearMonth<op>(globalObject, plainYearMonth(), other->plainYearMonth(), increment, smallestUnit, largestUnit, roundingMode));
 }
@@ -279,5 +280,45 @@ String TemporalPlainYearMonth::monthCode() const
 {
     return ISO8601::monthCode(m_plainYearMonth.month());
 }
+
+// https://tc39.es/proposal-temporal/#sec-temporal-adddurationtoyearmonth
+template<AddOrSubtract op>
+ISO8601::PlainYearMonth TemporalPlainYearMonth::addDurationToYearMonth(JSGlobalObject* globalObject, ISO8601::PlainYearMonth yearMonth, ISO8601::Duration duration, TemporalOverflow overflow)
+{
+    VM& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    if constexpr (op == AddOrSubtract::Subtract)
+        duration = -duration;
+    auto sign = TemporalDuration::sign(duration);
+    auto year = yearMonth.year();
+    auto month = yearMonth.month();
+    auto constexpr day = 1;
+    auto intermediateDate = ISO8601::PlainDate(year, month, day);
+    if (!ISO8601::isDateTimeWithinLimits(year, month, day, 0, 0, 0, 0, 0, 0)) [[unlikely]] {
+        throwRangeError(globalObject, scope, "date out of range in add or subtract"_s);
+        return { };
+    }
+    ISO8601::PlainDate date;
+    if (sign < 0) {
+        auto oneMonthDuration = ISO8601::Duration { 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
+        auto nextMonth = TemporalCalendar::isoDateAdd(globalObject,
+            intermediateDate, oneMonthDuration, TemporalOverflow::Constrain);
+        RETURN_IF_EXCEPTION(scope, { });
+        int32_t y = nextMonth.year();
+        uint8_t m = nextMonth.month();
+        uint8_t d = nextMonth.day() - 1;
+        date = TemporalCalendar::balanceISODate(globalObject, y, m, d);
+    } else
+        date = intermediateDate;
+    auto durationToAdd = TemporalDuration::toDateDurationRecordWithoutTime(globalObject, duration);
+    RETURN_IF_EXCEPTION(scope, { });
+    auto addedDate = TemporalCalendar::isoDateAdd(globalObject, date, durationToAdd, overflow);
+    RETURN_IF_EXCEPTION(scope, { });
+    return ISO8601::PlainYearMonth(addedDate.year(), addedDate.month());
+}
+
+template ISO8601::PlainYearMonth TemporalPlainYearMonth::addDurationToYearMonth<AddOrSubtract::Add>(JSGlobalObject*, ISO8601::PlainYearMonth, ISO8601::Duration, TemporalOverflow);
+template ISO8601::PlainYearMonth TemporalPlainYearMonth::addDurationToYearMonth<AddOrSubtract::Subtract>(JSGlobalObject*, ISO8601::PlainYearMonth, ISO8601::Duration, TemporalOverflow);
 
 } // namespace JSC

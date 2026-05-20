@@ -203,7 +203,6 @@ void RemoteGPUProxy::requestAdapter(const WebCore::WebGPU::RequestAdapterOptions
         response->limits.maxBufferSize,
         response->limits.maxVertexAttributes,
         response->limits.maxVertexBufferArrayStride,
-        response->limits.maxInterStageShaderComponents,
         response->limits.maxInterStageShaderVariables,
         response->limits.maxColorAttachments,
         response->limits.maxColorAttachmentBytesPerSample,
@@ -227,8 +226,10 @@ RefPtr<WebKit::Mesh> RemoteGPUProxy::createModelBacking(unsigned width, unsigned
     auto identifier = WebModelIdentifier::generate();
 
     auto sendResult = sendSync(Messages::RemoteGPU::CreateModelBacking(width, height, diffuseTexture, specularTexture, identifier));
-    if (!sendResult.succeeded())
+    if (!sendResult.succeeded()) {
         callback({ });
+        return nullptr;
+    }
 
     auto [response] = sendResult.takeReply();
     callback(WTF::move(response));
@@ -252,7 +253,7 @@ RefPtr<WebCore::WebGPU::PresentationContext> RemoteGPUProxy::createPresentationC
 
     // FIXME: This is super yucky. We should solve this a better way. (For both WK1 and WK2.)
     // Maybe PresentationContext needs a present() function?
-    Ref compositorIntegration = const_cast<WebGPU::RemoteCompositorIntegrationProxy&>(m_convertToBackingContext->convertToRawBacking(Ref { descriptor.compositorIntegration }.get()));
+    Ref compositorIntegration = const_cast<WebGPU::RemoteCompositorIntegrationProxy&>(m_convertToBackingContext->convertToRawBacking(protect(descriptor.compositorIntegration).get()));
 
     auto convertedDescriptor = m_convertToBackingContext->convertToBacking(descriptor);
     if (!convertedDescriptor)

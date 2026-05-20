@@ -31,6 +31,10 @@
 
 namespace WebCore {
 
+namespace Style {
+struct Difference;
+}
+
 class HTMLModelElement;
 
 class RenderModel final : public RenderReplaced {
@@ -48,6 +52,10 @@ private:
 
     bool NODELETE requiresLayer() const final;
     void updateFromElement() final;
+    void styleDidChange(Style::Difference, const RenderStyle* oldStyle) final;
+#if USE(SYSTEM_PREVIEW)
+    void paintReplaced(PaintInfo&, const LayoutPoint&) final;
+#endif
 
     void update();
 };

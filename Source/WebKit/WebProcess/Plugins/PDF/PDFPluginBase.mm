@@ -77,12 +77,12 @@
 #import <WebCore/PagePasteboardContext.h>
 #import <WebCore/Pasteboard.h>
 #import <WebCore/PasteboardStrategy.h>
+#import <WebCore/PlatformRenderTheme.h>
 #import <WebCore/PlatformStrategies.h>
 #import <WebCore/PluginDocument.h>
 #import <WebCore/RenderEmbeddedObject.h>
 #import <WebCore/RenderLayer.h>
 #import <WebCore/RenderLayerScrollableArea.h>
-#import <WebCore/RenderTheme.h>
 #import <WebCore/ResourceResponse.h>
 #import <WebCore/ScrollAnimator.h>
 #import <WebCore/Settings.h>
@@ -134,16 +134,13 @@ PluginInfo PDFPluginBase::pluginInfo()
 }
 
 PDFPluginBase::PDFPluginBase(HTMLPlugInElement& element)
-    : m_frame(*WebFrame::fromCoreFrame(*protect(element.document().frame())))
+    : m_frame(*WebFrame::fromCoreFrame(*element.document().frame()))
     , m_element(element)
 #if HAVE(INCREMENTAL_PDF_APIS)
     , m_incrementalPDFLoadingEnabled(element.document().settings().incrementalPDFLoadingEnabled())
 #endif
 {
-    if (isFullFramePlugin()) {
-        Ref document = element.document();
-        RefPtr { document->bodyOrFrameset() }->setInlineStyleProperty(CSSPropertyBackgroundColor, serializationForHTML(pluginBackgroundColor()));
-    }
+    updateFullFramePluginBackgroundColor();
 }
 
 PDFPluginBase::~PDFPluginBase()
@@ -837,7 +834,7 @@ ScrollableArea* PDFPluginBase::enclosingScrollableArea() const
 #if ENABLE(FORM_CONTROL_REFRESH)
 bool PDFPluginBase::formControlRefreshEnabled() const
 {
-    if (RefPtr page = this->page())
+    if (auto* page = this->page())
         return page->settings().formControlRefreshEnabled();
 
     return false;
@@ -917,6 +914,15 @@ float PDFPluginBase::deviceScaleFactor() const
     if (auto* page = this->page())
         return page->deviceScaleFactor();
     return 1;
+}
+
+bool PDFPluginBase::useDarkAppearance() const
+{
+    if (!isFullFramePlugin())
+        return ScrollableArea::useDarkAppearance();
+    if (RefPtr page = this->page())
+        return page->useDarkAppearance();
+    return false;
 }
 
 void PDFPluginBase::scrollbarStyleChanged(ScrollbarStyle style, bool forceUpdate)
@@ -1340,7 +1346,7 @@ bool PDFPluginBase::showContextMenuAtPoint(const IntPoint& point)
     if (!frameView)
         return false;
     IntPoint contentsPoint = frameView->contentsToRootView(point);
-    WebMouseEvent event({ WebEventType::MouseDown, OptionSet<WebEventModifier> { }, MonotonicTime::now() }, WebMouseEventButton::Right, 0, contentsPoint, contentsPoint, 0, 0, 0, 1, WebCore::ForceAtClick, WebMouseEventInputSource::UserDriven);
+    WebMouseEvent event({ WebEventType::MouseDown, OptionSet<WebEventModifier> { }, MonotonicTime::now() }, WebMouseEventButton::Right, 0, contentsPoint, contentsPoint, 0, 0, 0, 1, WebCore::ForceAtClick, WebEventInputSource::UserDriven);
     return handleContextMenuEvent(event);
 }
 
@@ -1637,6 +1643,20 @@ Color PDFPluginBase::pluginBackgroundColor() const
     static NeverDestroyed color = roundAndClampToSRGBALossy(RetainPtr { [CocoaColor grayColor].CGColor }.get());
     return color.get();
 #endif
+}
+
+void PDFPluginBase::updateFullFramePluginBackgroundColor()
+{
+    if (!isFullFramePlugin())
+        return;
+
+    RefPtr element = m_element.get();
+    if (!element)
+        return;
+
+    Ref document = element->document();
+    if (RefPtr body = document->bodyOrFrameset())
+        body->setInlineStyleProperty(CSSPropertyBackgroundColor, serializationForHTML(pluginBackgroundColor()));
 }
 
 unsigned PDFPluginBase::countFindMatches(const String& target, WebCore::FindOptions options, unsigned maxMatchCount)

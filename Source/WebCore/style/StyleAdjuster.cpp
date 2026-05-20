@@ -39,7 +39,6 @@
 #include "ElementAncestorIteratorInlines.h"
 #include "ElementInlines.h"
 #include "EventNames.h"
-#include "EventTargetInlines.h"
 #include "HTMLBodyElement.h"
 #include "HTMLDialogElement.h"
 #include "HTMLDivElement.h"
@@ -57,6 +56,7 @@
 #include "NodeName.h"
 #include "Page.h"
 #include "PathOperation.h"
+#include "PlatformRenderTheme.h"
 #include "RenderBox.h"
 #include "RenderStyle+GettersInlines.h"
 #include "RenderStyle+SettersInlines.h"
@@ -219,8 +219,8 @@ bool Adjuster::adjustEventListenerRegionTypesForRootStyle(RenderStyle& rootStyle
         regionTypes.add(computeEventListenerRegionTypes(document, rootStyle, *window, { }));
 
 #if ENABLE(TOUCH_EVENT_REGIONS)
-    // https://html.spec.whatwg.org/multipage/popover.html#popover-light-dismiss
-    if (document.needsPointerEventHandlingForPopover()) {
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#run-light-dismiss-activities
+    if (document.shouldUseTouchEventRegions() && document.needsPointerEventHandlingForPopoverOrDialog()) {
         regionTypes.add(EventListenerRegionType::PointerDown);
         regionTypes.add(EventListenerRegionType::PointerUp);
     }
@@ -262,7 +262,7 @@ OptionSet<EventListenerRegionType> Adjuster::computeEventListenerRegionTypes(con
     }
 #endif
 #if ENABLE(TOUCH_EVENT_REGIONS)
-    if (eventTarget.hasEventListeners()) {
+    if (document.shouldUseTouchEventRegions() && eventTarget.hasEventListeners()) {
         findListeners(eventNames().touchstartEvent, EventListenerRegionType::TouchStart, EventListenerRegionType::NonPassiveTouchStart);
         findListeners(eventNames().touchendEvent, EventListenerRegionType::TouchEnd, EventListenerRegionType::NonPassiveTouchEnd);
         // `touchcancel` is sent after the event has already been cancelled. Calling preventDefault() has no effect, so we don't
@@ -278,11 +278,13 @@ OptionSet<EventListenerRegionType> Adjuster::computeEventListenerRegionTypes(con
         findListeners(eventNames().pointeroutEvent, EventListenerRegionType::PointerOut, EventListenerRegionType::NonPassivePointerOut);
         findListeners(eventNames().pointeroverEvent, EventListenerRegionType::PointerOver, EventListenerRegionType::NonPassivePointerOver);
         findListeners(eventNames().pointerupEvent, EventListenerRegionType::PointerUp, EventListenerRegionType::NonPassivePointerUp);
+#if ENABLE(TOUCH_EVENTS)
         if (document.quirks().shouldDispatchSimulatedMouseEvents(&eventTarget)) {
             findListeners(eventNames().mousedownEvent, EventListenerRegionType::MouseDown, EventListenerRegionType::NonPassiveMouseDown);
             findListeners(eventNames().mouseupEvent, EventListenerRegionType::MouseUp, EventListenerRegionType::NonPassiveMouseUp);
             findListeners(eventNames().mousemoveEvent, EventListenerRegionType::MouseMove, EventListenerRegionType::NonPassiveMouseMove);
         }
+#endif
 
         findListeners(eventNames().gesturechangeEvent, EventListenerRegionType::GestureChange, EventListenerRegionType::NonPassiveGestureChange);
         findListeners(eventNames().gestureendEvent, EventListenerRegionType::GestureEnd, EventListenerRegionType::NonPassiveGestureEnd);
@@ -483,11 +485,10 @@ void Adjuster::adjust(RenderStyle& style) const
         if (style.display() == DisplayType::InlineFlow && !style.pseudoElementType() && style.writingMode().computedWritingMode() != m_parentStyle.writingMode().computedWritingMode())
             style.setDisplayMaintainingOriginalDisplay(DisplayType::InlineFlowRoot);
 
-        // After performing the display mutation, check table rows. We do not honor position:relative or position:sticky on
-        // table rows or cells. This has been established for position:relative in CSS2.1 (and caused a crash in containingBlock()
-        // on some sites).
+        // We do not honor position:relative or position:sticky on table row groups. Table rows are
+        // allowed to be position:relative (they extend RenderBlock and can be proper containing blocks).
         if ((style.display() == DisplayType::TableHeaderGroup || style.display() == DisplayType::TableRowGroup
-            || style.display() == DisplayType::TableFooterGroup || style.display() == DisplayType::TableRow)
+            || style.display() == DisplayType::TableFooterGroup)
             && style.position() == PositionType::Relative)
             style.setPosition(PositionType::Static);
 
@@ -553,7 +554,7 @@ void Adjuster::adjust(RenderStyle& style) const
         }
 
         // Make sure our z-index value is only applied if the object is positioned.
-        return style.position() == PositionType::Static && !parentBoxStyle.display().isFlexibleOrGridFormattingContextBox();
+        return style.position() == PositionType::Static && !parentBoxStyle.display().isFlexibleBoxIncludingDeprecatedOrGridFormattingContextBox();
     };
 
     bool hasAutoSpecifiedZIndex = hasAutoZIndex(style, m_parentBoxStyle, m_element.get());
@@ -642,7 +643,11 @@ void Adjuster::adjust(RenderStyle& style) const
 
     bool overflowIsClipOrVisible = isOverflowClipOrVisible(style.overflowY()) && isOverflowClipOrVisible(style.overflowX());
 
-    if (!overflowIsClipOrVisible && style.display().isTableBox()) {
+    // The overflow property does not apply to table row elements (CSS2 section 11.1.1).
+    if (style.display() == DisplayType::TableRow) {
+        style.setOverflowX(ComputedStyle::initialOverflowX());
+        style.setOverflowY(ComputedStyle::initialOverflowY());
+    } else if (!overflowIsClipOrVisible && style.display().isTableBox()) {
         // Tables only support overflow:hidden and overflow:visible and ignore anything else,
         // see https://drafts.csswg.org/css2/#overflow. As a table is not a block
         // container box the rules for resolving conflicting x and y values in CSS Overflow Module
@@ -1013,6 +1018,15 @@ void Adjuster::adjustForSiteSpecificQuirks(RenderStyle& style) const
         }
     }
 
+    // yahoo.com rdar://170502516
+    if (documentQuirks.needsYahooVolumeSliderQuirk()) {
+        static MainThreadNeverDestroyed<const AtomString> className("vjs-volume-control"_s);
+        if (is<HTMLDivElement>(*m_element) && m_element->hasClassName(className)) {
+            style.setMinHeight(100_css_percentage);
+            style.setAlignItems(Style::AlignItems { CSS::Keyword::Center { } });
+        }
+    }
+
 #if PLATFORM(IOS_FAMILY)
     if (documentQuirks.needsGoogleMapsScrollingQuirk()) {
         static MainThreadNeverDestroyed<const AtomString> className("PUtLdf"_s);
@@ -1068,11 +1082,11 @@ void Adjuster::adjustForSiteSpecificQuirks(RenderStyle& style) const
 #endif
 #endif
 
-    if (documentQuirks.needsHotelsAnimationQuirk(*m_element, style)) {
+    if (documentQuirks.needsExpediaGroupAnimationQuirk(*m_element)) {
         // We need to reset animation styles that are mistakenly overridden:
         //     animation-delay: 0s, 0.06s;
         //     animation-duration: 0.18s, 0.06s;
-        //     animation-fill-mode: none, forwards;
+        //     animation-fill-mode: none, both;
         //     animation-name: menu-grow-left, menu-fade-in;
         auto menuGrowLeftAnimation = Style::Animation { { ScopedName { "menu-grow-left"_s } } };
         menuGrowLeftAnimation.setDelay(0_css_s);
@@ -1082,7 +1096,7 @@ void Adjuster::adjustForSiteSpecificQuirks(RenderStyle& style) const
         auto menuFadeInAnimation = Style::Animation { { ScopedName { "menu-fade-in"_s } } };
         menuFadeInAnimation.setDelay(.06_css_s);
         menuFadeInAnimation.setDuration(.06_css_s);
-        menuFadeInAnimation.setFillMode(AnimationFillMode::Forwards);
+        menuFadeInAnimation.setFillMode(AnimationFillMode::Both);
 
         auto& animations = style.ensureAnimations();
         animations = Style::Animations { WTF::move(menuGrowLeftAnimation), WTF::move(menuFadeInAnimation) };

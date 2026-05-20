@@ -31,6 +31,7 @@
 #include "JSDOMConvertInterface.h"
 #include "ShadowRoot.h"
 #include "TreeScope.h"
+#include <JavaScriptCore/JSGlobalObjectInlines.h>
 
 namespace WebCore {
 
@@ -87,7 +88,7 @@ JSC::JSValue CSSStyleSheetObservableArray::valueAt(JSC::JSGlobalObject* lexicalG
 {
     if (index >= m_sheets.size())
         return JSC::jsUndefined();
-    return toJS(lexicalGlobalObject, JSC::jsCast<JSDOMGlobalObject*>(lexicalGlobalObject), m_sheets[index]);
+    return toJS(lexicalGlobalObject, downcast<JSDOMGlobalObject>(lexicalGlobalObject), m_sheets[index]);
 }
 
 ExceptionOr<void> CSSStyleSheetObservableArray::setSheets(Vector<Ref<CSSStyleSheet>>&& sheets)

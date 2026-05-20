@@ -104,7 +104,7 @@ static String preferredFilenameForElement(const HTMLImageElement& element)
 
     auto suggestedName = [&] -> String {
         Ref document = element.document();
-        RetainPtr url = document->completeURL(urlString).createNSURL();
+        RetainPtr url = document->encodingParseURL(urlString).createNSURL();
         if (!url)
             url = [NSURL _web_URLWithString:[urlString.createNSString() stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] relativeToURL:nil];
 
@@ -218,7 +218,7 @@ static bool elementQualifiesForWritingToolsPreservation(Element* element, const 
 
     if (element->getIdAttribute() == "AppleMailSignature"_s) [[unlikely]] {
         // FIXME (310312): Remove this special case once Mail adopts `-_addWritingToolsPreservedNodes:`.
-        if (RefPtr page = element->document().page(); page && page->isEditable())
+        if (auto* page = element->document().page(); page && page->isEditable())
             return true;
     }
 

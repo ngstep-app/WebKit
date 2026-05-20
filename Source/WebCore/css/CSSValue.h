@@ -1,6 +1,7 @@
 /*
  * (C) 1999-2003 Lars Knoll (knoll@kde.org)
  * Copyright (C) 2004-2023 Apple Inc. All rights reserved.
+ * Copyright (C) 2026 Samuel Weinig <sam@webkit.org>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -84,6 +85,7 @@ public:
     bool isCounter() const { return m_classType == ClassType::Counter; }
     bool isCrossfadeValue() const { return m_classType == ClassType::Crossfade; }
     bool isCursorImageValue() const { return m_classType == ClassType::CursorImage; }
+    bool isCustomIdentValue() const { return m_classType == ClassType::CustomIdent; }
     bool isCustomPropertyValue() const { return m_classType == ClassType::CustomProperty; }
     bool isDynamicRangeLimitValue() const { return m_classType == ClassType::DynamicRangeLimit; }
     bool isEasingFunctionValue() const { return m_classType == ClassType::EasingFunction; }
@@ -91,6 +93,7 @@ public:
     bool isFilterValue() const { return m_classType == ClassType::Filter; }
     bool isFontFaceSrcLocalValue() const { return m_classType == ClassType::FontFaceSrcLocal; }
     bool isFontFaceSrcResourceValue() const { return m_classType == ClassType::FontFaceSrcResource; }
+    bool isFontFamilyNameValue() const { return m_classType == ClassType::FontFamilyName; }
     bool isFontFeatureValue() const { return m_classType == ClassType::FontFeature; }
     bool isFontStyleRangeValue() const { return m_classType == ClassType::FontStyleRange; }
     bool isFontStyleWithAngleValue() const { return m_classType == ClassType::FontStyleWithAngle; }
@@ -98,11 +101,12 @@ public:
     bool isFontVariationValue() const { return m_classType == ClassType::FontVariation; }
     bool isFunctionValue() const { return m_classType == ClassType::Function; }
     bool isGradientValue() const { return m_classType == ClassType::Gradient; }
-    bool isGridAutoRepeatValue() const { return m_classType == ClassType::GridAutoRepeat; }
-    bool isGridIntegerRepeatValue() const { return m_classType == ClassType::GridIntegerRepeat; }
-    bool isGridLineNamesValue() const { return m_classType == ClassType::GridLineNames; }
+    bool isGridAutoFlowValue() const { return m_classType == ClassType::GridAutoFlow; }
     bool isGridLineValue() const { return m_classType == ClassType::GridLineValue; }
     bool isGridTemplateAreasValue() const { return m_classType == ClassType::GridTemplateAreas; }
+    bool isGridTemplateListValue() const { return m_classType == ClassType::GridTemplateList; }
+    bool isGridTrackSizesValue() const { return m_classType == ClassType::GridTrackSizes; }
+    bool isKeywordValue() const { return m_classType == ClassType::Keyword; }
     bool isImageSetOptionValue() const { return m_classType == ClassType::ImageSetOption; }
     bool isImageSetValue() const { return m_classType == ClassType::ImageSet; }
     bool isImageValue() const { return m_classType == ClassType::Image; }
@@ -121,7 +125,7 @@ public:
     bool isRect() const { return m_classType == ClassType::Rect; }
     bool isReflectValue() const { return m_classType == ClassType::Reflect; }
     bool isScrollValue() const { return m_classType == ClassType::Scroll; }
-    bool isSubgridValue() const { return m_classType == ClassType::Subgrid; }
+    bool isStringValue() const { return m_classType == ClassType::String; }
     bool isTextShadowPropertyValue() const { return m_classType == ClassType::TextShadowProperty; }
     bool isTransformListValue() const { return m_classType == ClassType::TransformList; }
     bool isURL() const { return m_classType == ClassType::URL; }
@@ -171,24 +175,10 @@ public:
     static constexpr size_t ValueSeparatorBits = 2;
     enum ValueSeparator : uint8_t { SpaceSeparator, CommaSeparator, SlashSeparator };
 
-    inline bool isCustomIdent() const;
-    inline String customIdent() const;
-
-    inline bool isString() const;
-    inline String string() const;
-
-    inline bool isInteger() const;
-    inline int integer(const CSSToLengthConversionData&) const;
-    inline int integerDeprecated() const;
-
     inline const CSSValue& first() const; // CSSValuePair
     inline const CSSValue& second() const; // CSSValuePair
     inline const Quad& quad() const; // CSSValueQuad
     inline const Rect& rect() const; // CSSSValueRect
-
-    // FIXME: Should these be named isIdent and ident instead?
-    inline bool isValueID() const;
-    inline CSSValueID valueID() const;
 
     bool customMayDependOnBaseURL() const { return false; }
     IterationStatus customVisitChildren(NOESCAPE const Function<IterationStatus(CSSValue&)>&) const { return IterationStatus::Continue; }
@@ -226,6 +216,7 @@ protected:
         ColorScheme,
 #endif
         Counter,
+        CustomIdent,
         CustomProperty,
         DynamicRangeLimit,
         EasingFunction,
@@ -233,13 +224,17 @@ protected:
         Font,
         FontFaceSrcLocal,
         FontFaceSrcResource,
+        FontFamilyName,
         FontFeature,
         FontStyleRange,
         FontStyleWithAngle,
         FontVariation,
-        GridLineNames,
+        GridAutoFlow,
         GridLineValue,
         GridTemplateAreas,
+        GridTemplateList,
+        GridTrackSizes,
+        Keyword,
         OffsetRotate,
         Path,
         ShorthandSubstitution,
@@ -256,16 +251,14 @@ protected:
         URL,
         UnicodeRange,
         ValuePair,
+        String,
         Substitution,
         View,
 
         // Classes that contain vectors, which derive from CSSValueContainingVector.
         ValueList,
         Function,
-        GridAutoRepeat,
-        GridIntegerRepeat,
         ImageSet,
-        Subgrid,
         TransformList,
         // Do not append classes here unless they derive from CSSValueContainingVector.
     };

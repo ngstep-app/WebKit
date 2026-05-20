@@ -196,6 +196,7 @@ public:
     void setDatabaseQuota(uint64_t);
     JSRetainPtr<JSStringRef> pathToLocalResource(JSStringRef);
     void syncLocalStorage();
+    unsigned storageAreaMapCount();
 
     void clearStorage();
 
@@ -238,6 +239,8 @@ public:
 
     bool didReceiveServerRedirectForProvisionalNavigation() const;
     void clearDidReceiveServerRedirectForProvisionalNavigation();
+
+    JSRetainPtr<JSStringRef> lastProvisionalNavigationFailureURL() const;
 
     bool shouldWaitUntilDone() const;
 
@@ -399,6 +402,9 @@ public:
     bool isStatisticsHasLocalStorage(JSStringRef hostName);
     void setStatisticsCacheMaxAgeCap(double seconds);
     bool hasStatisticsIsolatedSession(JSStringRef hostName);
+
+    void setGlobalPrivacyControl(bool);
+    bool getGlobalPrivacyControl();
 
     // Injected bundle form client.
     void installTextDidChangeInTextFieldCallback(JSContextRef, JSValueRef callback);

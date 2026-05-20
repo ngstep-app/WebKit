@@ -123,9 +123,9 @@ Cache::Cache(NetworkProcess& networkProcess, const String& storageDirectory, Ref
             if (RefPtr protectedThis = weakThis.get())
                 updateSpeculativeLoadManagerEnabledState();
         });
-        m_thermalMitigationNotifier = makeUnique<WebCore::ThermalMitigationNotifier>([this, weakThis = WeakPtr { *this }](bool) {
-            if (RefPtr protectedThis = weakThis.get())
-                updateSpeculativeLoadManagerEnabledState();
+        m_thermalMitigationNotifier = WebCore::ThermalMitigationNotifier::create([weakThis = WeakPtr { *this }](bool) {
+            if (RefPtr protectedThis = weakThis)
+                protectedThis->updateSpeculativeLoadManagerEnabledState();
         });
         if (shouldUseSpeculativeLoadManager())
             m_speculativeLoadManager = makeUnique<SpeculativeLoadManager>(*this, protect(m_storage));
@@ -149,9 +149,7 @@ Cache::Cache(NetworkProcess& networkProcess, const String& storageDirectory, Ref
     }
 }
 
-Cache::~Cache()
-{
-}
+Cache::~Cache() = default;
 
 size_t Cache::capacity() const
 {
@@ -762,6 +760,24 @@ void Cache::fetchData(bool shouldComputeSize, CompletionHandler<void(Vector<Webs
             return WebsiteData::Entry { originAndSize.key, WebsiteDataType::DiskCache, originAndSize.value };
         });
         completionHandler(WTF::move(entries));
+    });
+}
+
+void Cache::fetchOriginAccessTimes(CompletionHandler<void(HashMap<WebCore::RegistrableDomain, WallTime>&&)>&& completionHandler)
+{
+    HashMap<WebCore::RegistrableDomain, WallTime> originAccessTimes;
+    m_storage->traverse(resourceType(), { Storage::TraverseFlag::LastAccessedRecordPerPartition }, [completionHandler = WTF::move(completionHandler), originAccessTimes = WTF::move(originAccessTimes)](const Storage::Record* record, const Storage::RecordInfo& recordInfo) mutable {
+        if (!record) {
+            completionHandler(WTF::move(originAccessTimes));
+            return;
+        }
+
+        auto& partition = record->key.partition();
+        if (partition.isEmpty())
+            return;
+
+        auto domain = WebCore::RegistrableDomain::uncheckedCreateFromRegistrableDomainString(partition);
+        originAccessTimes.set(WTF::move(domain), recordInfo.lastAccessTime);
     });
 }
 

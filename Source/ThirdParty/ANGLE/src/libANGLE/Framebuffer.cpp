@@ -947,6 +947,11 @@ void Framebuffer::onDestroy(const Context *context)
         mPixelLocalStorage->onFramebufferDestroyed(context);
     }
 
+    if (context && context->retainIdUntilObjectDestroyed())
+    {
+        context->onFramebufferDestroy(this);
+    }
+
     mImpl->destroy(context);
 }
 
@@ -1802,7 +1807,7 @@ angle::Result Framebuffer::invalidate(const Context *context,
 }
 
 bool Framebuffer::partialClearNeedsInit(const Context *context,
-                                        bool color,
+                                        DrawBufferMask color,
                                         bool depth,
                                         bool stencil)
 {
@@ -1827,7 +1832,7 @@ bool Framebuffer::partialClearNeedsInit(const Context *context,
 
     // If colors masked, we must clear before we clear. Do a simple check.
     // TODO(jmadill): Filter out unused color channels from the test.
-    if (color && glState.anyActiveDrawBufferChannelMasked())
+    if (color.any() && glState.anyActiveDrawBufferChannelMasked())
     {
         return true;
     }
@@ -1836,15 +1841,31 @@ bool Framebuffer::partialClearNeedsInit(const Context *context,
     {
         ASSERT(HasSupportedStencilBitCount(glState.getDrawFramebuffer()));
 
-        // The least significant |stencilBits| of stencil mask state specify a
-        // mask. Compare the masks for differences only in those bits, ignoring any
-        // difference in the high bits.
         const auto &depthStencil       = glState.getDepthStencilState();
-        const GLuint differentFwdMasks = depthStencil.stencilMask ^ depthStencil.stencilWritemask;
-        const GLuint differentBackMasks =
-            depthStencil.stencilBackMask ^ depthStencil.stencilBackWritemask;
+        // The least significant |stencilBits| of stencil mask state specify a
+        // mask. Check only those bits, ignoring any masked high bits.
+        // Only the stencil write mask can affect which stencil bits are cleared. Clears are always
+        // considered to be front-facing geometry so the stencil back write mask does not need to be
+        // considered.
+        if ((depthStencil.stencilWritemask & 0xFF) != 0xFF)
+        {
+            return true;
+        }
+    }
 
-        if (((differentFwdMasks | differentBackMasks) & 0xFF) != 0)
+    // For layered attachments, consider this a partial clear.  Otherwise the framebuffer clears
+    // some layers but marks the entire mip as initialized.
+    if (depth && mState.mDepthAttachment.hasLayer())
+    {
+        return true;
+    }
+    if (stencil && mState.mStencilAttachment.hasLayer())
+    {
+        return true;
+    }
+    for (size_t colorIndex : color)
+    {
+        if (mState.mColorAttachments[colorIndex].hasLayer())
         {
             return true;
         }
@@ -2544,7 +2565,9 @@ bool Framebuffer::formsRenderingFeedbackLoopWith(const Context *context) const
 
     // In some error cases there may be no bound program or executable.
     if (!executable)
+    {
         return false;
+    }
 
     const ActiveTextureMask &activeTextures    = executable->getActiveSamplersMask();
     const ActiveTextureTypeArray &textureTypes = executable->getActiveSamplerTypes();
@@ -2730,7 +2753,13 @@ angle::Result Framebuffer::ensureClearAttachmentsInitialized(const Context *cont
         return angle::Result::Continue;
     }
 
-    if (partialClearNeedsInit(context, color, depth, stencil))
+    // Note that mResourceNeedsInit puts the color buffers first, and so the bits for color buffers
+    // match the indices in DrawBufferMask.  Additionally, the depth and stencil bits are
+    // automatically dropped as part of the constructor for DrawBufferMask, since they don't fit,
+    // but are explicitly masked out here for clarity.
+    const DrawBufferMask colorAttachmentsNeedingInit(mState.mResourceNeedsInit.bits() &
+                                                     DrawBufferMask().set().bits());
+    if (partialClearNeedsInit(context, colorAttachmentsNeedingInit, depth, stencil))
     {
         ANGLE_TRY(ensureDrawAttachmentsInitialized(context));
     }
@@ -2805,7 +2834,7 @@ angle::Result Framebuffer::ensureClearBufferAttachmentsInitialized(const Context
             break;
     }
 
-    if (partialBufferClearNeedsInit(context, buffer) &&
+    if (partialBufferClearNeedsInit(context, buffer, clearColorAttachments) &&
         (clearColorAttachments.any() || clearDepth || clearStencil))
     {
         ANGLE_TRY(mImpl->ensureAttachmentsInitialized(context, clearColorAttachments, clearDepth,
@@ -2995,7 +3024,9 @@ GLuint Framebuffer::getSupportedFoveationFeatures() const
     return mState.mFoveationState.getSupportedFoveationFeatures();
 }
 
-bool Framebuffer::partialBufferClearNeedsInit(const Context *context, GLenum bufferType)
+bool Framebuffer::partialBufferClearNeedsInit(const Context *context,
+                                              GLenum bufferType,
+                                              DrawBufferMask drawBuffers)
 {
     if (!context->isRobustResourceInitEnabled() || mState.mResourceNeedsInit.none())
     {
@@ -3005,13 +3036,13 @@ bool Framebuffer::partialBufferClearNeedsInit(const Context *context, GLenum buf
     switch (bufferType)
     {
         case GL_COLOR:
-            return partialClearNeedsInit(context, true, false, false);
+            return partialClearNeedsInit(context, drawBuffers, false, false);
         case GL_DEPTH:
-            return partialClearNeedsInit(context, false, true, false);
+            return partialClearNeedsInit(context, {}, true, false);
         case GL_STENCIL:
-            return partialClearNeedsInit(context, false, false, true);
+            return partialClearNeedsInit(context, {}, false, true);
         case GL_DEPTH_STENCIL:
-            return partialClearNeedsInit(context, false, true, true);
+            return partialClearNeedsInit(context, {}, true, true);
         default:
             UNREACHABLE();
             return false;

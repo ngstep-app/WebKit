@@ -64,6 +64,7 @@
 #import <WebCore/AccessibilityObject.h>
 #import <WebCore/AccessibilityScrollView.h>
 #import <WebCore/AnimationTimelinesController.h>
+#import <WebCore/CSSKeywordValue.h>
 #import <WebCore/Chrome.h>
 #import <WebCore/ChromeClient.h>
 #if ENABLE(CONTENT_CHANGE_OBSERVER)
@@ -121,6 +122,7 @@
 #import <WebCore/PaymentCoordinator.h>
 #import <WebCore/PlatformMediaSessionManager.h>
 #import <WebCore/PlatformMouseEvent.h>
+#import <WebCore/PlatformRenderTheme.h>
 #import <WebCore/PrintContext.h>
 #import <WebCore/Range.h>
 #import <WebCore/RemoteFrame.h>
@@ -131,7 +133,6 @@
 #import <WebCore/RenderElement.h>
 #import <WebCore/RenderLayer.h>
 #import <WebCore/RenderObjectInlines.h>
-#import <WebCore/RenderTheme.h>
 #import <WebCore/RenderedDocumentMarker.h>
 #import <WebCore/SVGImage.h>
 #import <WebCore/Settings.h>
@@ -774,7 +775,7 @@ void WebPage::getAccessibilityWebProcessDebugInfo(CompletionHandler<void(WebCore
     auto mode = WebCore::AXObjectCache::accessibilityMode();
     Vector<String> warnings;
 
-    RefPtr focusedFrame = [m_mockAccessibilityElement focusedLocalFrame];
+    RefPtr focusedFrame = [m_mockAccessibilityElement localFocusedFrame];
     RefPtr document = focusedFrame ? focusedFrame->document() : nullptr;
 
     if (document) {
@@ -1286,7 +1287,7 @@ void WebPage::willBeginWritingToolsSession(const std::optional<WebCore::WritingT
         if (!object)
             continue;
 
-        if (auto* jsNode = JSC::jsDynamicCast<JSNode*>(object))
+        if (auto* jsNode = dynamicDowncast<JSNode>(object))
             preservedNodes.add(protect(jsNode->wrapped()));
     }
 
@@ -1466,7 +1467,7 @@ static std::optional<bool> elementHasHiddenVisibility(StyledElement* styledEleme
     if (!inlineStyle)
         return std::nullopt;
 
-    RefPtr value = inlineStyle->getPropertyCSSValue(CSSPropertyVisibility);
+    RefPtr value = dynamicDowncast<CSSKeywordValue>(inlineStyle->getPropertyCSSValue(CSSPropertyVisibility));
     if (!value)
         return false;
 
@@ -2225,6 +2226,14 @@ void WebPage::getInformationFromImageData(const Vector<uint8_t>& data, Completio
     completionHandler(utiAndAvailableSizesFromImageData(data.span()));
 }
 
+void WebPage::getImageMetadata(const Vector<uint8_t>& data, CompletionHandler<void(Expected<Vector<std::pair<String, float>>, WebCore::ImageDecodingError>&&)>&& completionHandler)
+{
+    if (m_isClosed)
+        return completionHandler(makeUnexpected(ImageDecodingError::Internal));
+
+    completionHandler(imageMetadataFromImageData(data.span()));
+}
+
 void WebPage::insertTextPlaceholder(const IntSize& size, CompletionHandler<void(const std::optional<WebCore::ElementContext>&)>&& completionHandler)
 {
     // Inserting the placeholder may run JavaScript, which can do anything, including frame destruction.
@@ -2324,12 +2333,20 @@ void WebPage::willCommitMainFrameData(MainFrameData& data, const TransactionID& 
         m_internals->lastTransactionIDWithScaleChange = transactionID;
     }
 #endif
+}
+
+std::optional<EditorState> WebPage::editorStateIfUpdateNeeded()
+{
+    std::optional<EditorState> editorState;
 
     if (hasPendingEditorStateUpdate() || m_needsEditorStateVisualDataUpdate) {
-        data.editorState = editorState();
+        editorState = this->editorState();
+
         m_pendingEditorStateUpdateStatus = PendingEditorStateUpdateStatus::NotScheduled;
         m_needsEditorStateVisualDataUpdate = false;
     }
+
+    return editorState;
 }
 
 void WebPage::didFlushLayerTreeAtTime(MonotonicTime timestamp, bool flushSucceeded)
@@ -2385,6 +2402,8 @@ bool WebPage::shouldAllowSingleClickToChangeSelection(WebCore::Node& targetNode,
 
 void WebPage::selectWithGesture(const IntPoint& point, GestureType gestureType, GestureRecognizerState gestureState, bool isInteractingWithFocusedElement, CompletionHandler<void(const WebCore::IntPoint&, GestureType, GestureRecognizerState, OptionSet<SelectionFlags>)>&& completionHandler)
 {
+    SetForScope userIsInteractingChange { m_userIsInteracting, true };
+
     if (gestureState == GestureRecognizerState::Began)
         updateFocusBeforeSelectingTextAtLocation(point);
 
@@ -2542,6 +2561,10 @@ void WebPage::updateFocusBeforeSelectingTextAtLocation(const IntPoint& point)
 #if ENABLE(PDF_PLUGIN)
     if (RefPtr pluginView = pluginViewForFrame(frame.get()))
         pluginView->focusPluginElement();
+    else if (RefPtr pluginElement = dynamicDowncast<HTMLPlugInElement>(hitNode.get())) {
+        if (RefPtr pluginView = dynamicDowncast<PluginView>(pluginElement->pluginWidget()))
+            pluginView->focusPluginElement();
+    }
 #endif
 }
 
@@ -2653,7 +2676,7 @@ bool WebPage::isAssistableElement(Element& element)
         return true;
     if (is<HTMLTextAreaElement>(element))
         return true;
-    if (RefPtr inputElement = dynamicDowncast<HTMLInputElement>(element)) {
+    if (auto* inputElement = dynamicDowncast<HTMLInputElement>(element)) {
         // FIXME: This laundry list of types is not a good way to factor this. Need a suitable function on HTMLInputElement itself.
 #if ENABLE(INPUT_TYPE_WEEK_PICKER)
         if (inputElement->isWeekField())
@@ -2744,6 +2767,8 @@ void WebPage::setSelectionRange(WebCore::IntPoint point, WebCore::TextGranularit
 
 void WebPage::updateSelectionWithExtentPointAndBoundary(WebCore::IntPoint point, WebCore::TextGranularity granularity, bool isInteractingWithFocusedElement, TextInteractionSource source, CompletionHandler<void(bool)>&& callback)
 {
+    SetForScope userIsInteractingChange { m_userIsInteracting, true };
+
     RefPtr frame = m_page->focusController().focusedOrMainFrame();
     if (!frame)
         return callback(false);
@@ -2847,6 +2872,8 @@ void WebPage::updateSelectionWithExtentPoint(WebCore::IntPoint point, bool isInt
 
 void WebPage::selectTextWithGranularityAtPoint(WebCore::IntPoint point, WebCore::TextGranularity granularity, bool isInteractingWithFocusedElement, CompletionHandler<void()>&& completionHandler)
 {
+    SetForScope userIsInteractingChange { m_userIsInteracting, true };
+
 #if PLATFORM(IOS_FAMILY)
     if (!m_potentialTapNode) {
         setSelectionRange(point, granularity, isInteractingWithFocusedElement);
@@ -2964,7 +2991,7 @@ void WebPage::handleSyntheticClick(std::optional<WebCore::FrameIdentifier> frame
     });
 }
 
-Awaitable<std::optional<WebCore::RemoteUserInputEventData>> WebPage::potentialTapAtPosition(std::optional<WebCore::FrameIdentifier> frameID, WebKit::TapIdentifier requestID, WebCore::FloatPoint position, bool shouldRequestMagnificationInformation, WebKit::WebMouseEventInputSource inputSource)
+Awaitable<std::optional<WebCore::RemoteUserInputEventData>> WebPage::potentialTapAtPosition(std::optional<WebCore::FrameIdentifier> frameID, WebKit::TapIdentifier requestID, WebCore::FloatPoint position, bool shouldRequestMagnificationInformation, WebKit::WebEventInputSource inputSource)
 {
     m_potentialTapInputSource = platform(inputSource);
 
@@ -3295,7 +3322,7 @@ void WebPage::completeSyntheticClick(std::optional<WebCore::FrameIdentifier> fra
         return;
     }
 
-    RefPtr oldFocusedFrame = m_page->focusController().focusedLocalFrame();
+    RefPtr oldFocusedFrame = m_page->focusController().localFocusedFrame();
     RefPtr<Element> oldFocusedElement = oldFocusedFrame ? oldFocusedFrame->document()->focusedElement() : nullptr;
 
     SetForScope userIsInteractingChange { m_userIsInteracting, true };
@@ -3324,7 +3351,7 @@ void WebPage::completeSyntheticClick(std::optional<WebCore::FrameIdentifier> fra
     if (m_isClosed)
         return;
 
-    RefPtr newFocusedFrame = m_page->focusController().focusedLocalFrame();
+    RefPtr newFocusedFrame = m_page->focusController().localFocusedFrame();
     RefPtr<Element> newFocusedElement = newFocusedFrame ? newFocusedFrame->document()->focusedElement() : nullptr;
 
     if (nodeRespondingToClick.document().settings().contentChangeObserverEnabled()) {

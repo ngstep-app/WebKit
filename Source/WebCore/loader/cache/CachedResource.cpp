@@ -252,7 +252,7 @@ void CachedResource::load(CachedResourceLoader& cachedResourceLoader)
         RefPtr protectedThis { *this };
 
         auto identifier = ResourceLoaderIdentifier::generate();
-        InspectorInstrumentation::willSendRequestOfType(frame.ptr(), identifier, protect(frameLoader->activeDocumentLoader()).get(), request, InspectorInstrumentation::LoadType::Beacon);
+        InspectorInstrumentation::willSendRequestOfType(frame.ptr(), identifier, protect(frameLoader->activeDocumentLoader()).get(), request, Inspector::UncachedLoadType::Beacon);
 
         platformStrategies()->loaderStrategy()->startPingLoad(frame, request, m_originalRequest->httpHeaderFields(), m_options, m_options.contentSecurityPolicyImposition, [this, protectedThis = Ref { *this }, frame = Ref { frame }, identifier] (const ResourceError& error, const ResourceResponse& response) {
             if (!response.isNull())
@@ -1003,7 +1003,7 @@ ResourceCryptographicDigest CachedResource::cryptographicDigest(ResourceCryptogr
 {
     unsigned digestIndex = WTF::fastLog2(static_cast<unsigned>(algorithm));
     RELEASE_ASSERT(digestIndex < m_cryptographicDigests.size());
-    ASSERT(static_cast<std::underlying_type_t<ResourceCryptographicDigest::Algorithm>>(algorithm) == (1 << digestIndex));
+    ASSERT(std::to_underlying(algorithm) == (1 << digestIndex));
     auto& existingDigest = m_cryptographicDigests[digestIndex];
     if (!existingDigest)
         existingDigest = cryptographicDigestForSharedBuffer(algorithm, protect(m_data).get());

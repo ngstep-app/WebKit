@@ -36,13 +36,9 @@
 #include <WebCore/PaintPhase.h>
 #include <WebCore/RenderPtr.h>
 #include <WebCore/SimpleRange.h>
-#include <memory>
-#include <wtf/Forward.h>
 #include <wtf/Function.h>
 #include <wtf/HashSet.h>
 #include <wtf/ListHashSet.h>
-#include <wtf/OptionSet.h>
-#include <wtf/Platform.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/WeakHashSet.h>
 #include <wtf/WeakRef.h>
@@ -69,6 +65,7 @@ class RenderEmbeddedObject;
 class RenderLayer;
 class RenderLayerModelObject;
 class RenderObject;
+class RenderReplaced;
 class RenderScrollbarPart;
 class RenderStyle;
 class RenderView;
@@ -248,6 +245,9 @@ public:
     void clearSizeOverrideForCSSDefaultViewportUnits();
     FloatSize sizeForCSSDefaultViewportUnits() const;
 
+    void setShouldUseDynamicViewportUnitsAsDefault(bool value) { m_shouldUseDynamicViewportUnitsAsDefault = value; }
+    bool shouldUseDynamicViewportUnitsAsDefault() const { return m_shouldUseDynamicViewportUnitsAsDefault; }
+
     WEBCORE_EXPORT void setOverrideSizeForCSSSmallViewportUnits(OverrideViewportSize);
     std::optional<OverrideViewportSize> overrideSizeForCSSSmallViewportUnits() const { return m_smallViewportSizeOverride; }
     WEBCORE_EXPORT void setSizeForCSSSmallViewportUnits(FloatSize);
@@ -321,7 +321,7 @@ public:
     LayoutRect layoutViewportRectIncludingObscuredInsets() const;
 
     std::optional<LayoutRect> visibleRectOfChild(const Frame&) const final;
-    bool ownerElementOfChildFrameUsesDarkAppearance(const Frame&) const final;
+    OptionSet<FrameOwnerElementAppearance> appearanceOfOwnerElementOfChildFrame(const Frame&) const final;
     
     static LayoutRect visibleDocumentRect(const FloatRect& visibleContentRect, float headerHeight, float footerHeight, const FloatSize& totalContentsSize, float pageScaleFactor);
 
@@ -579,7 +579,7 @@ public:
 
     bool NODELETE shouldSuspendScrollAnimations() const final;
 
-    RenderBox* embeddedContentBox() const;
+    RenderReplaced* embeddedSVGRoot() const;
     
     WEBCORE_EXPORT void setTracksRepaints(bool);
     bool isTrackingRepaints() const { return m_isTrackingRepaints; }
@@ -654,9 +654,6 @@ public:
     WEBCORE_EXPORT void fireLayoutRelatedMilestonesIfNeeded();
     OptionSet<LayoutMilestone> milestonesPendingPaint() const { return m_milestonesPendingPaint; }
 
-    bool visualUpdatesAllowedByClient() const { return m_visualUpdatesAllowedByClient; }
-    WEBCORE_EXPORT void setVisualUpdatesAllowedByClient(bool);
-
     WEBCORE_EXPORT void setScrollPinningBehavior(ScrollPinningBehavior);
 
     ScrollBehaviorForFixedElements NODELETE scrollBehaviorForFixedElements() const;
@@ -685,7 +682,6 @@ public:
 
     void updateSnapOffsets() final;
     bool isScrollSnapInProgress() const final;
-    void updateScrollingCoordinatorScrollSnapProperties() const;
 
     float adjustVerticalPageScrollStepForFixedContent(float step) final;
 
@@ -752,7 +748,7 @@ public:
 
     void scrollbarWidthChanged(ScrollbarWidth) override;
 
-    std::optional<FrameIdentifier> NODELETE rootFrameID() const final;
+    WEBCORE_EXPORT std::optional<FrameIdentifier> NODELETE rootFrameID() const final;
 
     IntSize totalScrollbarSpace() const final;
     int scrollbarGutterWidth(bool isHorizontalWritingMode = true) const;
@@ -764,7 +760,7 @@ public:
     struct AutoPreventLayerAccess {
         AutoPreventLayerAccess(LocalFrameView* view)
             : frameView(view)
-            , oldPreventLayerAccess(view ? view->layerAccessPrevented() : false)
+            , oldPreventLayerAccess(view && view->layerAccessPrevented())
         {
             if (view)
                 view->setLayerAcessPrevented(true);
@@ -1054,6 +1050,8 @@ private:
     std::optional<OverrideViewportSize> m_smallViewportSizeOverride;
     std::optional<OverrideViewportSize> m_largeViewportSizeOverride;
 
+    bool m_shouldUseDynamicViewportUnitsAsDefault { false };
+
     // The view size when autosizing.
     IntSize m_autoSizeConstraint;
     // The fixed height to resize the view to after autosizing is complete.
@@ -1114,7 +1112,6 @@ private:
     bool m_needsDeferredScrollbarsUpdate { false };
     bool m_needsDeferredPositionScrollbarLayers { false };
     bool m_speculativeTilingEnabled { false };
-    bool m_visualUpdatesAllowedByClient { true };
     bool m_hasFlippedBlockRenderers { false };
     bool m_speculativeTilingDelayDisabledForTesting { false };
 

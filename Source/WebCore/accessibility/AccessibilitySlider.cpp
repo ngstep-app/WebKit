@@ -29,6 +29,7 @@
 #include "config.h"
 #include "AccessibilitySlider.h"
 
+#include "AccessibilityNodeObjectInlines.h"
 #include "AccessibilityObjectInlines.h"
 #include "AXLoggerBase.h"
 #include "AXObjectCache.h"
@@ -103,7 +104,7 @@ void AccessibilitySlider::addChildren()
     else
         addChild(thumb.get());
 
-#ifndef NDEBUG
+#if ASSERT_ENABLED
     verifyChildrenIndexInParent();
 #endif
 }

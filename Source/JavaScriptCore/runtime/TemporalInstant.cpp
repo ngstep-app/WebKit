@@ -30,12 +30,13 @@
 #include "AuxiliaryBarrierInlines.h"
 #include "Error.h"
 #include "ISO8601.h"
+#include "InstantCore.h"
 #include "IntlObjectInlines.h"
 #include "JSBigInt.h"
 #include "JSGlobalObject.h"
 #include "JSObjectInlines.h"
 #include "MathCommon.h"
-#include "StructureInlines.h"
+#include "StructureCreateInlines.h"
 #include "TemporalDuration.h"
 #include "TemporalObject.h"
 #include "TemporalTimeZone.h"
@@ -148,11 +149,11 @@ TemporalInstant* TemporalInstant::toInstant(JSGlobalObject* globalObject, JSValu
     }
 
     if (itemValue.inherits<TemporalInstant>())
-        return jsCast<TemporalInstant*>(itemValue);
+        return uncheckedDowncast<TemporalInstant>(itemValue);
 
     // FIXME: when Temporal.ZonedDateTime lands
     // if (itemValue.inherits<TemporalZonedDateTime>())
-    //    return TemporalInstant::create(vm, globalObject->instantStructure(), jsCast<TemporalZonedDateTime*>(itemValue)->epochTime());
+    //    return TemporalInstant::create(vm, globalObject->instantStructure(), uncheckedDowncast<TemporalZonedDateTime>(itemValue)->epochTime());
 
     String string = itemValue.toWTFString(globalObject);
     RETURN_IF_EXCEPTION(scope, nullptr);
@@ -173,7 +174,7 @@ TemporalInstant* TemporalInstant::from(JSGlobalObject* globalObject, JSValue ite
     VM& vm = globalObject->vm();
 
     if (itemValue.inherits<TemporalInstant>()) {
-        ISO8601::ExactTime exactTime = jsCast<TemporalInstant*>(itemValue)->exactTime();
+        ISO8601::ExactTime exactTime = uncheckedDowncast<TemporalInstant>(itemValue)->exactTime();
         return TemporalInstant::create(vm, globalObject->instantStructure(), exactTime);
     }
 
@@ -245,24 +246,7 @@ ISO8601::Duration TemporalInstant::difference(JSGlobalObject* globalObject, Temp
 
 // Must return a double because the maximum increment for nanoseconds
 // does not fit in an int32_t
-static constexpr double NODELETE maximumIncrement(TemporalUnit smallestUnit)
-{
-    switch (smallestUnit) {
-    case TemporalUnit::Hour: return 24;
-    case TemporalUnit::Minute: return 1440;
-    case TemporalUnit::Second: return 86400;
-    case TemporalUnit::Millisecond: return 8.64e7;
-    case TemporalUnit::Microsecond: return 8.64e10;
-    case TemporalUnit::Nanosecond: return 8.64e13;
-    case TemporalUnit::Year:
-    case TemporalUnit::Month:
-    case TemporalUnit::Week:
-    case TemporalUnit::Day:
-    default:
-        { }
-    }
-    RELEASE_ASSERT_NOT_REACHED();
-}
+static constexpr double NODELETE maximumIncrement(TemporalUnit u) { return TemporalCore::maximumInstantIncrement(u); }
 
 ISO8601::ExactTime TemporalInstant::round(JSGlobalObject* globalObject, JSValue optionsValue) const
 {

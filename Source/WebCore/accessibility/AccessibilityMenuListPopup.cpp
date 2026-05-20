@@ -26,6 +26,7 @@
 #include "config.h"
 #include "AccessibilityMenuListPopup.h"
 
+#include "AccessibilityNodeObjectInlines.h"
 #include "AXNotifications.h"
 #include "AXObjectCacheInlines.h"
 #include "AccessibilityMenuList.h"
@@ -106,7 +107,7 @@ void AccessibilityMenuListPopup::addChildren()
         }
     }
 
-#ifndef NDEBUG
+#if ASSERT_ENABLED
     verifyChildrenIndexInParent();
 #endif
 }

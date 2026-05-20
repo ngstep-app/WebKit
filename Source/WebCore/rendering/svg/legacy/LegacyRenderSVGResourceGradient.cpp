@@ -30,6 +30,7 @@
 #include "RenderSVGText.h"
 #include "RenderStyle+GettersInlines.h"
 #include "SVGRenderingContext.h"
+#include "StylePrimitiveNumericTypes+Evaluation.h"
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
@@ -57,7 +58,7 @@ void LegacyRenderSVGResourceGradient::removeAllClientsFromCacheAndMarkForInvalid
 
 void LegacyRenderSVGResourceGradient::removeClientFromCache(RenderElement& client)
 {
-    m_gradientMap.remove(&client);
+    m_gradientMap.remove(client);
 }
 
 GradientData::Inputs LegacyRenderSVGResourceGradient::computeInputs(RenderElement& renderer, OptionSet<RenderSVGResourceMode> resourceMode)
@@ -93,7 +94,7 @@ GradientData* LegacyRenderSVGResourceGradient::gradientDataForRenderer(RenderEle
     if (inputs.objectBoundingBox && inputs.objectBoundingBox->isEmpty())
         return nullptr;
 
-    auto& gradientData = *m_gradientMap.ensure(&renderer, [&]() {
+    auto& gradientData = *m_gradientMap.ensure(renderer, [&]() {
         return makeUnique<GradientData>();
     }).iterator->value;
 
@@ -135,13 +136,13 @@ static inline void applyGradientResource(RenderElement& renderer, const RenderSt
     auto userspaceTransform = gradientData.userspaceTransform;
 
     if (resourceMode.contains(RenderSVGResourceMode::ApplyToFill)) {
-        context.setAlpha(style.fillOpacity().value.value);
+        context.setAlpha(Style::evaluate<float>(style.fillOpacity()));
         context.setFillGradient(*gradientData.gradient, userspaceTransform);
         context.setFillRule(style.fillRule());
     } else if (resourceMode.contains(RenderSVGResourceMode::ApplyToStroke)) {
         if (style.vectorEffect() == VectorEffect::NonScalingStroke)
             userspaceTransform = LegacyRenderSVGResourceContainer::transformOnNonScalingStroke(&renderer, gradientData.userspaceTransform);
-        context.setAlpha(style.strokeOpacity().value.value);
+        context.setAlpha(Style::evaluate<float>(style.strokeOpacity()));
         context.setStrokeGradient(*gradientData.gradient, userspaceTransform);
         SVGRenderSupport::applyStrokeStyleToContext(context, style, renderer);
     }
@@ -345,7 +346,7 @@ void LegacyRenderSVGResourceGradient::postApplyResource(RenderElement& renderer,
     if (!m_gradientApplier)
         return;
 
-    auto gradientData = m_gradientMap.find(&renderer);
+    auto gradientData = m_gradientMap.find(renderer);
     if (gradientData != m_gradientMap.end())
         m_gradientApplier->postApplyResource(renderer, context, *gradientData->value, gradientUnits(), gradientTransform(), resourceMode, path, shape);
 

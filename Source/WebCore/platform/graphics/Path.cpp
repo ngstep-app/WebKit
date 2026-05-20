@@ -99,7 +99,7 @@ PlatformPathImpl& Path::ensurePlatformPathImpl()
     if (RefPtr impl = asImpl()) {
         if (const auto* stream = dynamicDowncast<PathStream>(*impl))
             return downcast<PlatformPathImpl>(setImpl(PlatformPathImpl::create(stream->segments())));
-        return downcast<PlatformPathImpl>(*impl);
+        return downcast<PlatformPathImpl>(*impl.unsafeGet());
     }
     // Generally platform path is never empty. This should only be called during Path::add() on an empty path.
     return downcast<PlatformPathImpl>(setImpl(PlatformPathImpl::create()));
@@ -174,8 +174,18 @@ void Path::addRoundedRect(const FloatRoundedRect& roundedRect, PathRoundedRect::
         return;
 
     if (!roundedRect.isRenderable()) {
-        // If all the radii cannot be accommodated, return a rect.
-        addRect(roundedRect.rect());
+        // If radii cannot be accommodated (e.g. due to floating-point precision
+        // after constraint scaling), adjust them to fit rather than dropping them.
+        auto adjustedRect = roundedRect;
+        adjustedRect.adjustRadii();
+        if (!adjustedRect.isRounded()) {
+            addRect(adjustedRect.rect());
+            return;
+        }
+        if (isEmpty())
+            m_data = PathSegment(PathRoundedRect { adjustedRect, strategy });
+        else
+            protect(ensureImpl())->add(PathRoundedRect { adjustedRect, strategy });
         return;
     }
 
@@ -315,7 +325,7 @@ PlatformPathPtr Path::platformPath() const
         return PlatformPathImpl::emptyPlatformPath();
 
 #if USE(CG)
-    return protect(const_cast<Path&>(*this).ensurePlatformPathImpl())->platformPath();
+    return const_cast<Path&>(*this).ensurePlatformPathImpl().platformPath();
 #else
     return const_cast<Path&>(*this).ensurePlatformPathImpl().platformPath();
 #endif

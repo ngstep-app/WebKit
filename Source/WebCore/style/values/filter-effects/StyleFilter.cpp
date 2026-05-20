@@ -26,6 +26,7 @@
 #include "StyleFilter.h"
 
 #include "CSSFilterValue.h"
+#include "CSSKeywordValue.h"
 #include "Document.h"
 #include "FilterOperations.h"
 #include "StyleBuilderChecking.h"
@@ -91,9 +92,10 @@ bool Filter::hasFilterThatShouldBeRestrictedBySecurityOrigin() const
     });
 }
 
-IntOutsets Filter::calculateOutsets(ZoomFactor zoom) const
+std::optional<IntOutsets> Filter::calculateOutsets(ZoomFactor zoom) const
 {
     IntOutsets totalOutsets;
+    bool haveReferenceFilter = false;
     for (auto& filterValue : *this) {
         WTF::switchOn(filterValue,
             [&](const BlurFunction& blurFunction) {
@@ -102,12 +104,16 @@ IntOutsets Filter::calculateOutsets(ZoomFactor zoom) const
             [&](const DropShadowFunction& dropShadowFunction) {
                 totalOutsets += dropShadowFunction->calculateOutsets(zoom);
             },
-            [](const FilterReference&) {
-                ASSERT_NOT_REACHED();
+            [&](const FilterReference&) {
+                haveReferenceFilter = true;
             },
             [](const auto&) { }
         );
     }
+
+    if (haveReferenceFilter)
+        return { };
+
     return totalOutsets;
 }
 
@@ -129,8 +135,15 @@ auto ToStyle<CSS::FilterValueList>::operator()(const CSS::FilterValueList& value
 
 auto CSSValueConversion<Filter>::operator()(BuilderState& state, const CSSValue& value) -> Filter
 {
-    if (value.valueID() == CSSValueNone)
-        return CSS::Keyword::None { };
+    if (auto* keywordValue = dynamicDowncast<CSSKeywordValue>(value)) {
+        switch (keywordValue->valueID()) {
+        case CSSValueNone:
+            return CSS::Keyword::None { };
+        default:
+            state.setCurrentPropertyInvalidAtComputedValueTime();
+            return CSS::Keyword::None { };
+        }
+    }
 
     RefPtr filter = requiredDowncast<CSSFilterValue>(state, value);
     if (!filter)

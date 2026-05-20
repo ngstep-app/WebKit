@@ -102,6 +102,7 @@ OBJC_CLASS WKView;
 
 namespace API {
 class Attachment;
+class FrameInfo;
 class HitTestResult;
 class Navigation;
 class Object;
@@ -242,7 +243,10 @@ class WebKitWebResourceLoadManager;
 
 class PageClient : public CanMakeWeakPtr<PageClient> {
     WTF_MAKE_TZONE_ALLOCATED_INLINE(PageClient);
+private:
+    explicit PageClient(ClangVTableWorkaroundTag);
 public:
+    PageClient() = default;
     virtual ~PageClient() { }
 
     void ref() { refView(); }
@@ -879,8 +883,8 @@ public:
 #endif
 
 #if ENABLE(MODEL_ELEMENT_IMMERSIVE)
-    virtual void allowImmersiveElementFromURL(const URL&, CompletionHandler<void(bool)>&& completion) const { completion(false); }
-    virtual void presentImmersiveElement(const WebCore::LayerHostingContextIdentifier, CompletionHandler<void(bool)>&& completion) const { completion(false); }
+    virtual void allowImmersiveElement(Ref<API::FrameInfo>&&, CompletionHandler<void(bool)>&& completion) const { completion(false); }
+    virtual void presentImmersiveElement(const WebCore::LayerHostingContextIdentifier, Ref<API::FrameInfo>&&, CompletionHandler<void(bool)>&& completion) const { completion(false); }
     virtual void dismissImmersiveElement(CompletionHandler<void()>&& completion) const { completion(); }
 #endif
 };

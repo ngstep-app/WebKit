@@ -62,14 +62,14 @@ void unevaluatedCalcDeref(CSSCalc::Value*);
 // Non-generic base type to allow code sharing and out-of-line definitions.
 class UnevaluatedCalcBase {
 public:
-    UnevaluatedCalcBase(CSSCalc::Value&);
+    WEBCORE_EXPORT UnevaluatedCalcBase(CSSCalc::Value&);
     UnevaluatedCalcBase(Ref<CSSCalc::Value>&&);
 
     UnevaluatedCalcBase(const UnevaluatedCalcBase&);
     UnevaluatedCalcBase(UnevaluatedCalcBase&&);
     UnevaluatedCalcBase& operator=(const UnevaluatedCalcBase&);
     UnevaluatedCalcBase& operator=(UnevaluatedCalcBase&&);
-    ~UnevaluatedCalcBase();
+    WEBCORE_EXPORT ~UnevaluatedCalcBase();
 
     CSSCalc::Value& calcValue() const { return m_calc; }
     [[nodiscard]] CSSCalc::Value& NODELETE leakRef();
@@ -87,6 +87,7 @@ public:
     double evaluate(CSS::Category, const CSSToLengthConversionData&, const CSSCalcSymbolTable&) const;
     double evaluate(CSS::Category, NoConversionDataRequiredToken) const;
     double evaluate(CSS::Category, NoConversionDataRequiredToken, const CSSCalcSymbolTable&) const;
+    double evaluateDeprecated(CSS::Category) const;
 
     bool equal(const UnevaluatedCalcBase&) const;
 

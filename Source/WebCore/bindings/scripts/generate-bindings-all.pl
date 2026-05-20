@@ -31,6 +31,12 @@ use lib $FindBin::Bin;
 use File::Basename;
 use File::Spec;
 use Getopt::Long;
+use Cwd;
+use English;
+BEGIN { eval { require JSON::XS; JSON::XS->import(); 1 } or do { require JSON::PP; JSON::PP->import() } }
+
+use IDLParser;
+use CodeGenerator;
 
 my $perl = $^X;
 my $scriptDir = $FindBin::Bin;
@@ -41,7 +47,6 @@ my $idlFileNamesList;
 my $generator;
 my @generatorDependency;
 my $defines;
-my $preprocessor;
 my $supplementalDependencyFile;
 my @ppExtraOutput;
 my @ppExtraArgs;
@@ -57,7 +62,6 @@ GetOptions('outputDir=s' => \$outputDirectory,
            'generator=s' => \$generator,
            'generatorDependency=s@' => \@generatorDependency,
            'defines=s' => \$defines,
-           'preprocessor=s' => \$preprocessor,
            'supplementalDependencyFile=s' => \$supplementalDependencyFile,
            'ppExtraOutput=s@' => \@ppExtraOutput,
            'ppExtraArgs=s@' => \@ppExtraArgs,
@@ -112,22 +116,13 @@ if ($supplementalDependencyFile) {
     readSupplementalDependencyFile($supplementalDependencyFile, \%newSupplements);
 }
 
-my @args = (File::Spec->catfile($scriptDir, 'generate-bindings.pl'),
-            '--defines', $defines,
-            '--generator', $generator,
-            '--outputDir', $outputDirectory,
-            '--idlAttributesFile', $idlAttributesFile,
-            '--idlFileNamesList', $idlFileNamesList,
-            '--write-dependencies');
-push @args, '--preprocessor', $preprocessor if $preprocessor;
-push @args, '--supplementalDependencyFile', $supplementalDependencyFile if $supplementalDependencyFile;
-
 my %directoryCache;
 buildDirectoryCache();
 
 my @idlFilesToUpdate = grep &{sub {
-    if (defined($oldSupplements{$_})
-        && @{$oldSupplements{$_}} ne @{$newSupplements{$_} or []}) {
+    my $absPath = Cwd::abs_path($_) || $_;
+    if (defined($oldSupplements{$absPath})
+        && @{$oldSupplements{$absPath}} ne @{$newSupplements{$absPath} or []}) {
         # Re-process the IDL file if its supplemental dependencies were added or removed
         return 1;
     }
@@ -139,13 +134,53 @@ my @idlFilesToUpdate = grep &{sub {
     my @deps = ($_,
                 $idlAttributesFile,
                 @generatorDependency,
-                @{$newSupplements{$_} or []},
+                @{$newSupplements{$absPath} or []},
                 implicitDependencies($depFile));
     needsUpdate(\@output, \@deps);
 }}, @idlFiles;
 
+# Pre-parse shared data once in the parent process so forked children inherit it.
+my %supplementalDependencies;
+if ($supplementalDependencyFile) {
+    open my $sdFh, '<', $supplementalDependencyFile or die "Cannot open $supplementalDependencyFile\n";
+    while (my $line = <$sdFh>) {
+        my ($idlFile, @followingIdlFiles) = split(/\s+/, $line);
+        $supplementalDependencies{fileparse($idlFile)} = [sort @followingIdlFiles] if $idlFile;
+    }
+    close $sdFh;
+}
+
+my $idlAttributes;
+{
+    local $INPUT_RECORD_SEPARATOR;
+    open(my $jsonFh, '<', $idlAttributesFile) or die "Couldn't open $idlAttributesFile: $!";
+    my $input = <$jsonFh>;
+    close($jsonFh);
+
+    my $jsonDecoder = (eval { JSON::XS->new->utf8 } or JSON::PP->new->utf8);
+    my $jsonHashRef = $jsonDecoder->decode($input);
+    $idlAttributes = $jsonHashRef->{attributes};
+}
+
+# Pre-load the generator module so forked children don't need to compile it.
+my $generatorModuleName = "CodeGenerator$generator.pm";
+for my $dep (@generatorDependency) {
+    if (basename($dep) eq $generatorModuleName) {
+        my $dir = dirname($dep);
+        unshift @INC, $dir;
+        last;
+    }
+}
+require $generatorModuleName;
+
+# Pre-resolve realpath so forked children avoid per-file syscalls.
+my @resolvedIdlFilesToUpdate;
+for my $f (@idlFilesToUpdate) {
+    push @resolvedIdlFilesToUpdate, Cwd::realpath($f);
+}
+
 my $abort = 0;
-my $totalCount = @idlFilesToUpdate;
+my $totalCount = @resolvedIdlFilesToUpdate;
 my $currentCount = 0;
 
 spawnGenerateBindingsIfNeeded() for (1 .. $numOfJobs);
@@ -187,16 +222,27 @@ sub mtime
 sub spawnGenerateBindingsIfNeeded
 {
     return if $abort;
-    return unless @idlFilesToUpdate;
-    my $batchCount = 30;
-    # my $batchCount = int(($totalCount - $currentCount) / $numOfJobs) || 1;
-    my @files = splice(@idlFilesToUpdate, 0, $batchCount);
+    return unless @resolvedIdlFilesToUpdate;
+    my $batchCount = int(($totalCount + $numOfJobs - 1) / $numOfJobs) || 1;
+    my @files = splice(@resolvedIdlFilesToUpdate, 0, $batchCount);
     for (@files) {
         $currentCount++;
         my $basename = basename($_);
         printProgress("[$currentCount/$totalCount] $basename");
     }
-    my $pid = spawnCommand($perl, @args, @files);
+    my $pid = fork();
+    if ($pid == 0) {
+        my $suppressVerboseOutput = 1;
+        my $writeDependencies = 1;
+        my $verbose = 0;
+        for my $targetIdlFile (@files) {
+            my $targetParser = IDLParser->new($suppressVerboseOutput);
+            my $targetDocument = $targetParser->Parse($targetIdlFile, $defines, $idlAttributes);
+            my $codeGen = CodeGenerator->new($generator, $outputDirectory, $outputDirectory, $writeDependencies, $verbose, $targetIdlFile, $idlAttributes, \%supplementalDependencies, $idlFileNamesList);
+            $codeGen->ProcessDocument($targetDocument, $defines);
+        }
+        exit 0;
+    }
     $abort = 1 unless defined $pid;
 }
 
@@ -231,17 +277,6 @@ sub executeCommand
     return system(@_);
 }
 
-sub spawnCommand
-{
-    my $pid = fork();
-    if ($pid == 0) {
-        @_ = quoteCommand(@_) if ($^O eq 'MSWin32');
-        exec(@_);
-        die "Cannot exec";
-    }
-    return $pid;
-}
-
 sub quoteCommand
 {
     return map {
@@ -263,7 +298,7 @@ sub readSupplementalDependencyFile
     open(my $fh, '<', $filename) or die "Cannot open $filename";
     while (<$fh>) {
         my ($idlFile, @followingIdlFiles) = split(/\s+/);
-        $supplements->{$idlFile} = [sort @followingIdlFiles];
+        $supplements->{Cwd::abs_path($idlFile) || $idlFile} = [sort @followingIdlFiles];
     }
     close($fh) or die;
 }

@@ -42,6 +42,7 @@
 #include <WebCore/HTTPStatusCodes.h>
 #include <WebCore/LegacySchemeRegistry.h>
 #include <WebCore/OriginAccessPatterns.h>
+#include <WebCore/RegistrableDomain.h>
 #include <wtf/Scope.h>
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/text/MakeString.h>
@@ -166,6 +167,20 @@ void NetworkLoadChecker::checkRedirection(ResourceRequest&& request, ResourceReq
 
     m_previousURL = WTF::move(m_url);
     m_url = redirectRequest.url();
+
+    // Strip request-body headers when the redirect converts the method to GET.
+    // https://fetch.spec.whatwg.org/#concept-http-redirect-fetch
+    auto originalMethod = request.httpMethod();
+    if (!equalLettersIgnoringASCIICase(originalMethod, "get"_s) && !equalLettersIgnoringASCIICase(originalMethod, "head"_s)) {
+        auto status = redirectResponse.httpStatusCode();
+        bool willConvertToGet = (status == httpStatus301MovedPermanently || status == httpStatus302Found)
+            ? equalLettersIgnoringASCIICase(originalMethod, "post"_s)
+            : status == httpStatus303SeeOther;
+        if (willConvertToGet) {
+            m_firstRequestHeaders.removeRequestBodyHeaders();
+            m_originalRequestHeaders.removeRequestBodyHeaders();
+        }
+    }
 
     checkRequest(WTF::move(redirectRequest), client, [handler = WTF::move(handler), request = WTF::move(request), redirectResponse](auto&& result) mutable {
         WTF::switchOn(result,
@@ -355,6 +370,11 @@ bool NetworkLoadChecker::shouldBlockForTrackingPolicy(const ResourceRequest& req
     if (!mayBlock)
         return false;
 
+    if (RefPtr topOrigin = networkResourceLoader->parameters().topOrigin) {
+        if (RegistrableDomain(request.url()).matches(topOrigin->data()))
+            return false;
+    }
+
     if (*mayBlock && networkResourceLoader->parameters().options.destination != FetchOptionsDestination::Script) {
         LOAD_CHECKER_RELEASE_LOG("shouldBlockForTrackingPolicy - Blocked non-script load by tracking protections");
         return true;
@@ -397,16 +417,16 @@ bool NetworkLoadChecker::isAllowedByContentSecurityPolicy(const ResourceRequest&
     case FetchOptions::Destination::Worker:
     case FetchOptions::Destination::Serviceworker:
     case FetchOptions::Destination::Sharedworker:
-        return contentSecurityPolicy->allowWorkerFromSource(request.url(), redirectResponseReceived, preRedirectURL);
+        return contentSecurityPolicy->allowWorkerFromSource(request.url(), { }, redirectResponseReceived, preRedirectURL);
     case FetchOptions::Destination::Json:
     case FetchOptions::Destination::Script:
     case FetchOptions::Destination::Speculationrules:
-        if (request.requester() == ResourceRequestRequester::ImportScripts && !contentSecurityPolicy->allowScriptFromSource(request.url(), redirectResponseReceived, preRedirectURL))
+        if (request.requester() == ResourceRequestRequester::ImportScripts && !contentSecurityPolicy->allowScriptFromSource(request.url(), { }, redirectResponseReceived, preRedirectURL))
             return false;
         // FIXME: Check CSP for non-importScripts() initiated loads.
         return true;
     case FetchOptions::Destination::EmptyString:
-        return contentSecurityPolicy->allowConnectToSource(request.url(), redirectResponseReceived, preRedirectURL);
+        return contentSecurityPolicy->allowConnectToSource(request.url(), { }, redirectResponseReceived, preRedirectURL);
     case FetchOptions::Destination::Audio:
     case FetchOptions::Destination::Document:
     case FetchOptions::Destination::Embed:

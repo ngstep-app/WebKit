@@ -69,7 +69,6 @@ bool CustomPropertyRegistry::isInherited(const AtomString& name) const
     return registered ? registered->inherits : true;
 }
 
-
 bool CustomPropertyRegistry::registerFromAPI(CSSRegisteredCustomProperty&& property)
 {
     // First registration wins.

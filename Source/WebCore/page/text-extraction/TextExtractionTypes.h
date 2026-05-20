@@ -56,6 +56,7 @@ enum class Action : uint8_t {
     KeyPress,
     HighlightText,
     Scroll,
+    Hover,
 };
 
 struct Interaction {
@@ -145,6 +146,8 @@ struct LinkItemData {
 
 struct IFrameData {
     String origin;
+    String shortenedOrigin;
+    bool isSameOriginAsParent { false };
     FrameIdentifier identifier;
 };
 
@@ -164,12 +167,14 @@ struct TextFormControlData {
     String autocomplete;
     String pattern;
     String name;
+    String value;
     std::optional<int> minLength;
     std::optional<int> maxLength;
     bool isRequired { false };
     bool isReadonly { false };
     bool isDisabled { false };
     bool isChecked { false };
+    bool isAutofilled { false };
 };
 
 struct SelectOptionData {
@@ -214,6 +219,7 @@ struct Item {
     String title;
     HashMap<String, String> clientAttributes;
     unsigned enclosingBlockNumber { 0 };
+    unsigned visualBlockContainerNumber { 0 };
     bool hasLineThrough { false };
 
     template<typename T> bool hasData() const

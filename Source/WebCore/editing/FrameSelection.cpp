@@ -40,6 +40,7 @@
 #include "DocumentQuirks.h"
 #include "DocumentView.h"
 #include "Editing.h"
+#include "EditingInlines.h"
 #include "Editor.h"
 #include "EditorClient.h"
 #include "Element.h"
@@ -65,11 +66,12 @@
 #include "LegacyInlineTextBox.h"
 #include "LocalDOMWindow.h"
 #include "LocalFrame.h"
+#include "LocalFrameInlines.h"
 #include "LocalFrameView.h"
 #include "Logging.h"
 #include "MutableStyleProperties.h"
-#include "NodeInlines.h"
 #include "OpacityCaretAnimator.h"
+#include "PlatformRenderTheme.h"
 #include "PositionInlines.h"
 #include "PseudoClassChangeInvalidation.h"
 #include "Range.h"
@@ -204,7 +206,7 @@ FrameSelection::FrameSelection(Document* document)
     , m_caretAnimator(createCaretAnimator(this))
     , m_caretInsidePositionFixed(false)
     , m_absCaretBoundsDirty(true)
-    , m_focused(document && document->frame() && document->page() && document->page()->focusController().focusedLocalFrame() == document->frame())
+    , m_focused(document && document->frame() && document->page() && document->page()->focusController().localFocusedFrame() == document->frame())
     , m_isActive(isPageActive(document))
     , m_shouldShowBlockCursor(false)
     , m_pendingSelectionUpdate(false)
@@ -586,7 +588,7 @@ static bool removingNodeRemovesPosition(Node& node, const Position& position)
     if (position.anchorNode() == &node)
         return true;
 
-    RefPtr element = dynamicDowncast<Element>(node);
+    auto* element = dynamicDowncast<Element>(node);
     return element && element->isShadowIncludingInclusiveAncestorOf(position.anchorNode());
 }
 
@@ -2436,12 +2438,10 @@ void FrameSelection::updateAppearance()
     // We can get into a state where the selection endpoints map to the same VisiblePosition when a selection is deleted
     // because we don't yet notify the FrameSelection of text removal.
     if (CheckedPtr view = document->renderView(); startPos.isNotNull() && endPos.isNotNull() && selection.visibleStart() != selection.visibleEnd()) {
-        CheckedPtr startRenderer = startPos.deprecatedNode()->renderer();
-        int startOffset = startPos.deprecatedEditingOffset();
-        CheckedPtr endRenderer = endPos.deprecatedNode()->renderer();
-        int endOffset = endPos.deprecatedEditingOffset();
-        ASSERT(startOffset >= 0 && endOffset >= 0);
-        view->selection().set({ startRenderer, endRenderer, static_cast<unsigned>(startOffset), static_cast<unsigned>(endOffset) });
+        auto [startRenderer, startOffset] = startPos.rendererAndOffset();
+        auto [endRenderer, endOffset] = endPos.rendererAndOffset();
+        if (startRenderer && endRenderer)
+            view->selection().set({ startRenderer, endRenderer, startOffset, endOffset });
     }
 }
 

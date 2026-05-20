@@ -40,6 +40,7 @@
 #include <WebCore/NavigationIdentifier.h>
 #include <WebCore/ProcessSwapDisposition.h>
 #include <WebCore/ResourceRequest.h>
+#include <WebCore/Site.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/WeakPtr.h>
 
@@ -105,7 +106,7 @@ public:
     WebCore::PageIdentifier webPageID() const { return m_webPageID; }
     WebFrameProxy* mainFrame() const { return m_mainFrame.get(); }
     BrowsingContextGroup& browsingContextGroup() const { return m_browsingContextGroup.get(); }
-    WebProcessProxy& NODELETE process();
+    WebProcessProxy& NODELETE process() const;
     ProcessSwapRequestedByClient processSwapRequestedByClient() const { return m_processSwapRequestedByClient; }
     WebCore::NavigationIdentifier navigationID() const { return m_navigationID; }
     const URL& provisionalURL() const LIFETIME_BOUND { return m_provisionalLoadURL; }
@@ -113,6 +114,8 @@ public:
 
     bool isProcessSwappingOnNavigationResponse() const { return m_isProcessSwappingOnNavigationResponse; }
     bool didFailProvisionalLoad() const { return m_didFailProvisionalLoad; }
+    const std::optional<WebCore::Site>& deferredRemoteTransitionSite() const { return m_deferredRemoteTransitionSite; }
+    bool hasActiveLoadForNavigation(const API::Navigation&) const;
 
     DrawingAreaProxy* drawingArea() const { return m_drawingArea.get(); }
     RefPtr<DrawingAreaProxy> takeDrawingArea();
@@ -152,7 +155,6 @@ public:
 
     WebPageProxyMessageReceiverRegistration& messageReceiverRegistration() LIFETIME_BOUND { return m_messageReceiverRegistration; }
 
-    bool needsMainFrameObserver() const { return m_needsMainFrameObserver; }
     void updateFrameProcess();
 
 private:
@@ -204,7 +206,7 @@ private:
     void didCreateContextInWebProcessForVisibilityPropagation(LayerHostingContextID);
 #endif
 
-    void initializeWebPage(RefPtr<API::WebsitePolicies>&&);
+    void initializeWebPage(RefPtr<API::WebsitePolicies>&&, bool isRestoringFromBFCache = false);
     bool NODELETE validateInput(WebCore::FrameIdentifier, const std::optional<WebCore::NavigationIdentifier>& = std::nullopt);
 
     WeakPtr<WebPageProxy> m_page;
@@ -229,8 +231,8 @@ private:
     bool m_needsCookieAccessAddedInNetworkProcess { false };
     bool m_needsDidStartProvisionalLoad { true };
     bool m_shouldClosePage { true };
-    bool m_needsMainFrameObserver { false };
     bool m_didFailProvisionalLoad { false };
+    std::optional<WebCore::Site> m_deferredRemoteTransitionSite;
     URL m_provisionalLoadURL;
     WebPageProxyMessageReceiverRegistration m_messageReceiverRegistration;
     RefPtr<API::WebsitePolicies> m_mainFrameWebsitePolicies;

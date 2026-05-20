@@ -55,6 +55,7 @@
 #include "MathMLElement.h"
 #include "MediaQueryEvaluator.h"
 #include "Page.h"
+#include "PlatformRenderTheme.h"
 #include "Quirks.h"
 #include "RenderTheme.h"
 #include "RuleSetBuilder.h"
@@ -81,6 +82,7 @@ StyleSheetContents* UserAgentStyle::quirksStyleSheet;
 StyleSheetContents* UserAgentStyle::svgStyleSheet;
 StyleSheetContents* UserAgentStyle::mathMLStyleSheet;
 StyleSheetContents* UserAgentStyle::mathMLCoreExtrasStyleSheet;
+StyleSheetContents* UserAgentStyle::mathMLCoreMathvariantStyleSheet;
 StyleSheetContents* UserAgentStyle::mathMLFontSizeMathStyleSheet;
 StyleSheetContents* UserAgentStyle::mathMLLegacyFontSizeMathStyleSheet;
 StyleSheetContents* UserAgentStyle::mediaQueryStyleSheet;
@@ -111,7 +113,7 @@ static const MQ::MediaQueryEvaluator& printEval()
     return staticPrintEval;
 }
 
-static StyleSheetContents* parseUASheet(const String& str)
+static StyleSheetContents* parseUASheet(const WTF::String& str)
 {
     Ref sheet = StyleSheetContents::create(CSSParserContext(UASheetMode));
     sheet->parseString(str);
@@ -171,7 +173,7 @@ void UserAgentStyle::initDefaultStyleSheet()
     defaultQuirksStyle = &RuleSet::create().leakRef();
     mediaQueryStyleSheet = &StyleSheetContents::create(CSSParserContext(UASheetMode)).leakRef();
 
-    String defaultRules;
+    WTF::String defaultRules;
     auto extraDefaultStyleSheet = RenderTheme::singleton().extraDefaultStyleSheet();
     if (extraDefaultStyleSheet.isEmpty())
         defaultRules = StringImpl::createWithoutCopying(htmlUserAgentStyleSheet);
@@ -234,6 +236,10 @@ void UserAgentStyle::ensureDefaultStyleSheetsForElement(const Element& element)
         if (!mathMLCoreExtrasStyleSheet && element.document().settings().coreMathMLEnabled()) {
             mathMLCoreExtrasStyleSheet = parseUASheet(StringImpl::createWithoutCopying(mathmlCoreExtrasUserAgentStyleSheet));
             addToDefaultStyle(*mathMLCoreExtrasStyleSheet);
+        }
+        if (!mathMLCoreMathvariantStyleSheet && element.document().settings().coreMathMLDeprecateLegacyMathvariant()) {
+            mathMLCoreMathvariantStyleSheet = parseUASheet(StringImpl::createWithoutCopying(mathmlCoreMathvariantUserAgentStyleSheet));
+            addToDefaultStyle(*mathMLCoreMathvariantStyleSheet);
         }
         if (element.document().settings().cssMathDepthEnabled()) {
             if (!mathMLFontSizeMathStyleSheet) {

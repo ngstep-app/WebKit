@@ -167,10 +167,6 @@ void XPCServiceEventHandler(xpc_connection_t peer)
             return;
         }
 
-#if USE(EXIT_XPC_MESSAGE_WORKAROUND)
-        handleXPCExitMessage(event);
-#endif
-
         String messageName = xpcDictionaryGetString(event, "message-name"_s);
         if (!messageName) {
             RELEASE_LOG_ERROR(IPC, "XPCServiceEventHandler: 'message-name' is not present in the XPC dictionary");
@@ -224,7 +220,9 @@ void XPCServiceEventHandler(xpc_connection_t peer)
                 setUserDirSuffix(networkingServiceName);
                 entryPointFunctionName = CFSTR(STRINGIZE_VALUE_OF(NETWORK_SERVICE_INITIALIZER));
             } else if (serviceName == gpuServiceName) {
+#if !USE(EXTENSIONKIT)
                 setUserDirSuffix(gpuServiceName);
+#endif
                 entryPointFunctionName = CFSTR(STRINGIZE_VALUE_OF(GPU_SERVICE_INITIALIZER));
             } else if (serviceName == modelServiceName)
                 entryPointFunctionName = CFSTR(STRINGIZE_VALUE_OF(MODEL_SERVICE_INITIALIZER));
@@ -234,6 +232,10 @@ void XPCServiceEventHandler(xpc_connection_t peer)
             }
 
             RetainPtr webKitBundle = CFBundleGetBundleWithIdentifier(CFSTR("com.apple.WebKit"));
+            if (!webKitBundle) {
+                RetainPtr webKitFrameworkURL = adoptCF(CFURLCreateWithFileSystemPath(nullptr, CFSTR("/System/Library/Frameworks/WebKit.framework"), kCFURLPOSIXPathStyle, true));
+                webKitBundle = adoptCF(CFBundleCreate(nullptr, webKitFrameworkURL.get()));
+            }
             typedef void (*InitializerFunction)(xpc_connection_t, xpc_object_t);
             InitializerFunction initializerFunctionPtr = reinterpret_cast<InitializerFunction>(CFBundleGetFunctionPointerForName(webKitBundle.get(), entryPointFunctionName));
             if (!initializerFunctionPtr) {

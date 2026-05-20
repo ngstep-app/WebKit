@@ -1,9 +1,12 @@
 include(GNUInstallDirs)
 include(VersioningUtils)
 
-SET_PROJECT_VERSION(2 53 0)
+SET_PROJECT_VERSION(2 53 2)
 
 set(USER_AGENT_BRANDING "" CACHE STRING "Branding to add to user agent string")
+
+set(ENABLE_UNSAFE_BUFFER_USAGE_WARNING ON)
+list(APPEND WEBKIT_UNSAFE_BUFFER_WARNING_FLAGS -Wno-unsafe-buffer-usage-in-format-attr-call)
 
 # Update Source/WTF/wtf/Platform.h to match required GLib versions.
 find_package(GLib 2.70.0 REQUIRED COMPONENTS GioUnix Thread Module)
@@ -114,6 +117,7 @@ WEBKIT_OPTION_DEFINE(USE_LIBBACKTRACE "Whether to enable usage of libbacktrace."
 WEBKIT_OPTION_DEFINE(USE_LIBDRM "Whether to enable usage of libdrm." PUBLIC ON)
 WEBKIT_OPTION_DEFINE(USE_LIBHYPHEN "Whether to enable the default automatic hyphenation implementation." PUBLIC ON)
 WEBKIT_OPTION_DEFINE(USE_SKIA_OPENTYPE_SVG "Whether to use the Skia built-in support for OpenType SVG fonts." PUBLIC ON)
+WEBKIT_OPTION_DEFINE(USE_VULKAN "Whether to build support to use Vulkan." PUBLIC ${ENABLE_EXPERIMENTAL_FEATURES})
 
 # Private options specific to the WPE port.
 WEBKIT_OPTION_DEFINE(USE_EXTERNAL_HOLEPUNCH "Whether to enable external holepunch" PRIVATE OFF)
@@ -146,6 +150,7 @@ if (ENABLE_DEVELOPER_MODE)
     WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_LAYOUT_TESTS PRIVATE ON)
     WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MINIBROWSER PUBLIC ON)
     WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_JSC_RESTRICTED_OPTIONS_BY_DEFAULT PRIVATE ON)
+    set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON)
 endif ()
 
 WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_SKIA PRIVATE ON)
@@ -187,9 +192,9 @@ endif ()
 EXPOSE_STRING_VARIABLE_TO_BUILD(WPE_API_VERSION)
 
 if (WPE_API_VERSION VERSION_EQUAL "1.1")
-    CALCULATE_LIBRARY_VERSIONS_FROM_LIBTOOL_TRIPLE(WEBKIT 13 0 13)
+    CALCULATE_LIBRARY_VERSIONS_FROM_LIBTOOL_TRIPLE(WEBKIT 13 1 13)
 else ()
-    CALCULATE_LIBRARY_VERSIONS_FROM_LIBTOOL_TRIPLE(WEBKIT 11 0 10)
+    CALCULATE_LIBRARY_VERSIONS_FROM_LIBTOOL_TRIPLE(WEBKIT 11 1 10)
 endif ()
 
 set(CMAKE_C_VISIBILITY_PRESET hidden)
@@ -246,6 +251,13 @@ if (USE_LIBHYPHEN)
     find_package(Hyphen)
     if (NOT Hyphen_FOUND)
        message(FATAL_ERROR "libhyphen is needed for USE_LIBHYPHEN.")
+    endif ()
+endif ()
+
+if (USE_VULKAN)
+    find_package(volk CONFIG)
+    if (NOT TARGET volk::volk OR NOT TARGET volk::volk_headers)
+        message(FATAL_ERROR "Volk is required for USE_VULKAN")
     endif ()
 endif ()
 
@@ -330,18 +342,25 @@ if (ENABLE_WPE_QT_API)
         target_link_libraries(WrapOpenGL::WrapOpenGL INTERFACE Epoxy::Epoxy)
     endif ()
     find_package(Qt6 REQUIRED COMPONENTS Core Quick Gui)
+    # In older versions of Qt6, Qt::QuickPrivate is provided by Qt6Quick,
+    # but in newer versions, we need to find its own package.
+    # This change was introduced in Qt 6.9:
+    # https://code.qt.io/cgit/qt/qtbase.git/commit/cmake/QtTargetHelpers.cmake?id=ad7b94e163ac5c3959a7e38d7f48536be288a187
+    if (NOT TARGET Qt::QuickPrivate)
+      find_package(Qt6QuickPrivate REQUIRED)
+    endif ()
     find_package(Qt6Test REQUIRED)
 endif ()
 
 if (ENABLE_WEBXR)
-    find_package(OpenXR 1.0.20)
-    if (NOT OPENXR_FOUND)
-        message(FATAL_ERROR "OpenXR is required to enable WebXR support.")
-    endif ()
+    find_package(OpenXR REQUIRED CONFIG)
     SET_AND_EXPOSE_TO_BUILD(USE_OPENXR ${OpenXR_FOUND})
     SET_AND_EXPOSE_TO_BUILD(XR_USE_PLATFORM_EGL TRUE)
     SET_AND_EXPOSE_TO_BUILD(XR_USE_GRAPHICS_API_OPENGL_ES TRUE)
     SET_AND_EXPOSE_TO_BUILD(ENABLE_WEBXR_HANDS TRUE)
+    if (ANDROID)
+        SET_AND_EXPOSE_TO_BUILD(XR_USE_PLATFORM_ANDROID TRUE)
+    endif ()
 endif ()
 
 if (USE_AVIF)
@@ -418,8 +437,8 @@ if (USE_LIBDRM)
     set(CMAKE_REQUIRED_LIBRARIES LibDRM::LibDRM)
     WEBKIT_CHECK_HAVE_FUNCTION(HAVE_DRM_GET_FORMAT_MODIFIER_VENDOR drmGetFormatModifierVendor xf86drm.h)
     WEBKIT_CHECK_HAVE_FUNCTION(HAVE_DRM_GET_FORMAT_MODIFIER_NAME drmGetFormatModifierName xf86drm.h)
-    WEBKIT_CHECK_HAVE_FUNCTION(HAVE_DRM_GET_FORMAT_MODIFIER_NAME drmModeCreateDumbBuffer xf86drm.h)
-    WEBKIT_CHECK_HAVE_FUNCTION(HAVE_DRM_GET_FORMAT_MODIFIER_NAME drmModeDestroyDumbBuffer xf86drm.h)
+    WEBKIT_CHECK_HAVE_FUNCTION(HAVE_DRM_MODE_CREATE_DUMB_BUFFER drmModeCreateDumbBuffer xf86drm.h)
+    WEBKIT_CHECK_HAVE_FUNCTION(HAVE_DRM_MODE_DESTROY_DUMB_BUFFER drmModeDestroyDumbBuffer xf86drm.h)
     unset(CMAKE_REQUIRED_LIBRARIES)
 endif ()
 
@@ -430,7 +449,6 @@ if (USE_GBM)
     endif ()
 
     set(CMAKE_REQUIRED_LIBRARIES GBM::GBM)
-    WEBKIT_CHECK_HAVE_FUNCTION(HAVE_GBM_BO_GET_FD_FOR_PLANE gbm_bo_get_fd_for_plane gbm.h)
     WEBKIT_CHECK_HAVE_FUNCTION(HAVE_GBM_BO_CREATE_WITH_MODIFIERS2 gbm_bo_create_with_modifiers2 gbm.h)
     unset(CMAKE_REQUIRED_LIBRARIES)
 endif ()

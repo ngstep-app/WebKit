@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2011-2025 Apple Inc. All rights reserved.
+ * Copyright (C) 2026 Samuel Weinig <sam@webkit.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -30,6 +31,7 @@
 #import "BoundaryPointInlines.h"
 #import "CSSColorValue.h"
 #import "CSSComputedStyleDeclaration.h"
+#import "CSSKeywordValueInlines.h"
 #import "CSSPrimitiveValue.h"
 #import "CSSSerializationContext.h"
 #import "CachedImage.h"
@@ -73,6 +75,7 @@
 #import "RenderStyle+GettersInlines.h"
 #import "RenderText.h"
 #import "StyleExtractor.h"
+#import "StylePrimitiveNumericTypes+DeprecatedCSSValueConversion.h"
 #import "StyleProperties.h"
 #import "StylePropertiesInlines.h"
 #import "StyledElement.h"
@@ -473,23 +476,12 @@ RefPtr<CSSValue> HTMLConverterCaches::inlineStylePropertyForElement(Element& ele
     return properties->getPropertyCSSValue(propertyId);
 }
 
-static bool stringFromCSSValue(CSSValue& value, String& result)
+static std::optional<String> stringFromCSSValue(CSSValue& value)
 {
-    if (auto* primitiveValue = dynamicDowncast<CSSPrimitiveValue>(value)) {
-        // FIXME: Use isStringType(CSSUnitType)?
-        auto primitiveType = primitiveValue->primitiveType();
-        if (primitiveType == CSSUnitType::CSS_STRING || primitiveType == CSSUnitType::CSS_IDENT || primitiveType == CSSUnitType::CSS_ATTR) {
-            auto stringValue = value.cssText(CSS::defaultSerializationContext());
-            if (stringValue.length()) {
-                result = stringValue;
-                return true;
-            }
-        }
-    } else if (value.isValueList() || value.isAppleColorFilterValue() || value.isFilterValue() || value.isTextShadowPropertyValue() || value.isBoxShadowPropertyValue() || value.isURL()) {
-        result = value.cssText(CSS::defaultSerializationContext());
-        return true;
-    }
-    return false;
+    if (value.isValueList() || value.isAppleColorFilterValue() || value.isFilterValue() || value.isTextShadowPropertyValue() || value.isBoxShadowPropertyValue() || value.isURL() || value.isKeywordValue() || value.isStringValue() || value.isAttrValue())
+        return value.cssText(CSS::defaultSerializationContext());
+
+    return std::nullopt;
 }
 
 String HTMLConverterCaches::propertyValueForNode(Node& node, CSSPropertyID propertyId)
@@ -505,17 +497,15 @@ String HTMLConverterCaches::propertyValueForNode(Node& node, CSSPropertyID prope
 
     bool inherit = false;
     if (RefPtr value = computedStylePropertyForElement(*element, propertyId)) {
-        String result;
-        if (stringFromCSSValue(*value, result))
-            return result;
+        if (auto result = stringFromCSSValue(*value))
+            return *result;
     }
 
     if (RefPtr value = inlineStylePropertyForElement(*element, propertyId)) {
-        String result;
         if (isValueID(*value, CSSValueInherit))
             inherit = true;
-        else if (stringFromCSSValue(*value, result))
-            return result;
+        else if (auto result = stringFromCSSValue(*value))
+            return *result;
     }
 
     switch (propertyId) {
@@ -659,19 +649,11 @@ String HTMLConverterCaches::propertyValueForNode(Node& node, CSSPropertyID prope
 
 static inline bool floatValueFromPrimitiveValue(CSSPrimitiveValue& primitiveValue, float& result)
 {
-    switch (primitiveValue.primitiveType()) {
-    case CSSUnitType::CSS_PX:
-    case CSSUnitType::CSS_PT:
-    case CSSUnitType::CSS_PC:
-    case CSSUnitType::CSS_CM:
-    case CSSUnitType::CSS_MM:
-    case CSSUnitType::CSS_Q:
-    case CSSUnitType::CSS_IN:
-        result = primitiveValue.resolveAsLengthDeprecated();
+    if (primitiveValue.isFontIndependentLength()) {
+        result = WebCore::Style::deprecatedToStyleFromCSSValue<WebCore::Style::Length<CSS::All, float>>(primitiveValue)->resolveZoom(WebCore::Style::ZoomNeeded { });
         return true;
-    default:
-        return false;
     }
+    return false;
 }
 
 bool HTMLConverterCaches::floatPropertyValueForNode(Node& node, CSSPropertyID propertyId, float& result)
@@ -1297,12 +1279,14 @@ BOOL HTMLConverter::_addAttachmentForElement(Element& element, NSURL *url, BOOL 
         NSDictionary *attrs;
 
 #if ENABLE(MULTI_REPRESENTATION_HEIC)
-        if (RetainPtr data = [fileWrapper regularFileContents]) {
-            RefPtr imageElement = dynamicDowncast<HTMLImageElement>(element);
-            if (imageElement && imageElement->isMultiRepresentationHEIC())
-                attachment = adoptNS([[PlatformNSAdaptiveImageGlyph alloc] initWithImageContent:data.get()]);
-            if (attachment)
-                attributeName = NSAdaptiveImageGlyphAttributeName;
+        if ([fileWrapper isRegularFile]) {
+            if (RetainPtr data = [fileWrapper regularFileContents]) {
+                RefPtr imageElement = dynamicDowncast<HTMLImageElement>(element);
+                if (imageElement && imageElement->isMultiRepresentationHEIC())
+                    attachment = adoptNS([[PlatformNSAdaptiveImageGlyph alloc] initWithImageContent:data.get()]);
+                if (attachment)
+                    attributeName = NSAdaptiveImageGlyphAttributeName;
+            }
         }
 #endif
 
@@ -1641,9 +1625,9 @@ void HTMLConverter::_addLinkForElement(Element& element, NSRange range)
     RetainPtr urlString = element.getAttribute(hrefAttr).createNSString();
     RetainPtr strippedString = [urlString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (urlString && [urlString length] > 0 && strippedString && [strippedString length] > 0 && ![strippedString hasPrefix:@"#"]) {
-        RetainPtr url = element.document().completeURL(urlString.get()).createNSURL();
+        RetainPtr url = element.document().encodingParseURL(urlString.get()).createNSURL();
         if (!url)
-            url = element.document().completeURL(strippedString.get()).createNSURL();
+            url = element.document().encodingParseURL(strippedString.get()).createNSURL();
         if (!url)
             url = [NSURL _web_URLWithString:strippedString.get() relativeToURL:nil];
         [_attrStr addAttribute:NSLinkAttributeName value:url ? (id)url.get() : (id)urlString.get() range:range];
@@ -1803,7 +1787,7 @@ BOOL HTMLConverter::_processElement(Element& element, NSInteger depth)
 #endif
         RetainPtr urlString = element.imageSourceURL().createNSString();
         if (retval && urlString && [urlString length] > 0) {
-            RetainPtr url = element.document().completeURL(urlString.get()).createNSURL();
+            RetainPtr url = element.document().encodingParseURL(urlString.get()).createNSURL();
             if (!url)
                 url = [NSURL _web_URLWithString:[urlString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] relativeToURL:nil];
 #if PLATFORM(IOS_FAMILY)
@@ -1823,14 +1807,14 @@ BOOL HTMLConverter::_processElement(Element& element, NSInteger depth)
             RetainPtr<NSURL> baseURL;
             RetainPtr<NSURL> url;
             if (baseString && [baseString length] > 0) {
-                baseURL = element.document().completeURL(baseString.get()).createNSURL();
+                baseURL = element.document().encodingParseURL(baseString.get()).createNSURL();
                 if (!baseURL)
                     baseURL = [NSURL _web_URLWithString:[baseString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] relativeToURL:nil];
             }
             if (baseURL)
                 url = [NSURL _web_URLWithString:[urlString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] relativeToURL:baseURL.get()];
             if (!url)
-                url = element.document().completeURL(urlString.get()).createNSURL();
+                url = element.document().encodingParseURL(urlString.get()).createNSURL();
             if (!url)
                 url = [NSURL _web_URLWithString:[urlString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] relativeToURL:nil];
             if (url)
@@ -2130,7 +2114,7 @@ void HTMLConverter::_processText(Text& text)
     bool wasSpace = false;
     if (_caches->propertyValueForNode(text, CSSPropertyWhiteSpace).startsWith("pre"_s)) {
         if (textLength && originalString.length() && _flags.isSoft) {
-            unichar c = originalString.characterAt(0);
+            unichar c = originalString.codeUnitAt(0);
             if (c == '\n' || c == '\r' || c == NSParagraphSeparatorCharacter || c == NSLineSeparatorCharacter || c == NSFormFeedCharacter || c == WebNextLineCharacter)
                 rangeToReplace = NSMakeRange(textLength - 1, 1);
         }
@@ -2140,7 +2124,7 @@ void HTMLConverter::_processText(Text& text)
         StringBuilder builder;
         Latin1Character noBreakSpaceRepresentation = 0;
         for (unsigned i = 0; i < count; i++) {
-            char16_t c = originalString.characterAt(i);
+            char16_t c = originalString.codeUnitAt(i);
             bool isWhitespace = c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == 0xc || c == 0x200b;
             if (isWhitespace)
                 wasSpace = (!wasLeading || !suppressLeadingSpace);
@@ -2166,7 +2150,7 @@ void HTMLConverter::_processText(Text& text)
     if (outputString.length()) {
         String textTransform = _caches->propertyValueForNode(text, CSSPropertyTextTransform);
         if (textTransform == "capitalize"_s)
-            outputString = capitalize(outputString); // FIXME: Needs to take locale into account to work correctly.
+            outputString = capitalize(outputString, nullAtom()); // FIXME: Needs to take locale into account to work correctly.
         else if (textTransform == "uppercase"_s)
             outputString = outputString.convertToUppercaseWithoutLocale(); // FIXME: Needs locale to work correctly.
         else if (textTransform == "lowercase"_s)

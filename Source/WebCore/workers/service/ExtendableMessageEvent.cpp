@@ -30,7 +30,9 @@
 #include "EventNames.h"
 #include "JSDOMConvertInterface.h"
 #include "JSExtendableMessageEvent.h"
+#include "JSValueInWrappedObjectInlines.h"
 #include "SecurityOrigin.h"
+#include <JavaScriptCore/StrongInlines.h>
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
@@ -43,7 +45,7 @@ static JSC::Strong<JSC::JSObject> createWrapperAndSetData(JSC::JSGlobalObject& g
     JSC::Strong<JSC::Unknown> strongData(vm, value);
 
     Locker<JSC::JSLock> locker(vm.apiLock());
-    JSC::Strong<JSC::JSObject> strongWrapper(vm, JSC::jsCast<JSC::JSObject*>(toJSNewlyCreated<IDLInterface<ExtendableMessageEvent>>(globalObject,  *JSC::jsCast<JSDOMGlobalObject*>(&globalObject), Ref { event })));
+    JSC::Strong<JSC::JSObject> strongWrapper(vm, downcast<JSC::JSObject>(toJSNewlyCreated<IDLInterface<ExtendableMessageEvent>>(globalObject,  downcast<JSDOMGlobalObject>(globalObject), Ref { event })));
     event.data().set(globalObject, strongWrapper.get(), value);
 
     return strongWrapper;

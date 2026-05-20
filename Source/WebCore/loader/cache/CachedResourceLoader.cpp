@@ -97,6 +97,7 @@
 #include <wtf/text/CString.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/text/WTFString.h>
+#include "LocalFrameInlines.h"
 
 #if ENABLE(APPLICATION_MANIFEST)
 #include "CachedApplicationManifest.h"
@@ -252,7 +253,7 @@ CachedResource* CachedResourceLoader::cachedResource(const String& resourceURL) 
     ASSERT(!resourceURL.isNull());
     RefPtr document = m_document;
     ASSERT(document);
-    return document ? cachedResource(MemoryCache::removeFragmentIdentifierIfNeeded(document->completeURL(resourceURL))) : nullptr;
+    return document ? cachedResource(MemoryCache::removeFragmentIdentifierIfNeeded(document->encodingParseURL(resourceURL))) : nullptr;
 }
 
 CachedResource* CachedResourceLoader::cachedResource(const URL& url) const
@@ -515,7 +516,7 @@ bool CachedResourceLoader::allowedByContentSecurityPolicy(CachedResource::Type t
 
     // All content loaded through embed or object elements goes through object-src: https://www.w3.org/TR/CSP3/#directive-object-src.
     if (options.loadedFromPluginElement == LoadedFromPluginElement::Yes
-        && !contentSecurityPolicy->allowObjectFromSource(url, redirectResponseReceived, preRedirectURL))
+        && !contentSecurityPolicy->allowObjectFromSource(url, document->currentParserSourcePosition(), redirectResponseReceived, preRedirectURL))
         return false;
 
     switch (type) {
@@ -524,33 +525,33 @@ bool CachedResourceLoader::allowedByContentSecurityPolicy(CachedResource::Type t
 #endif
     case CachedResource::Type::JSON:
     case CachedResource::Type::Script:
-        if (!contentSecurityPolicy->allowScriptFromSource(url, redirectResponseReceived, preRedirectURL, options.integrity, options.nonce))
+        if (!contentSecurityPolicy->allowScriptFromSource(url, document->currentParserSourcePosition(), redirectResponseReceived, preRedirectURL, options.integrity, options.nonce))
             return false;
         break;
     case CachedResource::Type::CSSStyleSheet:
-        if (!contentSecurityPolicy->allowStyleFromSource(url, redirectResponseReceived, preRedirectURL, options.nonce))
+        if (!contentSecurityPolicy->allowStyleFromSource(url, document->currentParserSourcePosition(), redirectResponseReceived, preRedirectURL, options.nonce))
             return false;
         break;
     case CachedResource::Type::SVGDocumentResource:
     case CachedResource::Type::Icon:
     case CachedResource::Type::ImageResource:
-        if (!contentSecurityPolicy->allowImageFromSource(url, redirectResponseReceived, preRedirectURL))
+        if (!contentSecurityPolicy->allowImageFromSource(url, document->currentParserSourcePosition(), redirectResponseReceived, preRedirectURL))
             return false;
         break;
     case CachedResource::Type::LinkPrefetch:
-        if (!contentSecurityPolicy->allowPrefetchFromSource(url, redirectResponseReceived, preRedirectURL))
+        if (!contentSecurityPolicy->allowPrefetchFromSource(url, document->currentParserSourcePosition(), redirectResponseReceived, preRedirectURL))
             return false;
         break;
     case CachedResource::Type::SVGFontResource:
     case CachedResource::Type::FontResource:
-        if (!contentSecurityPolicy->allowFontFromSource(url, redirectResponseReceived, preRedirectURL))
+        if (!contentSecurityPolicy->allowFontFromSource(url, document->currentParserSourcePosition(), redirectResponseReceived, preRedirectURL))
             return false;
         break;
     case CachedResource::Type::MediaResource:
 #if ENABLE(VIDEO)
     case CachedResource::Type::TextTrackResource:
 #endif
-        if (!contentSecurityPolicy->allowMediaFromSource(url, redirectResponseReceived, preRedirectURL))
+        if (!contentSecurityPolicy->allowMediaFromSource(url, document->currentParserSourcePosition(), redirectResponseReceived, preRedirectURL))
             return false;
         break;
     case CachedResource::Type::Beacon:
@@ -564,7 +565,7 @@ bool CachedResourceLoader::allowedByContentSecurityPolicy(CachedResource::Type t
         return true;
 #if ENABLE(APPLICATION_MANIFEST)
     case CachedResource::Type::ApplicationManifest:
-        if (!contentSecurityPolicy->allowManifestFromSource(url, redirectResponseReceived, preRedirectURL))
+        if (!contentSecurityPolicy->allowManifestFromSource(url, document->currentParserSourcePosition(), redirectResponseReceived, preRedirectURL))
             return false;
         break;
 #endif
@@ -739,9 +740,23 @@ static FetchMetadataSite computeFetchMetadataSiteInternal(const ResourceRequest&
     return FetchMetadataSite::CrossSite;
 }
 
-FetchMetadataSite CachedResourceLoader::computeFetchMetadataSite(const ResourceRequest& request, CachedResource::Type type, FetchOptions::Mode mode, const LocalFrame& frame, bool isDirectlyUserInitiatedRequest)
+FetchMetadataSite CachedResourceLoader::computeFetchMetadataSite(const ResourceRequest& request, CachedResource::Type type, FetchOptions::Mode mode, const LocalFrame& frame, bool isDirectlyUserInitiatedRequest, const DocumentLoader* documentLoader)
 {
-    return computeFetchMetadataSiteInternal(request, type, mode, nullptr, &frame, FetchMetadataSite::SameOrigin, isDirectlyUserInitiatedRequest);
+    auto site = computeFetchMetadataSiteInternal(request, type, mode, nullptr, &frame, FetchMetadataSite::SameOrigin, isDirectlyUserInitiatedRequest);
+
+    // When a main resource load continues in a new process after a server redirect caused a process
+    // swap, the redirect history is lost. Account for the pre-redirect URL to correctly degrade
+    // the Sec-Fetch-Site value.
+    if (type == CachedResource::Type::MainResource && documentLoader
+        && documentLoader->isContinuingLoadAfterProvisionalLoadStarted()
+        && documentLoader->originalURL() != request.url()) {
+        ResourceRequest originalRequest { URL { documentLoader->originalURL() } };
+        auto originalSite = computeFetchMetadataSiteInternal(originalRequest, type, mode, nullptr, &frame, FetchMetadataSite::SameOrigin, false);
+        Ref originalOrigin = SecurityOrigin::create(documentLoader->originalURL());
+        site = computeFetchMetadataSiteAfterRedirection(request, type, mode, originalOrigin.get(), originalSite, false);
+    }
+
+    return site;
 }
 
 FetchMetadataSite CachedResourceLoader::computeFetchMetadataSiteAfterRedirection(const ResourceRequest& request, CachedResource::Type type, FetchOptions::Mode mode, const SecurityOrigin& originalOrigin, FetchMetadataSite originalSite, bool isDirectlyUserInitiatedRequest)
@@ -1002,7 +1017,7 @@ void CachedResourceLoader::updateHTTPRequestHeaders(FrameLoader& frameLoader, Ca
     // all of them or none.
     Ref frame = frameLoader.frame();
     if (shouldUpdateFetchMetadata(frame, request.resourceRequest(), type, request.options().mode)) {
-        auto site = computeFetchMetadataSite(request.resourceRequest(), type, request.options().mode, frame, frame->isMainFrame() && m_documentLoader && m_documentLoader->isRequestFromClientOrUserInput());
+        auto site = computeFetchMetadataSite(request.resourceRequest(), type, request.options().mode, frame, frame->isMainFrame() && m_documentLoader && m_documentLoader->isRequestFromClientOrUserInput(), m_documentLoader.get());
         updateRequestFetchMetadataHeaders(request.resourceRequest(), request.options(), site);
     }
     request.updateUserAgentHeader(frameLoader);
@@ -1864,7 +1879,7 @@ bool CachedResourceLoader::isPreloaded(const String& urlString) const
     if (!document)
         return false;
 
-    const URL& url = document->completeURL(urlString);
+    const URL& url = document->encodingParseURL(urlString);
 
     if (!m_preloads)
         return false;

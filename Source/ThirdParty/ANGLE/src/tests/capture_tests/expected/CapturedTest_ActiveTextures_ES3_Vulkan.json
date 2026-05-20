@@ -1,7 +1,8 @@
 {
     "TraceMetadata": {
         "AreClientArraysEnabled": true,
-        "CaptureRevision": 27004,
+        "AreExtensionsEnabled": true,
+        "CaptureRevision": 27460,
         "ConfigAlphaBits": 8,
         "ConfigBlueBits": 8,
         "ConfigDepthBits": 24,

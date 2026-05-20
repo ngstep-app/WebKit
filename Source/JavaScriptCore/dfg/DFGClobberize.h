@@ -171,6 +171,8 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
         case ArrayifyToStructure:
         case ArrayPush:
         case ArrayPop:
+        case ArrayShift:
+        case ArrayUnshift:
         case ArrayIncludes:
         case ArrayIndexOf:
         case HasIndexedProperty:
@@ -184,6 +186,9 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
         case AtomicsSub:
         case AtomicsXor:
         case NewArrayWithSpecies:
+        case ArraySortCompact:
+        case ArraySortCommit:
+        case GetCellButterflySlot:
             return clobberTop();
         default:
             DFG_CRASH(graph, node, "Unhandled ArrayMode opcode.");
@@ -236,6 +241,7 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
     case StringCharCodeAt:
     case StringCodePointAt:
     case StringIndexOf:
+    case StringLastIndexOf:
     case StringStartsWith:
     case StringEndsWith:
     case CompareStrictEq:
@@ -267,6 +273,7 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
     case GetExecutable:
     case BottomValue:
     case TypeOf:
+    case SymbolToString:
         def(PureValue(node));
         return;
 
@@ -680,7 +687,9 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
         return;
 
     case ArrayIsArray:
-        clobberTop();
+        read(MiscFields);
+        write(SideState);
+        def(HeapLocation(ArrayIsArrayLoc, MiscFields, node->child1()), LazyNode(node));
         return;
 
     case MatchStructure:
@@ -699,6 +708,22 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
         read(HeapObjectCount);
         write(HeapObjectCount);
         return;
+
+    case ArrayConcatArray:
+    case ArrayConcatAppendOne: {
+        read(MiscFields);
+        read(JSCell_indexingType);
+        read(JSCell_structureID);
+        read(JSObject_butterfly);
+        read(Butterfly_publicLength);
+        read(IndexedDoubleProperties);
+        read(IndexedInt32Properties);
+        read(IndexedContiguousProperties);
+        read(IndexedArrayStorageProperties);
+        read(HeapObjectCount);
+        write(HeapObjectCount);
+        return;
+    }
 
     case ArrayIncludes:
     case ArrayIndexOf: {
@@ -763,17 +788,16 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
     case PutPrivateNameById:
     case GetPrivateName:
     case GetPrivateNameById:
-    // FIXME: We should have a better cloberize rule for both CheckPrivateBrand and SetPrivateBrand
-    // https://bugs.webkit.org/show_bug.cgi?id=221571
-    case CheckPrivateBrand:
-    case SetPrivateBrand:
     case DefineDataProperty:
     case DefineAccessorProperty:
     case ObjectDefineProperty:
+    case ObjectDefinePropertyFromFields:
     case DeleteById:
     case DeleteByVal:
     case ArrayPush:
     case ArrayPop:
+    case ArrayShift:
+    case ArrayUnshift:
     case ArraySplice:
     case Call:
     case DirectCall:
@@ -1451,6 +1475,16 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
         read(JSCell_structureID);
         return;
 
+    case CheckPrivateBrand:
+        read(JSCell_structureID);
+        def(HeapLocation(CheckPrivateBrandLoc, JSCell_structureID, node->child1(), node->child2()), LazyNode(node));
+        return;
+
+    case SetPrivateBrand:
+        read(JSCell_structureID);
+        write(JSCell_structureID);
+        return;
+
     case CheckArrayOrEmpty:
     case CheckArray:
         read(JSCell_indexingType);
@@ -1936,6 +1970,57 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
         return;
     }
 
+    case GetCellButterflySlot:
+        read(IndexedContiguousProperties);
+        return;
+
+    case PutCellButterflySlot:
+        write(IndexedContiguousProperties);
+        return;
+
+    case ArraySortCompact: {
+        AbstractHeap sourceHeap;
+        switch (node->arrayMode().type()) {
+        case Array::Int32:
+            sourceHeap = IndexedInt32Properties;
+            break;
+        case Array::Contiguous:
+            sourceHeap = IndexedContiguousProperties;
+            break;
+        default:
+            DFG_CRASH(graph, node, "Bad array mode for ArraySortCompact");
+            return;
+        }
+        read(JSObject_butterfly);
+        read(Butterfly_publicLength);
+        read(sourceHeap);
+        read(HeapObjectCount);
+        write(HeapObjectCount);
+        write(IndexedContiguousProperties);
+        return;
+    }
+
+    case ArraySortCommit: {
+        AbstractHeap targetHeap;
+        switch (node->arrayMode().type()) {
+        case Array::Int32:
+            targetHeap = IndexedInt32Properties;
+            break;
+        case Array::Contiguous:
+            targetHeap = IndexedContiguousProperties;
+            break;
+        default:
+            DFG_CRASH(graph, node, "Bad array mode for ArraySortCommit");
+            return;
+        }
+        read(JSObject_butterfly);
+        read(Butterfly_publicLength);
+        read(IndexedContiguousProperties);
+        write(IndexedContiguousProperties);
+        write(targetHeap);
+        return;
+    }
+
     case MaterializeNewArrayWithButterfly:
         read(HeapObjectCount);
         write(HeapObjectCount);
@@ -2117,21 +2202,14 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
         return;
     }
 
-    case ObjectCreate: {
-        switch (node->child1().useKind()) {
-        case ObjectUse:
-            read(HeapObjectCount);
-            write(HeapObjectCount);
-            write(JSCell_structureID); // prototype object can be transitioned.
-            return;
-        case UntypedUse:
-            clobberTop();
-            return;
-        default:
-            RELEASE_ASSERT_NOT_REACHED();
-            return;
-        }
-    }
+    case ObjectCreate:
+        read(HeapObjectCount);
+        write(HeapObjectCount);
+        write(JSCell_structureID); // prototype object can be transitioned.
+        write(Watchpoint_fire);
+        if (node->child1().useKind() == UntypedUse)
+            write(SideState);
+        return;
 
     case NewSymbol:
         if (!node->child1() || node->child1().useKind() == StringUse) {
@@ -2153,6 +2231,7 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
 
     case NewObject:
     case NewInternalFieldObject:
+    case NewPromise:
     case NewRegExp:
     case NewStringObject:
     case NewMap:
@@ -2165,6 +2244,7 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
     case PhantomNewAsyncGeneratorFunction:
     case PhantomNewInternalFieldObject:
     case MaterializeNewInternalFieldObject:
+    case PhantomNewPromise:
     case PhantomCreateActivation:
     case MaterializeCreateActivation:
     case PhantomNewRegExp:
@@ -2221,6 +2301,11 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
             write(RegExpObject_lastIndex);
             return;
         }
+        clobberTop();
+        return;
+
+    case StringSplit:
+    case StringMatch:
         clobberTop();
         return;
 
@@ -2484,9 +2569,11 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
 
     case StringSlice:
     case StringSubstring:
+    case StringSubstr:
         def(PureValue(node));
         return;
 
+    case ToUpperCase:
     case ToLowerCase:
         def(PureValue(node));
         return;
@@ -2536,10 +2623,24 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
         clobberTop();
         return;
 
+    case NewResolvedPromise:
+        if (node->isResolvedValueKnownNonThenable()) {
+            read(HeapObjectCount);
+            write(HeapObjectCount);
+            return;
+        }
+        clobberTop();
+        return;
+
+    case NewRejectedPromise:
+        clobberTop();
+        return;
+
     case PromiseResolve:
     case PromiseReject:
     case PromiseThen:
     case PerformPromiseThen:
+    case PerformPromiseThenOneHandler:
         clobberTop();
         return;
 

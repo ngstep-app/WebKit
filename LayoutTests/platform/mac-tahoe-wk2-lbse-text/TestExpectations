@@ -206,7 +206,6 @@ svg/custom/use-nested-symbol-viewport.html         [ ImageOnlyFailure ]
 svg/custom/use-nested.svg                          [ ImageOnlyFailure ]
 
 # SMIL animation issues
-svg/animations/animateMotion-additive-1.svg [ ImageOnlyFailure ]
 svg/stroke/animated-non-scaling-stroke.html [ ImageOnlyFailure ]
 
 # Empty viewBox doesn't disable rendering for inline SVG documents
@@ -222,9 +221,6 @@ svg/hixie/mixed/011.xml                                  [ ImageOnlyFailure ]
 
 # Unknown error (nothing rendered)
 svg/text/adding-id-on-pending-path.html [ ImageOnlyFailure ]
-
-# Missing text output
-svg/animations/svg-element-attribute-changed-crash.html [ Failure ]
 
 ###############
 # Buggy tests #

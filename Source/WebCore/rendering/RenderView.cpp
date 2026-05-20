@@ -45,7 +45,6 @@
 #include "LocalFrame.h"
 #include "LocalFrameView.h"
 #include "Logging.h"
-#include "NodeInlines.h"
 #include "NodeTraversal.h"
 #include "Page.h"
 #include "RenderBoxInlines.h"
@@ -98,7 +97,7 @@ RenderView::RenderView(Document& document, RenderStyle&& style)
     m_minPreferredLogicalWidth = 0;
     m_maxPreferredLogicalWidth = 0;
 
-    setNeedsPreferredWidthsUpdate(MarkOnlyThis);
+    setNeedsPreferredWidthsUpdate(MarkingBehavior::MarkOnlyThis);
     
     setPositionState(PositionType::Absolute); // to 0,0 :)
 
@@ -188,7 +187,7 @@ void RenderView::layout()
     // Use calcWidth/Height to get the new width/height, since this will take the full page zoom factor into account.
     bool relayoutChildren = !shouldUsePrintingLayout() && (width() != viewWidth() || height() != viewHeight());
     if (relayoutChildren) {
-        setChildNeedsLayout(MarkOnlyThis);
+        setChildNeedsLayout(MarkingBehavior::MarkOnlyThis);
 
         for (auto& box : childrenOfType<RenderBox>(*this)) {
             if (box.hasRelativeLogicalHeight()
@@ -197,7 +196,7 @@ void RenderView::layout()
                 || box.style().logicalMaxHeight().isPercentOrCalculated()
                 || box.isRenderOrLegacyRenderSVGRoot()
                 )
-                box.setChildNeedsLayout(MarkOnlyThis);
+                box.setChildNeedsLayout(MarkingBehavior::MarkOnlyThis);
         }
     }
 
@@ -281,12 +280,12 @@ void RenderView::mapLocalToContainer(const RenderLayerModelObject* ancestorConta
     // If a container was specified, and was not nullptr or the RenderView,
     // then we should have found it by now.
     ASSERT_ARG(ancestorContainer, !ancestorContainer || ancestorContainer == this);
-    ASSERT_UNUSED(wasFixed, !wasFixed || *wasFixed == (mode.contains(IsFixed)));
+    ASSERT_UNUSED(wasFixed, !wasFixed || *wasFixed == (mode.contains(MapCoordinatesMode::IsFixed)));
 
-    if (mode.contains(IsFixed))
+    if (mode.contains(MapCoordinatesMode::IsFixed))
         transformState.move(toLayoutSize(frameView().scrollPositionRespectingCustomFixedPosition()));
 
-    if (!ancestorContainer && mode.contains(UseTransforms) && shouldUseTransformFromContainer(nullptr)) {
+    if (!ancestorContainer && mode.contains(MapCoordinatesMode::UseTransforms) && shouldUseTransformFromContainer(nullptr)) {
         TransformationMatrix t;
         getTransformFromContainer(LayoutSize(), t);
         transformState.applyTransform(t);
@@ -313,17 +312,17 @@ const RenderElement* RenderView::pushMappingToContainer(const RenderLayerModelOb
 
 void RenderView::mapAbsoluteToLocalPoint(OptionSet<MapCoordinatesMode> mode, TransformState& transformState) const
 {
-    if (mode & UseTransforms && shouldUseTransformFromContainer(nullptr)) {
+    if (mode & MapCoordinatesMode::UseTransforms && shouldUseTransformFromContainer(nullptr)) {
         TransformationMatrix t;
         getTransformFromContainer(LayoutSize(), t);
         transformState.applyTransform(t);
     }
 
-    if (mode & IsFixed)
+    if (mode & MapCoordinatesMode::IsFixed)
         transformState.move(toLayoutSize(frameView().scrollPositionRespectingCustomFixedPosition()));
 }
 
-bool RenderView::requiresColumns(int) const
+bool RenderView::requiresFragmentedFlow() const
 {
     return frameView().pagination().mode != Pagination::Mode::Unpaginated;
 }
@@ -682,7 +681,7 @@ bool RenderView::shouldUsePrintingLayout() const
 {
     if (!printing())
         return false;
-    return protect(frameView().frame())->shouldUsePrintingLayout();
+    return frameView().frame().shouldUsePrintingLayout();
 }
 
 LayoutRect RenderView::viewRect() const
@@ -743,7 +742,8 @@ bool RenderView::shouldPaintBaseBackground() const
             // iframes should fill with a base color if the used color scheme of the
             // element and the used color scheme of the embedded document’s root
             // element do not match.
-            if (frameView->useDarkAppearance() != parentFrameView->ownerElementOfChildFrameUsesDarkAppearance(frameView->frame()))
+            bool useDarkAppearance = parentFrameView->appearanceOfOwnerElementOfChildFrame(frameView->frame()).contains(FrameOwnerElementAppearance::IsDark);
+            if (frameView->useDarkAppearance() != useDarkAppearance)
                 return !frameView->isTransparent();
         }
     }

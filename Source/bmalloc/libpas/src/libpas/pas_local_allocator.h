@@ -26,7 +26,6 @@
 #ifndef PAS_LOCAL_ALLOCATOR_H
 #define PAS_LOCAL_ALLOCATOR_H
 
-#include "pas_allocation_result.h"
 #include "pas_allocator_scavenge_action.h"
 #include "pas_bitfit_allocator.h"
 #include "pas_config.h"
@@ -77,9 +76,7 @@ struct pas_local_allocator {
     unsigned current_offset; /* current_offset < end_offset means that we have bits to search. */
     unsigned end_offset;
     uint64_t current_word;
-    pas_segregated_view view; /* points to a partial view if we're in partial mode or the size
-                                 directory otherwise. This will point to a partial view in either
-                                 primordial partial mode or in normal partial mode. */
+    pas_segregated_view view; /* Points to the size directory. */
     uint64_t bits[1];
 };
 

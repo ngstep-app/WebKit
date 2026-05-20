@@ -33,7 +33,6 @@
 #include "FloatRoundedRect.h"
 #include "FrameSelection.h"
 #include "HTMLAttachmentElement.h"
-#include "NodeInlines.h"
 #include "RenderBoxInlines.h"
 #include "RenderChildIterator.h"
 #include "RenderObjectInlines.h"
@@ -141,7 +140,7 @@ void RenderAttachment::layoutShadowContent(const LayoutSize& size)
     for (auto& renderBox : childrenOfType<RenderBox>(*this)) {
         renderBox.mutableStyle().setHeight(Style::PreferredSize::Fixed { size.height() });
         renderBox.mutableStyle().setWidth(Style::PreferredSize::Fixed { size.width() });
-        renderBox.setNeedsLayout(MarkOnlyThis);
+        renderBox.setNeedsLayout(MarkingBehavior::MarkOnlyThis);
         renderBox.layout();
     }
 }

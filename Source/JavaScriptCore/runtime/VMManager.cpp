@@ -119,6 +119,15 @@ VMManager::Error VMManager::forEachVMWithTimeoutImpl(Seconds timeout, const Scop
     return Error::None;
 }
 
+void VMManager::Info::dump(PrintStream& out) const
+{
+    out.print("VMManager::Info(numberOfVMs:", numberOfVMs);
+    out.print(", numberOfActiveVMs:", numberOfActiveVMs);
+    out.print(", numberOfStoppedVMs:", numberOfStoppedVMs);
+    out.print(", worldMode:", worldMode);
+    out.print(", targetVM:", RawPointer(targetVM), ")");
+}
+
 auto VMManager::info() -> Info
 {
     Info info;
@@ -493,8 +502,13 @@ void VMManager::notifyVMStop(VM& vm, StopTheWorldEvent event)
         numberOfStoppedVMs = --m_numberOfStoppedVMs;
 
 #if ENABLE(WEBASSEMBLY_DEBUGGER)
-        if (Options::enableWasmDebugger()) [[unlikely]]
-            vm.debugState()->clearStop();
+        if (Options::enableWasmDebugger()) [[unlikely]] {
+            // WasmAtomicsWaitBlocked: thread is still sleeping inside memory.atomic.wait and
+            // may participate in multiple STW cycles. Keep stopData so each cycle shows the
+            // correct state; waitForSync() calls clearStop() when the wait ends.
+            if (event != StopTheWorldEvent::WasmAtomicsWaitBlocked)
+                vm.debugState()->clearStop();
+        }
 #endif
     }
 

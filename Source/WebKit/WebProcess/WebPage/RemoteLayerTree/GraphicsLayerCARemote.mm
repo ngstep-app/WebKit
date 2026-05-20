@@ -32,6 +32,7 @@
 #include "PlatformCALayerRemoteHost.h"
 #include "RemoteLayerTreeContext.h"
 #include "RemoteLayerTreeDrawingAreaProxyMessages.h"
+#include "WebPage.h"
 #include "WebProcess.h"
 #include <WebCore/GraphicsLayerContentsDisplayDelegate.h>
 #include <WebCore/HTMLVideoElement.h>
@@ -227,7 +228,7 @@ RefPtr<WebCore::GraphicsLayerAsyncContentsDisplayDelegate> GraphicsLayerCARemote
 
 bool GraphicsLayerCARemote::shouldDirectlyCompositeImageBuffer(ImageBuffer* image) const
 {
-    return !!dynamicDowncast<ImageBufferBackendHandleSharing>(image->toBackendSharing());
+    return is<ImageBufferBackendHandleSharing>(image->toBackendSharing());
 }
 
 class ImageBufferFlusherFence final : public WebCore::PlatformCALayerDelegatedContentsFence {

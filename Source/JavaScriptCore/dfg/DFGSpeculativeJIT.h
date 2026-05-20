@@ -571,6 +571,7 @@ public:
     bool isKnownNotOther(Node* node) { return !(m_state.forNode(node).m_type & SpecOther); }
 
     bool canBeRope(Edge);
+    std::optional<unsigned> tryGetConstantStringLength(Edge);
 
     UniquedStringImpl* identifierUID(unsigned index)
     {
@@ -1682,9 +1683,12 @@ public:
     void compileNewArray(Node*);
     void compileNewArrayWithSpread(Node*);
     void compileArraySlice(Node*);
+    void compileArrayConcatArray(Node*);
+    void compileArrayConcatAppendOne(Node*);
     void compileArraySplice(Node*);
     void compileArrayIndexOfOrArrayIncludes(Node*);
     void compileArrayPush(Node*);
+    void compileArrayUnshift(Node*);
     void compileNotifyWrite(Node*);
     void compileRegExpExec(Node*);
     void compileRegExpExecNonGlobalOrSticky(Node*);
@@ -1728,8 +1732,11 @@ public:
     void compileDefineDataProperty(Node*);
     void compileDefineAccessorProperty(Node*);
     void compileObjectDefineProperty(Node*);
+    void compileObjectDefinePropertyFromFields(Node*);
     void compileStringSlice(Node*);
     void compileStringSubstring(Node*);
+    void compileStringSubstr(Node*);
+    void compileToUpperCase(Node*);
     void compileToLowerCase(Node*);
     void compileThrow(Node*);
     void compileThrowStaticError(Node*);
@@ -1759,6 +1766,10 @@ public:
     void compileStrCat(Node*);
     void compileNewArrayBuffer(Node*);
     void compileNewButterflyWithSize(Node*);
+    void compileGetCellButterflySlot(Node*);
+    void compilePutCellButterflySlot(Node*);
+    void compileArraySortCompact(Node*);
+    void compileArraySortCommit(Node*);
     void compileNewArrayWithSize(Node*);
     void compileNewArrayWithButterfly(Node*);
     void compileNewArrayWithSpecies(Node*);
@@ -1770,12 +1781,14 @@ public:
     void compileObjectAssign(Node*);
     void compileObjectCreate(Node*);
     void compileObjectToString(Node*);
+    void compileSymbolToString(Node*);
     void compileCreateThis(Node*);
     void compileCreatePromise(Node*);
     void compileCreateGenerator(Node*);
     void compileCreateAsyncGenerator(Node*);
     void compileNewObject(Node*);
     void compileNewInternalFieldObject(Node*);
+    void compileNewPromise(Node*);
     void compileToPrimitive(Node*);
     void compileToPropertyKey(Node*);
     void compileToPropertyKeyOrNumber(Node*);
@@ -1790,7 +1803,13 @@ public:
     void compileStringCodePointAt(Node*);
     void compileStringLocaleCompare(Node*);
     void compileStringIndexOf(Node*);
+    void compileStringLastIndexOf(Node*);
     void compileStringStartsOrEndsWith(Node*);
+#if USE(JSVALUE64)
+    void compileStringStartsOrEndsWithConstant(Node*, bool isStartsWith, std::span<const Latin1Character> search);
+#endif
+    void compileStringSplit(Node*);
+    void compileStringMatch(Node*);
     void compileDateGet(Node*);
     void compileDateSet(Node*);
     void compileGlobalIsNaN(Node*);
@@ -1803,10 +1822,13 @@ public:
     void compileResolvePromiseFirstResolving(Node*);
     void compileRejectPromiseFirstResolving(Node*);
     void compileFulfillPromiseFirstResolving(Node*);
+    void compileNewResolvedPromise(Node*);
+    void compileNewRejectedPromise(Node*);
     void compilePromiseResolve(Node*);
     void compilePromiseReject(Node*);
     void compilePromiseThen(Node*);
     void compilePerformPromiseThen(Node*);
+    void compilePerformPromiseThenOneHandler(Node*);
 
     template<typename JSClass, typename Operation>
     void compileCreateInternalFieldObject(Node*, Operation);

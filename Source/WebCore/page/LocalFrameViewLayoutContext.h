@@ -28,6 +28,7 @@
 #include <WebCore/AnchorPositionEvaluator.h>
 #include <WebCore/LayoutUnit.h>
 #include <WebCore/RenderLayerModelObject.h>
+#include <WebCore/SubtreeScrollbarChangesState.h>
 #include <WebCore/Timer.h>
 #include <wtf/CheckedRef.h>
 #include <wtf/SegmentedVector.h>
@@ -51,6 +52,10 @@ class RenderView;
 namespace Layout {
 class LayoutState;
 class LayoutTree;
+}
+
+namespace LayoutIntegration {
+class InlineContent;
 }
 
 enum class LayoutOptions : uint8_t;
@@ -153,6 +158,13 @@ public:
 #endif
     using LayoutStateStack = Vector<std::unique_ptr<RenderLayoutState>>;
 
+    bool immediateRendererDestructionEnabledForTesting() const { return m_immediateRendererDestructionEnabledForTesting; }
+    void setImmediateRendererDestructionEnabledForTesting(bool enabled) { m_immediateRendererDestructionEnabledForTesting = enabled; }
+
+    std::optional<SubtreeScrollbarChangesState>& subtreeScrollbarChangesState() { return m_subtreeScrollbarChangesState; }
+    const std::optional<SubtreeScrollbarChangesState>& subtreeScrollbarChangesState() const { return m_subtreeScrollbarChangesState; }
+    void setSubtreeScrollbarChangesState(std::optional<SubtreeScrollbarChangesState>);
+
     UpdateScrollInfoAfterLayoutTransaction& updateScrollInfoAfterLayoutTransaction() LIFETIME_BOUND;
     UpdateScrollInfoAfterLayoutTransaction* NODELETE updateScrollInfoAfterLayoutTransactionIfExists() LIFETIME_BOUND { return m_updateScrollInfoAfterLayoutTransaction.get(); }
     void setBoxNeedsTransformUpdateAfterContainerLayout(RenderBox&, RenderBlock& container);
@@ -166,6 +178,9 @@ public:
 
     bool addToDetachedRendererList(RenderPtr<RenderObject>&& renderer) const { return m_detachedRendererList.append(WTF::move(renderer)); }
     void deleteDetachedRenderersNow() const { m_detachedRendererList.clear(); }
+
+    void detachInlineContent(std::unique_ptr<LayoutIntegration::InlineContent>&&) const;
+    void deleteDetachedInlineContentNow() const;
 
     Vector<AnchorScrollAdjuster>& anchorScrollAdjusters() LIFETIME_BOUND { return m_anchorScrollAdjusters; }
     const AnchorScrollAdjuster* anchorScrollAdjusterFor(const RenderBox& anchored) const LIFETIME_BOUND;
@@ -267,6 +282,8 @@ private:
     SingleThreadWeakHashSet<RenderBox> m_percentHeightIgnoreList;
     Vector<AnchorScrollAdjuster> m_anchorScrollAdjusters;
     std::optional<TextBoxTrim> m_textBoxTrim;
+    std::optional<SubtreeScrollbarChangesState> m_subtreeScrollbarChangesState;
+    bool m_immediateRendererDestructionEnabledForTesting { false };
 
     struct UpdateLayerPositions {
         void merge(const UpdateLayerPositions& other)
@@ -296,6 +313,17 @@ private:
         SegmentedVector<std::unique_ptr<RenderObject>, 50> m_renderers;
     };
     mutable DetachedRendererList m_detachedRendererList;
+
+    class DetachedInlineContentList {
+    public:
+        ~DetachedInlineContentList();
+        void append(std::unique_ptr<LayoutIntegration::InlineContent>&&);
+        void clear();
+
+    private:
+        Vector<std::unique_ptr<LayoutIntegration::InlineContent>> m_inlineContent;
+    };
+    mutable DetachedInlineContentList m_detachedInlineContent;
 };
 
 class RepaintBlocker {

@@ -47,7 +47,7 @@ public:
         : m_graph(graph)
         , m_graphDumpMode(graphDumpMode)
         , m_graphDumpBeforePhase(graphDumpBeforePhase)
-        , m_myTupleRefCounts(m_graph.m_tupleData.size(), 0)
+        , m_myTupleRefCounts(FillWith { }, m_graph.m_tupleData.size(), 0)
     {
     }
     
@@ -694,6 +694,7 @@ private:
                 case PhantomNewAsyncGeneratorFunction:
                 case PhantomCreateActivation:
                 case PhantomNewRegExp:
+                case PhantomNewPromise:
                 case GetMyArgumentByVal:
                 case GetMyArgumentByValOutOfBounds:
                 case PutHint:
@@ -918,6 +919,7 @@ private:
                 case PhantomCreateRest:
                 case PhantomClonedArguments:
                 case PhantomNewRegExp:
+                case PhantomNewPromise:
                 case MovHint:
                 case Upsilon:
                 case ForwardVarargs:

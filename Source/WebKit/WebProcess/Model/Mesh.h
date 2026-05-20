@@ -52,6 +52,7 @@ struct Float4x4;
 struct ImageAsset;
 struct MeshDescriptor;
 struct TextureDescriptor;
+struct TypedResourceId;
 struct UpdateMaterialDescriptor;
 struct UpdateMeshDescriptor;
 struct UpdateTextureDescriptor;
@@ -71,13 +72,12 @@ public:
         setLabelInternal(m_label);
     }
 
-    virtual void update(const WebModel::UpdateMeshDescriptor&) = 0;
-    virtual void updateTexture(const WebModel::UpdateTextureDescriptor&) = 0;
-    virtual void updateMaterial(const WebModel::UpdateMaterialDescriptor&) = 0;
+    virtual void update(Vector<WebModel::UpdateMeshDescriptor>&&) = 0;
+    virtual void updateTexture(Vector<WebModel::UpdateTextureDescriptor>&&) = 0;
+    virtual void updateMaterial(Vector<WebModel::UpdateMaterialDescriptor>&&) = 0;
     virtual bool isRemoteMeshProxy() const { return false; }
     virtual bool isMeshImpl() const { return false; }
     virtual void setEntityTransform(const WebModel::Float4x4&) = 0;
-    virtual bool supportsTransform(const WebCore::TransformationMatrix&) const { return false; }
     virtual void setScale(float) { }
     virtual void setFOV(float) { }
     virtual void setBackgroundColor(const WebModel::Float3&) { }
@@ -85,9 +85,11 @@ public:
     virtual void setStageMode(WebCore::StageModeOperation) { }
     virtual void setRotation(float, float = 0.f, float = 0.f) { }
     virtual void play(bool) = 0;
-    virtual void setEnvironmentMap(const WebModel::ImageAsset&) = 0;
+    virtual void setEnvironmentMap(const WebModel::UpdateTextureDescriptor&) = 0;
+    virtual void updateContentsHeadroom(float) = 0;
 
-    virtual void render() = 0;
+    virtual void render(uint32_t textureIndex, Function<void(bool)>&&) = 0;
+    virtual void processRemovals(Vector<WebModel::TypedResourceId>&& meshRemovals, Vector<WebModel::TypedResourceId>&& materialRemovals, Vector<WebModel::TypedResourceId>&& textureRemovals, CompletionHandler<void(bool)>&&) = 0;
 #if PLATFORM(COCOA)
     virtual std::optional<WebModel::Float4x4> entityTransform() const = 0;
     virtual Vector<MachSendRight> ioSurfaceHandles() { return { }; }
@@ -108,6 +110,32 @@ private:
     virtual void setLabelInternal(const String&) = 0;
 
     String m_label;
+};
+
+#define WEBMODEL_WEB_MODEL_PLAYER_DECLARE_DIFFUSE_AND_SPECULAR_TEXTURES \
+WebModel::ImageAsset diffuseTexture { \
+    .data = loadData(adoptCF(static_cast<CFStringRef>(@"modelDefaultDiffuseData"))), \
+    .width = 64, \
+    .height = 64, \
+    .depth = 1, \
+    .textureType = WebCore::WebGPU::TextureViewDimension::Cube, \
+    .pixelFormat = WebCore::WebGPU::TextureFormat::R16float, \
+    .mipmapLevelCount = 1, \
+    .arrayLength = 6, \
+    .textureUsage = WebCore::WebGPU::TextureUsage::TextureBinding, \
+    .swizzle = { } \
+}; \
+WebModel::ImageAsset specularTexture { \
+    .data = loadData(adoptCF(static_cast<CFStringRef>(@"modelDefaultSpecularData"))), \
+    .width = 256, \
+    .height = 256, \
+    .depth = 1, \
+    .textureType = WebCore::WebGPU::TextureViewDimension::Cube, \
+    .pixelFormat = WebCore::WebGPU::TextureFormat::R16float, \
+    .mipmapLevelCount = 9, \
+    .arrayLength = 6, \
+    .textureUsage = WebCore::WebGPU::TextureUsage::TextureBinding, \
+    .swizzle = { } \
 };
 
 }

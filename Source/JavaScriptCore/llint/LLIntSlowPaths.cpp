@@ -289,7 +289,7 @@ static void traceFunctionPrologue(CallFrame* callFrame, const char* comment, Cod
     if (!Options::traceLLIntExecution())
         return;
 
-    JSFunction* callee = jsCast<JSFunction*>(callFrame->jsCallee());
+    JSFunction* callee = uncheckedDowncast<JSFunction>(callFrame->jsCallee());
     FunctionExecutable* executable = callee->jsExecutable();
     CodeBlock* codeBlock = executable->codeBlockFor(kind);
     dataLogF("<%p> %p / %p: in %s of ", &Thread::currentSingleton(), codeBlock, callFrame, comment);
@@ -452,25 +452,25 @@ LLINT_SLOW_PATH_DECL(entry_osr)
 LLINT_SLOW_PATH_DECL(entry_osr_function_for_call)
 {
     UNUSED_PARAM(pc);
-    return entryOSR(jsCast<JSFunction*>(callFrame->jsCallee())->jsExecutable()->codeBlockForCall(), "entry_osr_function_for_call", Prologue);
+    return entryOSR(uncheckedDowncast<JSFunction>(callFrame->jsCallee())->jsExecutable()->codeBlockForCall(), "entry_osr_function_for_call", Prologue);
 }
 
 LLINT_SLOW_PATH_DECL(entry_osr_function_for_construct)
 {
     UNUSED_PARAM(pc);
-    return entryOSR(jsCast<JSFunction*>(callFrame->jsCallee())->jsExecutable()->codeBlockForConstruct(), "entry_osr_function_for_construct", Prologue);
+    return entryOSR(uncheckedDowncast<JSFunction>(callFrame->jsCallee())->jsExecutable()->codeBlockForConstruct(), "entry_osr_function_for_construct", Prologue);
 }
 
 LLINT_SLOW_PATH_DECL(entry_osr_function_for_call_arityCheck)
 {
     UNUSED_PARAM(pc);
-    return entryOSR(jsCast<JSFunction*>(callFrame->jsCallee())->jsExecutable()->codeBlockForCall(), "entry_osr_function_for_call_arityCheck", ArityCheck);
+    return entryOSR(uncheckedDowncast<JSFunction>(callFrame->jsCallee())->jsExecutable()->codeBlockForCall(), "entry_osr_function_for_call_arityCheck", ArityCheck);
 }
 
 LLINT_SLOW_PATH_DECL(entry_osr_function_for_construct_arityCheck)
 {
     UNUSED_PARAM(pc);
-    return entryOSR(jsCast<JSFunction*>(callFrame->jsCallee())->jsExecutable()->codeBlockForConstruct(), "entry_osr_function_for_construct_arityCheck", ArityCheck);
+    return entryOSR(uncheckedDowncast<JSFunction>(callFrame->jsCallee())->jsExecutable()->codeBlockForConstruct(), "entry_osr_function_for_construct_arityCheck", ArityCheck);
 }
 
 LLINT_SLOW_PATH_DECL(loop_osr)
@@ -689,7 +689,7 @@ LLINT_SLOW_PATH_DECL(slow_path_new_reg_exp)
 {
     LLINT_BEGIN();
     auto bytecode = pc->as<OpNewRegExp>();
-    RegExp* regExp = jsCast<RegExp*>(getOperand(callFrame, bytecode.m_regexp));
+    RegExp* regExp = uncheckedDowncast<RegExp>(getOperand(callFrame, bytecode.m_regexp));
     static constexpr bool areLegacyFeaturesEnabled = true;
     LLINT_RETURN(RegExpObject::create(vm, globalObject->regExpStructure(), regExp, areLegacyFeaturesEnabled));
 }
@@ -699,7 +699,7 @@ LLINT_SLOW_PATH_DECL(slow_path_create_lexical_environment)
     LLINT_BEGIN();
     auto bytecode = pc->as<OpCreateLexicalEnvironment>();
     JSScope* currentScope = callFrame->uncheckedR(bytecode.m_scope).Register::scope();
-    SymbolTable* symbolTable = jsCast<SymbolTable*>(getOperand(callFrame, bytecode.m_symbolTable));
+    SymbolTable* symbolTable = uncheckedDowncast<SymbolTable>(getOperand(callFrame, bytecode.m_symbolTable));
     JSValue initialValue = getOperand(callFrame, bytecode.m_initialValue);
     ASSERT(initialValue == jsUndefined() || initialValue == jsTDZValue());
     JSScope* newScope = JSLexicalEnvironment::create(vm, globalObject, currentScope, symbolTable, initialValue);
@@ -717,7 +717,7 @@ LLINT_SLOW_PATH_DECL(slow_path_create_scoped_arguments)
 {
     LLINT_BEGIN();
     auto bytecode = pc->as<OpCreateScopedArguments>();
-    JSLexicalEnvironment* scope = jsCast<JSLexicalEnvironment*>(getOperand(callFrame, bytecode.m_scope));
+    JSLexicalEnvironment* scope = uncheckedDowncast<JSLexicalEnvironment>(getOperand(callFrame, bytecode.m_scope));
     ScopedArgumentsTable* table = scope->symbolTable()->arguments();
     LLINT_RETURN(ScopedArguments::createByCopying(globalObject, callFrame, table, scope));
 }
@@ -855,7 +855,7 @@ static void setupGetByIdPrototypeCache(JSGlobalObject* globalObject, VM& vm, Cod
     if (structure->isDictionary()) {
         if (structure->hasBeenFlattenedBefore())
             return;
-        structure->flattenDictionaryStructure(vm, jsCast<JSObject*>(baseCell));
+        structure->flattenDictionaryStructure(vm, uncheckedDowncast<JSObject>(baseCell));
     }
 
     prepareChainForCaching(globalObject, baseCell, ident.impl(), slot);
@@ -1270,7 +1270,7 @@ static ALWAYS_INLINE JSValue getByVal(VM& vm, JSGlobalObject* globalObject, Code
         ArrayProfile* arrayProfile = &metadata.m_arrayProfile;
         arrayProfile->setOutOfBounds();
         if (subscript == jsNumber(-1)) {
-            if (auto* array = jsDynamicCast<JSArray*>(baseValue.asCell()); array && array->definitelyNegativeOneMiss()) [[likely]]
+            if (auto* array = dynamicDowncast<JSArray>(baseValue.asCell()); array && array->definitelyNegativeOneMiss()) [[likely]]
                 return jsUndefined();
         }
     }
@@ -2045,7 +2045,7 @@ LLINT_SLOW_PATH_DECL(slow_path_set_function_name)
 {
     LLINT_BEGIN();
     auto bytecode = pc->as<OpSetFunctionName>();
-    JSFunction* func = jsCast<JSFunction*>(getNonConstantOperand(callFrame, bytecode.m_function));
+    JSFunction* func = uncheckedDowncast<JSFunction>(getNonConstantOperand(callFrame, bytecode.m_function));
     JSValue name = getOperand(callFrame, bytecode.m_name);
     func->setFunctionName(globalObject, name);
     LLINT_END();
@@ -2124,7 +2124,7 @@ static inline UGPRPair setUpCall(CallFrame* calleeFrame, CodeSpecializationKind 
         }
         RELEASE_AND_RETURN(throwScope, handleHostCall(calleeFrame, calleeAsValue, kind));
     }
-    JSFunction* callee = jsCast<JSFunction*>(calleeAsFunctionCell);
+    JSFunction* callee = uncheckedDowncast<JSFunction>(calleeAsFunctionCell);
     JSScope* scope = callee->scopeUnchecked();
     ExecutableBase* executable = callee->executable();
 
@@ -2283,7 +2283,7 @@ static inline UGPRPair commonCallDirectEval(CallFrame* callFrame, const JSInstru
     calleeFrame->setCodeBlock(nullptr);
     callFrame->setCurrentVPC(pc);
     
-    JSScope* callerScopeChain = jsCast<JSScope*>(getOperand(callFrame, bytecode.m_scope));
+    JSScope* callerScopeChain = uncheckedDowncast<JSScope>(getOperand(callFrame, bytecode.m_scope));
     JSValue thisValue = getOperand(callFrame, bytecode.m_thisValue);
     JSValue result = eval(calleeFrame, thisValue, callerScopeChain, codeBlock, BytecodeIndex(codeBlock->bytecodeOffset(pc)), bytecode.m_lexicallyScopedFeatures);
     LLINT_CALL_CHECK_EXCEPTION(globalObject);
@@ -2365,7 +2365,7 @@ LLINT_SLOW_PATH_DECL(slow_path_get_from_scope)
     auto bytecode = pc->as<OpGetFromScope>();
     auto& metadata = bytecode.metadata(codeBlock);
     const Identifier& ident = codeBlock->identifier(bytecode.m_var);
-    JSObject* scope = jsCast<JSObject*>(getNonConstantOperand(callFrame, bytecode.m_scope));
+    JSObject* scope = uncheckedDowncast<JSObject>(getNonConstantOperand(callFrame, bytecode.m_scope));
 
     // ModuleVar is always converted to ClosureVar for get_from_scope.
     ASSERT(metadata.m_getPutInfo.resolveType() != ModuleVar);
@@ -2400,10 +2400,10 @@ LLINT_SLOW_PATH_DECL(slow_path_put_to_scope)
     auto bytecode = pc->as<OpPutToScope>();
     auto& metadata = bytecode.metadata(codeBlock);
     const Identifier& ident = codeBlock->identifier(bytecode.m_var);
-    JSObject* scope = jsCast<JSObject*>(getNonConstantOperand(callFrame, bytecode.m_scope));
+    JSObject* scope = uncheckedDowncast<JSObject>(getNonConstantOperand(callFrame, bytecode.m_scope));
     JSValue value = getOperand(callFrame, bytecode.m_value);
     if (metadata.m_getPutInfo.resolveType() == ResolvedClosureVar) {
-        JSLexicalEnvironment* environment = jsCast<JSLexicalEnvironment*>(scope);
+        JSLexicalEnvironment* environment = uncheckedDowncast<JSLexicalEnvironment>(scope);
         environment->variableAt(ScopeOffset(metadata.m_operand)).set(vm, environment, value);
         
         // Have to do this *after* the write, because if this puts the set into IsWatched, then we need
@@ -2676,6 +2676,28 @@ static inline UGPRPair dispatchToNextInstructionDuringExit(ThrowScope& scope, Co
     RELEASE_ASSERT_NOT_REACHED();
 }
 
+static inline UGPRPair dispatchToCurrentInstructionDuringExit(ThrowScope& scope, CodeBlock* codeBlock, JSInstructionStream::Ref pc)
+{
+    if (scope.exception())
+        return encodeResult(returnToThrow(scope.vm()), nullptr);
+
+    if (Options::forceOSRExitToLLInt() || codeBlock->jitType() == JITType::InterpreterThunk) {
+        const JSInstruction* currentPC = pc.ptr();
+#if ENABLE(JIT)
+        return encodeResult(currentPC, LLInt::normalOSRExitTrampolineThunk().code().taggedPtr());
+#else
+        return encodeResult(currentPC, LLInt::getCodeRef<JSEntryPtrTag>(normal_osr_exit_trampoline).code().taggedPtr());
+#endif
+    }
+
+#if ENABLE(JIT)
+    ASSERT(codeBlock->jitType() == JITType::BaselineJIT);
+    auto currentBytecode = codeBlock->jitCodeMap().find(pc.index());
+    return encodeResult(std::bit_cast<void*>(static_cast<uintptr_t>(1)), currentBytecode.taggedPtr());
+#endif
+    RELEASE_ASSERT_NOT_REACHED();
+}
+
 extern "C" UGPRPair SYSV_ABI llint_slow_path_checkpoint_osr_exit_from_inlined_call(CallFrame* callFrame, EncodedJSValue result)
 {
     // Since all our calling checkpoints do right now is move result into our dest we can just do that here and return.
@@ -2804,6 +2826,36 @@ extern "C" UGPRPair SYSV_ABI llint_slow_path_checkpoint_osr_exit(CallFrame* call
     }
 
     return dispatchToNextInstructionDuringExit(throwScope, codeBlock, pc);
+}
+
+extern "C" UGPRPair SYSV_ABI llint_slow_path_array_sort_comparator_return(CallFrame* callFrame, EncodedJSValue /* comparator return -- discarded */)
+{
+    // Called when the DFG ArraySortIntrinsic inlined the comparator and an OSR exit
+    // inside the comparator body routed through this trampoline. For example:
+    //
+    //     function test() {
+    //         array.sort(function userDefinedComparator(a, b) { ... });
+    //     }
+    //
+    //  If we inline both and userDefinedComparator OSR-exits, the stack is:
+    //
+    //      [ test frame                  ]
+    //      [ returnAddress => this fn    ]
+    //      [ userDefinedComparator frame ]
+    //
+    //  After the comparator's baseline finishes we land here. We re-execute
+    //  op_call (sort) instead of advancing past it. This is safe because
+    //  ArraySortCommit (the only node that mutates the array) is downstream of
+    //  the comparator in the DFG graph and has not yet run, and the spec allows
+    //  Array.prototype.sort to invoke the comparator any number of times.
+    LLINT_BEGIN_NO_SET_PC();
+    UNUSED_PARAM(globalObject);
+
+    // reifyInlinedCallFrames stored CallSiteIndex(op_call_bc) in argumentCountIncludingThis's tag.
+    BytecodeIndex bytecodeIndex = callFrame->bytecodeIndex();
+    auto pc = codeBlock->instructions().at(bytecodeIndex);
+    ASSERT_UNUSED(pc, pc->opcodeID() == op_call);
+    return dispatchToCurrentInstructionDuringExit(throwScope, codeBlock, pc);
 }
 
 extern "C" UGPRPair SYSV_ABI llint_throw_stack_overflow_error(VM* vm, ProtoCallFrame* protoFrame)

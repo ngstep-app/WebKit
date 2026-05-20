@@ -277,6 +277,11 @@ public:
     const size_t numberOfFrames { 0 };
 };
 
+bool AudioFileReader::isAvailable()
+{
+    return PAL::isAVFoundationFrameworkAvailable() && PAL::isCoreMediaFrameworkAvailable() && PAL::isAudioToolboxFrameworkAvailable();
+}
+
 AudioFileReader::AudioFileReader(std::span<const uint8_t> data)
     : m_data(data)
 #if !RELEASE_LOG_DISABLED
@@ -477,7 +482,7 @@ std::unique_ptr<AudioFileReaderData> AudioFileReader::demuxWebMData(std::span<co
     parser->setDidParseInitializationDataCallback([&](SourceBufferParserWebM::InitializationSegment&& init) {
         for (auto& audioTrack : init.audioTracks) {
             if (audioTrack.track) {
-                audioTrackId = RefPtr { audioTrack.track }->id();
+                audioTrackId = protect(audioTrack.track)->id();
                 // FIXME: Use downcast instead.
                 track = unsafeRefPtrDowncast<AudioTrackPrivateWebM>(audioTrack.track);
                 return;
@@ -848,6 +853,9 @@ RefPtr<AudioBus> AudioFileReader::createBus(float sampleRate, bool mixToMono)
 
 RefPtr<AudioBus> createBusFromInMemoryAudioFile(std::span<const uint8_t> data, bool mixToMono, float sampleRate)
 {
+    if (!AudioFileReader::isAvailable())
+        return nullptr;
+
     AudioFileReader reader(data);
     return reader.createBus(sampleRate, mixToMono);
 }

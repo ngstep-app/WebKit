@@ -65,9 +65,9 @@ LegacyRenderSVGRoot::LegacyRenderSVGRoot(SVGSVGElement& element, RenderStyle&& s
 {
     ASSERT(isLegacyRenderSVGRoot());
     LayoutSize intrinsicSize(computeIntrinsicSize());
-    if (!intrinsicSize.width())
+    if (!svgSVGElement().hasIntrinsicWidth())
         intrinsicSize.setWidth(defaultWidth);
-    if (!intrinsicSize.height())
+    if (!svgSVGElement().hasIntrinsicHeight())
         intrinsicSize.setHeight(defaultHeight);
     setIntrinsicSize(intrinsicSize);
 }
@@ -81,12 +81,15 @@ SVGSVGElement& LegacyRenderSVGRoot::svgSVGElement() const
 
 bool LegacyRenderSVGRoot::hasIntrinsicAspectRatio() const
 {
-    return computeIntrinsicAspectRatio();
+    return preferredAspectRatioAsSize().aspectRatioDouble();
 }
 
 FloatSize LegacyRenderSVGRoot::computeIntrinsicSize() const
 {
-    ASSERT_IMPLIES(view().frameView().layoutContext().isInRenderTreeLayout(), !shouldApplySizeContainment());
+    // Size containment suppresses intrinsic dimensions from content.
+    // The base class returns values from the cache / contain-intrinsic-size without querying image data.
+    if (shouldApplySizeOrInlineSizeContainment())
+        return { intrinsicLogicalWidth(), intrinsicLogicalHeight() };
     FloatSize intrinsicSize = { svgSVGElement().intrinsicWidth(), svgSVGElement().intrinsicHeight() };
     // Transpose for vertical writing mode
     if (!isHorizontalWritingMode())
@@ -94,9 +97,13 @@ FloatSize LegacyRenderSVGRoot::computeIntrinsicSize() const
     return intrinsicSize;
 }
 
-FloatSize LegacyRenderSVGRoot::preferredAspectRatio() const
+FloatSize LegacyRenderSVGRoot::preferredAspectRatioAsSize() const
 {
-    ASSERT(!shouldApplySizeContainment());
+    // Size containment suppresses intrinsic dimensions from content, but the
+    // aspect ratio from the CSS aspect-ratio property is still available via the
+    // base class (which doesn't query image data).
+    if (shouldApplySizeOrInlineSizeContainment())
+        return RenderReplaced::preferredAspectRatioAsSize();
 
     if (style().aspectRatio().isRatio())
         return FloatSize::narrowPrecision(style().aspectRatioLogicalWidth().value, style().aspectRatioLogicalHeight().value);
@@ -121,7 +128,6 @@ FloatSize LegacyRenderSVGRoot::preferredAspectRatio() const
         return *intrinsicRatioValue;
     if (style().aspectRatio().isAutoAndRatio())
         return FloatSize::narrowPrecision(style().aspectRatioLogicalWidth().value, style().aspectRatioLogicalHeight().value);
-
     return preferredAspectRatio;
 }
 
@@ -455,7 +461,7 @@ std::optional<FloatRect> LegacyRenderSVGRoot::computeFloatVisibleRectInContainer
 // to convert from SVG viewport coordinates to local CSS box coordinates.
 void LegacyRenderSVGRoot::mapLocalToContainer(const RenderLayerModelObject* ancestorContainer, TransformState& transformState, OptionSet<MapCoordinatesMode> mode, bool* wasFixed) const
 {
-    RenderReplaced::mapLocalToContainer(ancestorContainer, transformState, mode | ApplyContainerFlip, wasFixed);
+    RenderReplaced::mapLocalToContainer(ancestorContainer, transformState, mode | MapCoordinatesMode::ApplyContainerFlip, wasFixed);
 }
 
 const RenderElement* LegacyRenderSVGRoot::pushMappingToContainer(const RenderLayerModelObject* ancestorToStopAt, RenderGeometryMap& geometryMap) const
@@ -542,7 +548,7 @@ bool LegacyRenderSVGRoot::nodeAtPoint(const HitTestRequest& request, HitTestResu
     }
 
     // If we didn't early exit above, we've just hit the container <svg> element. Unlike SVG 1.1, 2nd Edition allows container elements to be hit.
-    if ((hitTestAction == HitTestBlockBackground || hitTestAction == HitTestChildBlockBackground) && visibleToHitTesting(request)) {
+    if ((hitTestAction == HitTestAction::BlockBackground || hitTestAction == HitTestAction::ChildBlockBackground) && visibleToHitTesting(request)) {
         // Only return true here, if the last hit testing phase 'BlockBackground' is executed. If we'd return true in the 'Foreground' phase,
         // hit testing would stop immediately. For SVG only trees this doesn't matter. Though when we have a <foreignObject> subtree we need
         // to be able to detect hits on the background of a <div> element. If we'd return true here in the 'Foreground' phase, we are not able

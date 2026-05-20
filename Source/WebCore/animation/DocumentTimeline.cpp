@@ -75,6 +75,8 @@ DocumentTimeline::DocumentTimeline(Document& document, Seconds originTime)
 
 DocumentTimeline::~DocumentTimeline() = default;
 
+Document* DocumentTimeline::document() const { return m_document.get(); }
+
 AnimationTimelinesController* DocumentTimeline::controller() const
 {
     if (RefPtr document = m_document.get())
@@ -542,8 +544,7 @@ Ref<AcceleratedTimeline> DocumentTimeline::createAcceleratedRepresentation() con
     ASSERT(m_document->window());
     ASSERT(m_document->settings().threadedTimeBasedAnimationsEnabled());
     Ref window = *m_document->window();
-    auto monotonicOriginTime = MonotonicTime::fromRawSeconds(m_originTime.seconds());
-    auto convertedOriginTime = m_originTime - window->performance().relativeTimeFromTimeOriginInReducedResolutionSeconds(monotonicOriginTime);
+    auto convertedOriginTime = window->performance().monotonicTimeFromOriginRelative(m_originTime).secondsSinceEpoch();
     return AcceleratedTimeline::create(m_acceleratedTimelineIdentifier, convertedOriginTime);
 }
 #endif

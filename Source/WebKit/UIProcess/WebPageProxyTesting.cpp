@@ -29,12 +29,13 @@
 #include "Connection.h"
 #include "MessageSenderInlines.h"
 #include "NetworkProcessMessages.h"
-#include "NetworkProcessProxy.h"
 #include "WebBackForwardList.h"
 #include "WebFrameProxy.h"
 #include "WebPageMessages.h"
 #include "WebPageProxy.h"
 #include "WebPageTestingMessages.h"
+#include "WebProcessMessages.h"
+#include "WebProcessPool.h"
 #include "WebProcessProxy.h"
 #include <WebCore/IntPoint.h>
 #include <wtf/CallbackAggregator.h>
@@ -186,7 +187,7 @@ void WebPageProxyTesting::clearWheelEventTestMonitor()
 
 void WebPageProxyTesting::startMonitoringWheelEventsForTesting(CompletionHandler<void()>&& completionHandler)
 {
-    if (!protect(page())->hasRunningProcess()) {
+    if (!page().hasRunningProcess()) {
         completionHandler();
         return;
     }
@@ -195,7 +196,7 @@ void WebPageProxyTesting::startMonitoringWheelEventsForTesting(CompletionHandler
 
 void WebPageProxyTesting::waitForWheelEventsToCompleteForTesting(CompletionHandler<void()>&& completionHandler)
 {
-    if (!protect(page())->hasRunningProcess()) {
+    if (!page().hasRunningProcess()) {
         completionHandler();
         return;
     }
@@ -256,6 +257,26 @@ void WebPageProxyTesting::displayAndTrackRepaints(CompletionHandler<void()>&& co
     protect(page())->forEachWebContentProcess([&](auto& webProcess, auto pageID) {
         webProcess.sendWithAsyncReply(Messages::WebPageTesting::DisplayAndTrackRepaints(), [callbackAggregator] { }, pageID);
     });
+}
+
+void WebPageProxyTesting::storageAreaMapCount(CompletionHandler<void(uint64_t)>&& completionHandler)
+{
+    Ref processPool = page().legacyMainFrameProcess().processPool();
+
+    struct TotalCount : RefCounted<TotalCount> {
+        uint64_t value { 0 };
+    };
+    Ref totalCount = adoptRef(*new TotalCount);
+    Ref callbackAggregator = CallbackAggregator::create([totalCount, completionHandler = WTF::move(completionHandler)]() mutable {
+        completionHandler(totalCount->value);
+    });
+    for (auto& process : processPool->processes()) {
+        if (!process->pageCount())
+            continue;
+        process->sendWithAsyncReply(Messages::WebProcess::GetStorageAreaMapCountForTesting(), [totalCount, callbackAggregator](uint64_t count) {
+            totalCount->value += count;
+        });
+    }
 }
 
 } // namespace WebKit

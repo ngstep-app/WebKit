@@ -33,7 +33,6 @@
 #include "Exception.h"
 #include "GlobalObjectMethodTable.h"
 #include "JSArrayBufferViewInlines.h"
-#include "JSCBuiltins.h"
 #include "JSGlobalObjectInlines.h"
 #include "JSModuleNamespaceObject.h"
 #include "JSObjectInlines.h"
@@ -42,11 +41,12 @@
 #include "JSWebAssemblyHelpers.h"
 #include "JSWebAssemblyInstance.h"
 #include "JSWebAssemblyModule.h"
+#include "JSWebAssemblyStreamingContextInlines.h"
 #include "JSWebAssemblyTag.h"
 #include "ObjectConstructor.h"
 #include "Options.h"
 #include "StrongInlines.h"
-#include "StructureInlines.h"
+#include "StructureCreateInlines.h"
 #include "ThrowScope.h"
 #include "TopExceptionScope.h"
 #include "WebAssemblyCompileOptions.h"
@@ -61,7 +61,7 @@ STATIC_ASSERT_IS_TRIVIALLY_DESTRUCTIBLE(JSWebAssembly);
 #define DEFINE_CALLBACK_FOR_CONSTRUCTOR(capitalName, lowerName, properName, instanceType, jsName, prototypeBase, featureFlag) \
 static UNUSED_FUNCTION JSValue create##capitalName(VM&, JSObject* object) \
 { \
-    JSWebAssembly* webAssembly = jsCast<JSWebAssembly*>(object); \
+    JSWebAssembly* webAssembly = uncheckedDowncast<JSWebAssembly>(object); \
     JSGlobalObject* globalObject = webAssembly->realm(); \
     return globalObject->properName##Constructor(); \
 }
@@ -71,12 +71,12 @@ FOR_EACH_WEBASSEMBLY_CONSTRUCTOR_TYPE(DEFINE_CALLBACK_FOR_CONSTRUCTOR)
 #undef DEFINE_CALLBACK_FOR_CONSTRUCTOR
 
 static JSC_DECLARE_HOST_FUNCTION(webAssemblyCompileFunc);
+static JSC_DECLARE_HOST_FUNCTION(webAssemblyCompileStreamingFunc);
 static JSC_DECLARE_HOST_FUNCTION(webAssemblyInstantiateFunc);
+static JSC_DECLARE_HOST_FUNCTION(webAssemblyInstantiateStreamingFunc);
 static JSC_DECLARE_HOST_FUNCTION(webAssemblyPromisingFunc);
 static JSC_DECLARE_HOST_FUNCTION(webAssemblyValidateFunc);
 static JSC_DECLARE_HOST_FUNCTION(webAssemblyGetterJSTag);
-static JSC_DECLARE_HOST_FUNCTION(webAssemblyGetterSuspending);
-static JSC_DECLARE_HOST_FUNCTION(webAssemblyGetterSuspendError);
 
 }
 
@@ -122,15 +122,12 @@ void JSWebAssembly::finishCreation(VM& vm, JSGlobalObject* globalObject)
     ASSERT(inherits(info()));
     JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
     if (globalObject->globalObjectMethodTable()->compileStreaming)
-        JSC_BUILTIN_FUNCTION_WITHOUT_TRANSITION("compileStreaming"_s, webAssemblyCompileStreamingCodeGenerator, static_cast<unsigned>(0));
+        JSC_NATIVE_FUNCTION_WITHOUT_TRANSITION("compileStreaming"_s, webAssemblyCompileStreamingFunc, static_cast<unsigned>(PropertyAttribute::None), 1, ImplementationVisibility::Public);
     if (globalObject->globalObjectMethodTable()->instantiateStreaming)
-        JSC_BUILTIN_FUNCTION_WITHOUT_TRANSITION("instantiateStreaming"_s, webAssemblyInstantiateStreamingCodeGenerator, static_cast<unsigned>(0));
+        JSC_NATIVE_FUNCTION_WITHOUT_TRANSITION("instantiateStreaming"_s, webAssemblyInstantiateStreamingFunc, static_cast<unsigned>(PropertyAttribute::None), 1, ImplementationVisibility::Public);
     JSC_NATIVE_GETTER_WITHOUT_TRANSITION("JSTag"_s, webAssemblyGetterJSTag, PropertyAttribute::ReadOnly);
-    if (Options::useJSPI()) {
-        JSC_NATIVE_GETTER_WITHOUT_TRANSITION("Suspending"_s, webAssemblyGetterSuspending, PropertyAttribute::DontEnum);
-        JSC_NATIVE_GETTER_WITHOUT_TRANSITION("SuspendError"_s, webAssemblyGetterSuspendError, PropertyAttribute::DontEnum);
+    if (Options::useJSPI())
         JSC_NATIVE_FUNCTION_WITHOUT_TRANSITION("promising"_s, webAssemblyPromisingFunc, static_cast<unsigned>(PropertyAttribute::None), 0, ImplementationVisibility::Public);
-    }
 }
 
 JSWebAssembly::JSWebAssembly(VM& vm, Structure* structure)
@@ -138,13 +135,6 @@ JSWebAssembly::JSWebAssembly(VM& vm, Structure* structure)
 {
 }
 
-/**
- * namespace WebAssembly {
- *     Promise<Module> compile(BufferSource bytes, optional WebAssemblyCompileOptions options);
- * }
- *
- * See https://webassembly.github.io/js-string-builtins/js-api/#dom-webassembly-compile
- */
 JSC_DEFINE_HOST_FUNCTION(webAssemblyCompileFunc, (JSGlobalObject* globalObject, CallFrame* callFrame))
 {
     VM& vm = globalObject->vm();
@@ -233,7 +223,7 @@ static void instantiate(VM& vm, JSGlobalObject* globalObject, JSPromise* promise
     scope.release();
     auto ticket = vm.deferredWorkTimer->addPendingWork(DeferredWorkTimer::WorkType::ImminentlyScheduled, vm, instance, WTF::move(dependencies));
     // Note: This completion task may or may not get called immediately.
-    module->module().compileAsync(vm, instance->memoryMode(), createSharedTask<Wasm::CalleeGroup::CallbackType>([ticket, promise, instance, module, resolveKind, creationMode, &vm, alwaysAsync] (Ref<Wasm::CalleeGroup>&& calleeGroup, bool isAsync) mutable {
+    module->module().compileAsync(vm, instance->memory0Mode(), createSharedTask<Wasm::CalleeGroup::CallbackType>([ticket, promise, instance, module, resolveKind, creationMode, &vm, alwaysAsync] (Ref<Wasm::CalleeGroup>&& calleeGroup, bool isAsync) mutable {
         auto callback = [promise, instance, module, resolveKind, creationMode, &vm, calleeGroup = WTF::move(calleeGroup)](DeferredWorkTimer::Ticket) mutable {
             auto scope = DECLARE_THROW_SCOPE(vm);
             JSGlobalObject* globalObject = instance->realm();
@@ -339,18 +329,6 @@ void JSWebAssembly::instantiateForStreaming(VM& vm, JSGlobalObject* globalObject
     JSC::instantiate(vm, globalObject, promise, module, importObject, WTF::move(sourceProvider), JSWebAssemblyInstance::createPrivateModuleKey(), Resolve::WithModuleAndInstance, Wasm::CreationMode::FromJS, /* alwaysAsync */ true);
 }
 
-/**
- * This implements two standard APIs:
- *
- * namespace WebAssembly {
- *     Promise<WebAssemblyInstantiatedSource> instantiate(BufferSource bytes, optional object importObject, optional WebAssemblyCompileOptions options);
- *     Promise<Instance> instantiate(Module moduleObject, optional object importObject);
- * }
- *
- * See:
- *   - https://webassembly.github.io/js-string-builtins/js-api/#dom-webassembly-instantiate
- *   - https://webassembly.github.io/js-string-builtins/js-api/#dom-webassembly-instantiate-moduleobject-importobject
- */
 JSC_DEFINE_HOST_FUNCTION(webAssemblyInstantiateFunc, (JSGlobalObject* globalObject, CallFrame* callFrame))
 {
     VM& vm = globalObject->vm();
@@ -377,7 +355,7 @@ JSC_DEFINE_HOST_FUNCTION(webAssemblyInstantiateFunc, (JSGlobalObject* globalObje
 
     JSValue firstArgument = callFrame->argument(0);
     if (firstArgument.inherits<JSWebAssemblyModule>())
-        instantiate(vm, globalObject, promise, jsCast<JSWebAssemblyModule*>(firstArgument), importObject, WTF::move(provider), JSWebAssemblyInstance::createPrivateModuleKey(), Resolve::WithInstance, Wasm::CreationMode::FromJS, /* alwaysAsync */ true);
+        instantiate(vm, globalObject, promise, uncheckedDowncast<JSWebAssemblyModule>(firstArgument), importObject, WTF::move(provider), JSWebAssemblyInstance::createPrivateModuleKey(), Resolve::WithInstance, Wasm::CreationMode::FromJS, /* alwaysAsync */ true);
     else {
         auto compileOptions = WebAssemblyCompileOptions::tryCreate(globalObject, compileOptionsObject);
         RETURN_IF_EXCEPTION(scope, { });
@@ -393,7 +371,7 @@ JSC_DEFINE_HOST_FUNCTION(webAssemblyPromisingFunc, (JSGlobalObject* globalObject
 
     JSValue arg = callFrame->argument(0);
 
-    auto* wrapped = jsDynamicCast<WebAssemblyFunctionBase*>(arg);
+    auto* wrapped = dynamicDowncast<WebAssemblyFunctionBase>(arg);
     if (!wrapped) [[unlikely]]
         return JSValue::encode(throwTypeError(globalObject, scope, "Argument 0 must be a WebAssembly exported function"_s));
 
@@ -442,70 +420,91 @@ JSC_DEFINE_HOST_FUNCTION(webAssemblyValidateFunc, (JSGlobalObject* globalObject,
     return JSValue::encode(jsBoolean(success));
 }
 
-JSC_DEFINE_HOST_FUNCTION(webAssemblyCompileStreamingInternal, (JSGlobalObject* globalObject, CallFrame* callFrame))
+/**
+ * namespace WebAssembly {
+ *     Promise<Module> compileStreaming(Response source, optional WebAssemblyCompileOptions options);
+ *     Promise<Module> compileStreaming(Promise<Response> source, optional WebAssemblyCompileOptions options);
+ * }
+ *
+ * See https://webassembly.github.io/spec/web-api/index.html#dom-webassembly-compilestreaming
+ */
+JSC_DEFINE_HOST_FUNCTION(webAssemblyCompileStreamingFunc, (JSGlobalObject* globalObject, CallFrame* callFrame))
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
+
+    auto* promise = JSPromise::create(vm, globalObject->promiseStructure());
 
     std::optional<WebAssemblyCompileOptions> compileOptions;
     if (Options::useWasmJSStringBuiltins()) {
         JSValue compileOptionsArgument = callFrame->argument(1);
         JSObject* compileOptionsObject = compileOptionsArgument.getObject();
-        if (!compileOptionsArgument.isUndefined() && !compileOptionsObject) [[unlikely]]
-            RELEASE_AND_RETURN(scope, JSValue::encode(JSPromise::rejectedPromise(globalObject, createTypeError(globalObject, "second argument to WebAssembly.compileStreaming must be undefined or an Object"_s, defaultSourceAppender, runtimeTypeForValue(compileOptionsArgument)))));
-        compileOptions = WebAssemblyCompileOptions::tryCreate(globalObject, compileOptionsObject);
-        if (scope.exception()) [[unlikely]] {
-            auto* promise = JSPromise::create(vm, globalObject->promiseStructure());
-            RELEASE_AND_RETURN(scope, JSValue::encode(promise->rejectWithCaughtException(globalObject, scope)));
+        if (!compileOptionsArgument.isUndefined() && !compileOptionsObject) [[unlikely]] {
+            promise->reject(vm, globalObject, createTypeError(globalObject, "second argument to WebAssembly.compileStreaming must be undefined or an Object"_s, defaultSourceAppender, runtimeTypeForValue(compileOptionsArgument)));
+            RELEASE_AND_RETURN(scope, JSValue::encode(promise));
         }
+        compileOptions = WebAssemblyCompileOptions::tryCreate(globalObject, compileOptionsObject);
+        if (scope.exception()) [[unlikely]]
+            RELEASE_AND_RETURN(scope, JSValue::encode(promise->rejectWithCaughtException(globalObject, scope)));
     }
 
-    ASSERT(globalObject->globalObjectMethodTable()->compileStreaming);
-    RELEASE_AND_RETURN(scope, JSValue::encode(globalObject->globalObjectMethodTable()->compileStreaming(globalObject, callFrame->argument(0), WTF::move(compileOptions))));
+    auto* context = JSWebAssemblyStreamingContext::create(vm, promise, nullptr, WTF::move(compileOptions));
+
+    JSPromise* sourcePromise = JSPromise::resolvedPromise(globalObject, callFrame->argument(0));
+    RETURN_IF_EXCEPTION(scope, JSValue::encode(promise->rejectWithCaughtException(globalObject, scope)));
+
+    sourcePromise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::WebAssemblyCompileStreaming, nullptr, context);
+    return JSValue::encode(promise);
 }
 
-JSC_DEFINE_HOST_FUNCTION(webAssemblyInstantiateStreamingInternal, (JSGlobalObject* globalObject, CallFrame* callFrame))
+/**
+ * namespace WebAssembly {
+ *     Promise<WebAssemblyInstantiatedSource> instantiateStreaming(Response source, optional object importObject, optional WebAssemblyCompileOptions options);
+ *     Promise<WebAssemblyInstantiatedSource> instantiateStreaming(Promise<Response> source, optional object importObject, optional WebAssemblyCompileOptions options);
+ * }
+ *
+ * See https://webassembly.github.io/spec/web-api/index.html#dom-webassembly-instantiatestreaming
+ */
+JSC_DEFINE_HOST_FUNCTION(webAssemblyInstantiateStreamingFunc, (JSGlobalObject* globalObject, CallFrame* callFrame))
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
+    auto* promise = JSPromise::create(vm, globalObject->promiseStructure());
+
     JSValue importArgument = callFrame->argument(1);
     JSObject* importObject = importArgument.getObject();
-    if (!importArgument.isUndefined() && !importObject) [[unlikely]]
-        RELEASE_AND_RETURN(scope, JSValue::encode(JSPromise::rejectedPromise(globalObject, createTypeError(globalObject, "second argument to WebAssembly.instantiateStreaming must be undefined or an Object"_s, defaultSourceAppender, runtimeTypeForValue(importArgument)))));
+    if (!importArgument.isUndefined() && !importObject) [[unlikely]] {
+        promise->reject(vm, globalObject, createTypeError(globalObject, "second argument to WebAssembly.instantiateStreaming must be undefined or an Object"_s, defaultSourceAppender, runtimeTypeForValue(importArgument)));
+        RELEASE_AND_RETURN(scope, JSValue::encode(promise));
+    }
 
     std::optional<WebAssemblyCompileOptions> compileOptions;
     if (Options::useWasmJSStringBuiltins()) {
         JSValue compileOptionsArgument = callFrame->argument(2);
         JSObject* compileOptionsObject = compileOptionsArgument.getObject();
-        if (!compileOptionsArgument.isUndefined() && !compileOptionsObject) [[unlikely]]
-            RELEASE_AND_RETURN(scope, JSValue::encode(JSPromise::rejectedPromise(globalObject, createTypeError(globalObject, "third argument to WebAssembly.instantiateStreaming must be undefined or an Object"_s, defaultSourceAppender, runtimeTypeForValue(compileOptionsArgument)))));
-        compileOptions = WebAssemblyCompileOptions::tryCreate(globalObject, compileOptionsObject);
-        if (scope.exception()) [[unlikely]] {
-            auto* promise = JSPromise::create(vm, globalObject->promiseStructure());
-            RELEASE_AND_RETURN(scope, JSValue::encode(promise->rejectWithCaughtException(globalObject, scope)));
+        if (!compileOptionsArgument.isUndefined() && !compileOptionsObject) [[unlikely]] {
+            promise->reject(vm, globalObject, createTypeError(globalObject, "third argument to WebAssembly.instantiateStreaming must be undefined or an Object"_s, defaultSourceAppender, runtimeTypeForValue(compileOptionsArgument)));
+            RELEASE_AND_RETURN(scope, JSValue::encode(promise));
         }
+        compileOptions = WebAssemblyCompileOptions::tryCreate(globalObject, compileOptionsObject);
+        if (scope.exception()) [[unlikely]]
+            RELEASE_AND_RETURN(scope, JSValue::encode(promise->rejectWithCaughtException(globalObject, scope)));
     }
 
-    ASSERT(globalObject->globalObjectMethodTable()->instantiateStreaming);
-    // FIXME: <http://webkit.org/b/184888> if there's an importObject and it contains a Memory, then we can compile the module with the right memory type (fast or not) by looking at the memory's type.
-    RELEASE_AND_RETURN(scope, JSValue::encode(globalObject->globalObjectMethodTable()->instantiateStreaming(globalObject, callFrame->argument(0), importObject, WTF::move(compileOptions))));
+    auto* context = JSWebAssemblyStreamingContext::create(vm, promise, importObject, WTF::move(compileOptions));
+
+    JSPromise* sourcePromise = JSPromise::resolvedPromise(globalObject, callFrame->argument(0));
+    RETURN_IF_EXCEPTION(scope, JSValue::encode(promise->rejectWithCaughtException(globalObject, scope)));
+
+    sourcePromise->performPromiseThenWithInternalMicrotask(vm, globalObject, InternalMicrotask::WebAssemblyInstantiateStreaming, nullptr, context);
+    return JSValue::encode(promise);
 }
 
 JSC_DEFINE_HOST_FUNCTION(webAssemblyGetterJSTag, (JSGlobalObject* globalObject, CallFrame*))
 {
     // https://webassembly.github.io/exception-handling/js-api/#dom-webassembly-jstag
     return JSValue::encode(globalObject->webAssemblyJSTag());
-}
-
-JSC_DEFINE_HOST_FUNCTION(webAssemblyGetterSuspending, (JSGlobalObject* globalObject, CallFrame*))
-{
-    return JSValue::encode(globalObject->webAssemblySuspendingConstructor());
-}
-
-JSC_DEFINE_HOST_FUNCTION(webAssemblyGetterSuspendError, (JSGlobalObject* globalObject, CallFrame*))
-{
-    return JSValue::encode(globalObject->webAssemblySuspendErrorConstructor());
 }
 
 } // namespace JSC

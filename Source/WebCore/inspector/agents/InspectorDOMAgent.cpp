@@ -81,6 +81,7 @@
 #include "InspectorBackendClient.h"
 #include "InspectorCSSAgent.h"
 #include "InspectorHistory.h"
+#include "InspectorIdentifierRegistry.h"
 #include "InspectorNodeFinder.h"
 #include "InspectorPageAgent.h"
 #include "InstrumentingAgents.h"
@@ -95,10 +96,10 @@
 #include "JSVideoTransferCharacteristics.h"
 #include "LocalDOMWindow.h"
 #include "LocalFrame.h"
+#include "LocalFrameInlines.h"
 #include "LocalFrameView.h"
 #include "MutationEvent.h"
 #include "Node.h"
-#include "NodeInlines.h"
 #include "NodeList.h"
 #include "Page.h"
 #include "PageInspectorController.h"
@@ -131,8 +132,10 @@
 #include <JavaScriptCore/InjectedScriptManager.h>
 #include <JavaScriptCore/InspectorDebuggerAgent.h>
 #include <JavaScriptCore/JSCInlines.h>
+#include <JavaScriptCore/TopExceptionScope.h>
 #include <pal/crypto/CryptoDigest.h>
 #include <wtf/Function.h>
+#include <wtf/Stopwatch.h>
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/WeakPtr.h>
 #include <wtf/text/Base64.h>
@@ -1513,12 +1516,7 @@ Inspector::Protocol::ErrorStringOr<void> InspectorDOMAgent::highlightSelector(co
     RefPtr<Document> document;
 
     if (!!frameId) {
-        Ref agents = m_instrumentingAgents.get();
-        CheckedPtr pageAgent = agents->enabledPageAgent();
-        if (!pageAgent)
-            return makeUnexpected("Page domain must be enabled"_s);
-
-        RefPtr frame = pageAgent->assertFrame(errorString, frameId);
+        RefPtr frame = m_inspectedPage->inspectorController().identifierRegistry().assertFrame(errorString, frameId);
         if (!frame)
             return makeUnexpected(errorString);
 
@@ -1689,12 +1687,7 @@ Inspector::Protocol::ErrorStringOr<void> InspectorDOMAgent::highlightFrame(const
 {
     Inspector::Protocol::ErrorString errorString;
 
-    Ref agents = m_instrumentingAgents.get();
-    CheckedPtr pageAgent = agents->enabledPageAgent();
-    if (!pageAgent)
-        return makeUnexpected("Page domain must be enabled"_s);
-
-    RefPtr frame = pageAgent->assertFrame(errorString, frameId);
+    RefPtr frame = m_inspectedPage->inspectorController().identifierRegistry().assertFrame(errorString, frameId);
     if (!frame)
         return makeUnexpected(errorString);
 
@@ -1918,7 +1911,7 @@ String InspectorDOMAgent::documentURLString(Document* document)
 
 static String documentBaseURLString(Document* document)
 {
-    return document->completeURL(emptyString()).string();
+    return document->encodingParseURL(emptyString()).string();
 }
 
 static bool NODELETE pseudoElementType(PseudoElementType pseudoElementType, Inspector::Protocol::DOM::PseudoType* type)
@@ -2027,11 +2020,8 @@ Ref<Inspector::Protocol::DOM::Node> InspectorDOMAgent::buildObjectForNode(Node* 
             value->setLayoutFlags(layoutFlags.releaseNonNull());
     }
 
-    CheckedPtr pageAgent = agents->enabledPageAgent();
-    if (pageAgent) {
-        if (RefPtr frameView = node->document().view())
-            value->setFrameId(pageAgent->frameId(&frameView->frame()));
-    }
+    if (RefPtr frameView = node->document().view())
+        value->setFrameId(m_inspectedPage->inspectorController().identifierRegistry().frameId(&frameView->frame()));
 
     if (RefPtr element = dynamicDowncast<Element>(*node)) {
         value->setAttributes(buildArrayForElementAttributes(element.get()));
@@ -2065,8 +2055,7 @@ Ref<Inspector::Protocol::DOM::Node> InspectorDOMAgent::buildObjectForNode(Node* 
                 value->setPseudoElements(pseudoElements.releaseNonNull());
         }
     } else if (RefPtr document = dynamicDowncast<Document>(*node)) {
-        if (pageAgent)
-            value->setFrameId(pageAgent->frameId(document->frame()));
+        value->setFrameId(m_inspectedPage->inspectorController().identifierRegistry().frameId(document->frame()));
         value->setDocumentURL(documentURLString(document.get()));
         value->setBaseURL(documentBaseURLString(document.get()));
         value->setXmlVersion(document->xmlVersion());
@@ -2167,7 +2156,7 @@ Ref<Inspector::Protocol::DOM::EventListener> InspectorDOMAgent::buildObjectForEv
 
         if (handlerObject && globalObject) {
             JSC::VM& vm = globalObject->vm();
-            JSC::JSFunction* handlerFunction = JSC::jsDynamicCast<JSC::JSFunction*>(handlerObject);
+            JSC::JSFunction* handlerFunction = dynamicDowncast<JSC::JSFunction>(handlerObject);
 
             if (!handlerFunction) {
                 auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
@@ -2179,7 +2168,7 @@ Ref<Inspector::Protocol::DOM::EventListener> InspectorDOMAgent::buildObjectForEv
                     scope.clearException();
 
                 if (handleEventValue)
-                    handlerFunction = JSC::jsDynamicCast<JSC::JSFunction*>(handleEventValue);
+                    handlerFunction = dynamicDowncast<JSC::JSFunction>(handleEventValue);
             }
 
             if (handlerFunction && !handlerFunction->isHostOrBuiltinFunction()) {
@@ -2606,7 +2595,7 @@ Node* InspectorDOMAgent::innerPreviousSibling(Node* node)
 unsigned InspectorDOMAgent::innerChildNodeCount(Node* node)
 {
     unsigned count = 0;
-    for (RefPtr child = innerFirstChild(node); child; child = innerNextSibling(child.get()))
+    for (auto* child = innerFirstChild(node); child; child = innerNextSibling(child))
         ++count;
     return count;
 }
@@ -3102,7 +3091,7 @@ RefPtr<Node> InspectorDOMAgent::nodeForPath(const String& path)
             return nullptr;
 
         RefPtr<Node> child;
-        if (RefPtr frameOwner = dynamicDowncast<HTMLFrameOwnerElement>(*node)) {
+        if (auto* frameOwner = dynamicDowncast<HTMLFrameOwnerElement>(*node)) {
             ASSERT(!*childNumber);
             child = frameOwner->contentDocument();
         } else {

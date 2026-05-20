@@ -38,6 +38,7 @@
 #include "CSSSerializationContext.h"
 #include "CSSValueList.h"
 #include "CSSValuePool.h"
+#include "CachedMatchFinder.h"
 #include "CaretRectComputation.h"
 #include "ChangeListTypeCommand.h"
 #include "Chrome.h"
@@ -63,6 +64,7 @@
 #include "DocumentResourceLoader.h"
 #include "DocumentView.h"
 #include "Editing.h"
+#include "EditingInlines.h"
 #include "EditorClient.h"
 #include "ElementAncestorIteratorInlines.h"
 #include "EventHandler.h"
@@ -104,6 +106,7 @@
 #include "NodeTraversal.h"
 #include "PagePasteboardContext.h"
 #include "Pasteboard.h"
+#include "PositionInlines.h"
 #include "Range.h"
 #include "RemoveFormatCommand.h"
 #include "RenderAncestorIterator.h"
@@ -358,6 +361,8 @@ EditingBehavior Editor::behavior() const
 {
     return document().editingBehavior();
 }
+
+Document& Editor::document() const { return m_document; }
 
 EditorClient* Editor::client() const
 {
@@ -2049,6 +2054,11 @@ void Editor::toggleSmartLists()
 
 #endif // USE(AUTOMATIC_TEXT_REPLACEMENT)
 
+bool Editor::isAlternativeTextUIActive() const
+{
+    return m_alternativeTextController->isAlternativeTextUIActive();
+}
+
 #if PLATFORM(COCOA)
 bool Editor::isSmartListsEnabled()
 {
@@ -2200,7 +2210,7 @@ void Editor::setTextAlignmentForChangedBaseWritingDirection(WritingDirection dir
     }
 
     auto isTextControl = [](Element* focusedElement) {
-        if (RefPtr input = dynamicDowncast<HTMLInputElement>(focusedElement))
+        if (auto* input = dynamicDowncast<HTMLInputElement>(focusedElement))
             return input->isTextField() || input->isSearchField();
         return is<HTMLTextAreaElement>(focusedElement);
     };
@@ -2857,7 +2867,7 @@ void Editor::advanceToNextMisspelling(bool startBeforeSelection)
         document->selection().revealSelection();
         
         client()->updateSpellingUIWithGrammarString(ungrammaticalPhrase.phrase, ungrammaticalPhrase.detail);
-        addMarker(badGrammarRange, DocumentMarkerType::Grammar, ungrammaticalPhrase.detail.userDescription);
+        addMarker(badGrammarRange, DocumentMarkerType::Grammar, DocumentMarker::GrammarData { ungrammaticalPhrase.detail.userDescription, ungrammaticalPhrase.detail.uuid });
     } else if (!misspelledWord.word.isEmpty()) {
         // We found a misspelling, but not any earlier bad grammar. Select the misspelling, update the spelling panel, and store
         // a marker so we draw the red squiggle later.
@@ -3397,7 +3407,7 @@ void Editor::markAndReplaceFor(const SpellCheckRequest& request, const Vector<Te
                 ASSERT(detail.range.length > 0);
                 if (paragraph.checkingRangeCovers({ resultLocation + detail.range.location, detail.range.length })) {
                     auto badGrammarRange = paragraph.subrange({ resultLocation + detail.range.location, detail.range.length });
-                    addMarker(badGrammarRange, DocumentMarkerType::Grammar, detail.userDescription);
+                    addMarker(badGrammarRange, DocumentMarkerType::Grammar, DocumentMarker::GrammarData { detail.userDescription, detail.uuid });
                     previousGrammarRanges.append(CharacterRange(resultLocation + detail.range.location, detail.range.length));
                 }
             }
@@ -4041,13 +4051,15 @@ std::optional<SimpleRange> Editor::findString(const String& target, FindOptions 
     Ref document = this->document();
     std::optional<SimpleRange> resultRange;
     {
-        document->updateLayoutIgnorePendingStylesheets({ LayoutOptions::TreatContentVisibilityAutoAsVisible, LayoutOptions::TreatRevealedWhenFoundAsVisible });
         Style::PostResolutionCallbackDisabler disabler(document);
         VisibleSelection selection = document->selection().selection();
         auto referenceRange = selection.firstRange();
         if (!referenceRange || referenceRange->collapsed())
             referenceRange = selection.range();
-        resultRange = rangeOfString(target, referenceRange, options);
+        if (!m_matchFinder)
+            m_matchFinder = WTF::makeUnique<CachedMatchFinder>(document);
+
+        resultRange = m_matchFinder->findMatchFrom(referenceRange, target, options);
     }
 
     if (!resultRange)
@@ -4157,7 +4169,6 @@ unsigned Editor::countMatchesForText(const String& target, const std::optional<S
         return 0;
 
     Ref document = this->document();
-    document->updateLayoutIgnorePendingStylesheets({ LayoutOptions::TreatContentVisibilityAutoAsVisible, LayoutOptions::TreatRevealedWhenFoundAsVisible });
 
     std::optional<SimpleRange> searchRange;
     if (range) {
@@ -4169,17 +4180,29 @@ unsigned Editor::countMatchesForText(const String& target, const std::optional<S
     if (!searchRange)
         searchRange = makeRangeSelectingNodeContents(document);
 
-    auto allMatches = findAllPlainText(*searchRange, target, options - FindOption::Backwards, limit);
+    if (!m_matchFinder)
+        m_matchFinder = WTF::makeUnique<CachedMatchFinder>(document);
 
-    if (matches)
-        matches->appendVector(allMatches);
+    std::optional<unsigned> optionalLimit = limit ? std::make_optional(limit) : std::nullopt;
 
-    if (markMatches) {
-        for (const auto& match : allMatches)
-            addMarker(match, DocumentMarkerType::TextMatch);
+    unsigned matchCount;
+    if (matches || markMatches) {
+        auto allMatches = m_matchFinder->findMatches(searchRange, target, options - FindOption::Backwards, optionalLimit);
+
+        if (matches)
+            matches->appendVector(allMatches);
+
+        if (markMatches) {
+            for (const auto& match : allMatches)
+                addMarker(match, DocumentMarkerType::TextMatch);
+        }
+
+        matchCount = allMatches.size();
+    } else {
+        matchCount = m_matchFinder->countMatches(searchRange, target, options - FindOption::Backwards, optionalLimit);
     }
 
-    return allMatches.size();
+    return matchCount;
 }
 
 void Editor::setMarkedTextMatchesAreHighlighted(bool flag)
@@ -4830,7 +4853,7 @@ void Editor::registerAttachmentIdentifier(const String& identifier, const Attach
 
         String name = imageElement->attributeWithoutSynchronization(altAttr);
         if (name.isEmpty())
-            name = imageElement->document().completeURL(imageElement->imageSourceURL()).lastPathComponent().toString();
+            name = imageElement->document().encodingParseURL(imageElement->imageSourceURL()).lastPathComponent().toString();
 
         if (name.isEmpty())
             return std::nullopt;
@@ -5052,6 +5075,11 @@ bool Editor::canCopyExcludingStandaloneImages() const
 {
     auto& selection = document().selection().selection();
     return selection.isRange() && !selection.isInPasswordField();
+}
+
+void Editor::releaseMemory()
+{
+    m_matchFinder = nullptr;
 }
 
 } // namespace WebCore

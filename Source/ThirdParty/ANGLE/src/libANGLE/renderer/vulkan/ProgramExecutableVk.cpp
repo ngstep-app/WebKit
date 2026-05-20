@@ -1438,8 +1438,13 @@ void ProgramExecutableVk::initializeWriteDescriptorDesc(vk::ErrorContext *contex
     mShaderResourceWriteDescriptorDescs.updateAtomicCounters(
         mVariableInfoMap, mExecutable->getAtomicCounterBuffers());
     mShaderResourceWriteDescriptorDescs.updateImages(*mExecutable, mVariableInfoMap);
+
+    mShaderResourceWriteDescriptorDescs.initInputAttachments(
+        *mExecutable, mVariableInfoMap, context->getRenderer()->getMaxColorInputAttachmentCount());
     mShaderResourceDescriptorDescBuilder.resize(
         mShaderResourceWriteDescriptorDescs.getTotalDescriptorCount());
+
+    mCurrentInputAttachmentsMask.reset();
 
     // Update mTextureWriteDescriptors and its builder
     mTextureWriteDescriptorDescs.reset();
@@ -1725,9 +1730,8 @@ angle::Result ProgramExecutableVk::createPipelineLayout(
     DescriptorSetLayoutCache *descriptorSetLayoutCache,
     gl::ActiveTextureArray<TextureVk *> *activeTextures)
 {
+    vk::Renderer *renderer                     = context->getRenderer();
     const gl::ShaderBitSet &linkedShaderStages = mExecutable->getLinkedShaderStages();
-    uint32_t pushConstantSize =
-        GraphicsDriverUniforms::GetMaxUniformDataSize(context->getRenderer());
 
     // Store a reference to the pipeline and descriptor set layouts. This will create them if they
     // don't already exist in the cache.
@@ -1790,7 +1794,7 @@ angle::Result ProgramExecutableVk::createPipelineLayout(
     }
 
     // Decide if we should use dynamic or fixed descriptor types.
-    VkPhysicalDeviceLimits limits = context->getRenderer()->getPhysicalDeviceProperties().limits;
+    VkPhysicalDeviceLimits limits = renderer->getPhysicalDeviceProperties().limits;
     uint32_t totalDynamicUniformBufferCount =
         numActiveUniformBufferDescriptors + numDefaultUniformDescriptors;
     if (totalDynamicUniformBufferCount <= limits.maxDescriptorSetUniformBuffersDynamic)
@@ -1843,8 +1847,8 @@ angle::Result ProgramExecutableVk::createPipelineLayout(
     // Set up driver uniforms as push constants. The size is set for a graphics pipeline, as there
     // are more driver uniforms for a graphics pipeline than there are for a compute pipeline. As
     // for the shader stages, both graphics and compute stages are used.
-    VkShaderStageFlags pushConstantShaderStageFlags =
-        context->getRenderer()->getSupportedVulkanShaderStageMask();
+    VkShaderStageFlags pushConstantShaderStageFlags = renderer->getSupportedVulkanShaderStageMask();
+    uint32_t pushConstantSize = GraphicsDriverUniforms::GetMaxUniformDataSize(renderer);
 
     pipelineLayoutDesc.updatePushConstantRange(pushConstantShaderStageFlags, 0, pushConstantSize);
 
@@ -2243,18 +2247,9 @@ angle::Result ProgramExecutableVk::updateShaderResourcesDescInfo(
     // Update input attachments first since it could change descriptor counts
     if (hasFramebufferFetch)
     {
-        // Update writeDescriptorDescs with inputAttachments
-        mShaderResourceWriteDescriptorDescs.updateInputAttachments(*executable, mVariableInfoMap,
-                                                                   framebufferVk);
-
-        // Total descriptor count could have changed, resize DescriptorSetDescBuilder
-        mShaderResourceDescriptorDescBuilder.resize(
-            mShaderResourceWriteDescriptorDescs.getTotalDescriptorCount());
-
-        // Update DescriptorSetDescBuilder with inputAttachments
         ANGLE_TRY(mShaderResourceDescriptorDescBuilder.updateInputAttachments(
             contextVk, *executable, mVariableInfoMap, framebufferVk,
-            mShaderResourceWriteDescriptorDescs));
+            mShaderResourceWriteDescriptorDescs, &mCurrentInputAttachmentsMask));
     }
 
     if (hasStorageBuffers)

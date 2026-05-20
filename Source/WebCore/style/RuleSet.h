@@ -54,6 +54,7 @@ using CascadeLayerPriority = uint16_t;
 struct RuleSetAndNegation {
     RefPtr<const RuleSet> ruleSet;
     IsNegation isNegation { IsNegation::No };
+    const CSSSelectorList* scopeSelector { nullptr };
 };
 using InvalidationRuleSetVector = Vector<RuleSetAndNegation, 1>;
 
@@ -144,7 +145,7 @@ public:
 
     const RefPtr<const StyleRulePositionTry> NODELETE positionTryRuleForName(const AtomString&) const;
 
-    String selectorsForDebugging() const;
+    WTF::String selectorsForDebugging() const;
 
 private:
     friend class RuleSetBuilder;
@@ -156,6 +157,7 @@ private:
     using ScopeRuleIdentifier = unsigned;
 
     void addRule(RuleData&&, CascadeLayerIdentifier, ContainerQueryIdentifier, ScopeRuleIdentifier, RuleFeatureSet::CollectionContext*);
+    void addRuleToBucket(RuleData&);
 
     struct ResolverMutatingRule {
         Ref<StyleRuleBase> rule;

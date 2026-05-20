@@ -51,6 +51,11 @@
 #include "B3Value.h"
 #include "B3VariableValue.h"
 #include "B3WasmAddressValue.h"
+#include "B3WasmArrayElementValue.h"
+#include "B3WasmArrayGetValue.h"
+#include "B3WasmArrayLengthValue.h"
+#include "B3WasmArrayNewValue.h"
+#include "B3WasmArraySetValue.h"
 #include "B3WasmBoundsCheckValue.h"
 #include "B3WasmRefTypeCheckValue.h"
 #include "B3WasmStructGetValue.h"
@@ -127,6 +132,8 @@ namespace JSC { namespace B3 {
     case EqualOrUnordered: \
     case Select: \
         return MACRO(Value); \
+    case WasmArrayLength: \
+        return MACRO(WasmArrayLengthValue); \
     case ArgumentReg: \
         return MACRO(ArgumentRegValue); \
     case Const32: \
@@ -176,6 +183,12 @@ namespace JSC { namespace B3 {
         return MACRO(WasmStructSetValue); \
     case WasmStructNew: \
         return MACRO(WasmStructNewValue); \
+    case WasmArrayGet: \
+        return MACRO(WasmArrayGetValue); \
+    case WasmArraySet: \
+        return MACRO(WasmArraySetValue); \
+    case WasmArrayNew: \
+        return MACRO(WasmArrayNewValue); \
     case WasmRefCast: \
     case WasmRefTest: \
         return MACRO(WasmRefTypeCheckValue); \
@@ -269,6 +282,11 @@ namespace JSC { namespace B3 {
     case VectorRelaxedMAdd: \
     case VectorRelaxedNMAdd: \
     case VectorRelaxedLaneSelect: \
+    case VectorRelaxedQ15Mulr: \
+    case VectorRelaxedMin: \
+    case VectorRelaxedMax: \
+    case VectorRelaxedDotI8x16I7x16: \
+    case VectorRelaxedDotI8x16I7x16Add: \
         return MACRO(SIMDValue); \
     default: \
         RELEASE_ASSERT_NOT_REACHED(); \

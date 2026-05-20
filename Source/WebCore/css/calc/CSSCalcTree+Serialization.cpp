@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024-2025 Samuel Weinig <sam@webkit.org>
+ * Copyright (C) 2024-2026 Samuel Weinig <sam@webkit.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -75,6 +75,7 @@ static void serializeMathFunction(StringBuilder&, const Child&, SerializationSta
 static void serializeMathFunction(StringBuilder&, const Symbol&, SerializationState&);
 static void serializeMathFunction(StringBuilder&, const SiblingCount&, SerializationState&);
 static void serializeMathFunction(StringBuilder&, const SiblingIndex&, SerializationState&);
+static void serializeMathFunction(StringBuilder&, const IndirectNode<Deg2Rad>&, SerializationState&);
 template<Numeric Op> static void serializeMathFunction(StringBuilder&, const Op&, SerializationState&);
 template<typename Op> static void serializeMathFunction(StringBuilder&, const IndirectNode<Op>&, SerializationState&);
 
@@ -108,6 +109,7 @@ static void serializeCalculationTree(StringBuilder&, const IndirectNode<Sum>&, S
 static void serializeCalculationTree(StringBuilder&, const IndirectNode<Product>&, SerializationState&);
 static void serializeCalculationTree(StringBuilder&, const IndirectNode<Negate>&, SerializationState&);
 static void serializeCalculationTree(StringBuilder&, const IndirectNode<Invert>&, SerializationState&);
+static void serializeCalculationTree(StringBuilder&, const IndirectNode<Deg2Rad>&, SerializationState&);
 template<Numeric Op> void serializeCalculationTree(StringBuilder&, const Op&, SerializationState&);
 template<typename Op> static void serializeCalculationTree(StringBuilder&, const IndirectNode<Op>&, SerializationState&);
 
@@ -189,19 +191,11 @@ static unsigned NODELETE sortPriority(CSSUnitType unit)
     case CSSUnitType::CSS_X:            return 63;
 
     // Non-numeric types are not supported.
-    case CSSUnitType::CSS_ATTR:
     case CSSUnitType::CSS_CALC:
     case CSSUnitType::CSS_CALC_PERCENTAGE_WITH_ANGLE:
     case CSSUnitType::CSS_CALC_PERCENTAGE_WITH_LENGTH:
-    case CSSUnitType::CSS_DIMENSION:
-    case CSSUnitType::CSS_FONT_FAMILY:
-    case CSSUnitType::CSS_IDENT:
-    case CSSUnitType::CSS_PROPERTY_ID:
     case CSSUnitType::CSS_QUIRKY_EM:
-    case CSSUnitType::CSS_STRING:
     case CSSUnitType::CSS_UNKNOWN:
-    case CSSUnitType::CSS_VALUE_ID:
-    case CSSUnitType::CustomIdent:
         break;
     }
 
@@ -385,12 +379,21 @@ void serializeMathFunctionArguments(StringBuilder& builder, const IndirectNode<R
 {
     WTF::switchOn(fn->sharing,
         [&](const Random::SharingOptions& options) {
-            if (std::holds_alternative<AtomString>(options.identifier) && options.elementShared)
-                builder.append(std::get<AtomString>(options.identifier), ' ', nameLiteralForSerialization(CSSValueElementShared), ", "_s);
-            else if (std::holds_alternative<AtomString>(options.identifier))
-                builder.append(std::get<AtomString>(options.identifier), ", "_s);
-            else if (options.elementShared)
-                builder.append(nameLiteralForSerialization(CSSValueElementShared), ", "_s);
+            WTF::switchOn(options.identifier,
+                [&](const Random::SharingOptions::Auto&) {
+                    // Noting to do.
+                },
+                [&](const CSS::CustomIdent& customIdent) {
+                    if (!customIdent.value.isNull()) {
+                        CSS::serializationForCSS(builder, state.serializationContext, customIdent);
+                        if (options.elementScoped)
+                            builder.append(' ', nameLiteralForSerialization(CSSValueElementScoped), ", "_s);
+                        else
+                            builder.append(", "_s);
+                    } else if (options.elementScoped)
+                        builder.append(' ', nameLiteralForSerialization(CSSValueElementScoped), ", "_s);
+                }
+            );
         },
         [&](const Random::SharingFixed& fixed) {
             builder.append(nameLiteralForSerialization(CSSValueFixed), ' ');
@@ -411,8 +414,8 @@ void serializeMathFunctionArguments(StringBuilder& builder, const IndirectNode<R
 
 void serializeMathFunctionArguments(StringBuilder& builder, const IndirectNode<Anchor>& anchor, SerializationState& state)
 {
-    if (!anchor->elementName.isNull()) {
-        serializeIdentifier(anchor->elementName, builder);
+    if (anchor->elementName) {
+        CSS::serializationForCSS(builder, state.serializationContext, *anchor->elementName);
         builder.append(' ');
     }
 
@@ -458,20 +461,17 @@ static void serializeAnchorSizeDimension(StringBuilder& builder, Style::AnchorSi
 
 void serializeMathFunctionArguments(StringBuilder& builder, const IndirectNode<AnchorSize>& anchorSize, SerializationState& state)
 {
-    bool hasElementName = !anchorSize->elementName.isNull();
-
-    if (hasElementName)
-        serializeIdentifier(anchorSize->elementName, builder);
+    if (anchorSize->elementName)
+        CSS::serializationForCSS(builder, state.serializationContext, *anchorSize->elementName);
 
     if (anchorSize->dimension) {
-        if (hasElementName)
+        if (anchorSize->elementName)
             builder.append(' ');
-
         serializeAnchorSizeDimension(builder, *anchorSize->dimension);
     }
 
     if (anchorSize->fallback) {
-        if (hasElementName || anchorSize->dimension)
+        if (anchorSize->elementName || anchorSize->dimension)
             builder.append(", "_s);
 
         serializeWithoutOmittingPrefix(builder, *anchorSize->fallback, state);
@@ -488,10 +488,10 @@ template<typename Op> void serializeMathFunctionArguments(StringBuilder& builder
                 serializeCalculationTree(builder, *root, state);
             }
         },
-        [&](const AtomString& root) {
-            if (!root.isNull()) {
+        [&](const CSS::CustomIdent& root) {
+            if (!root.value.isNull()) {
                 builder.append(std::exchange(separator, ", "_s));
-                serializeIdentifier(root, builder);
+                CSS::serializationForCSS(builder, state.serializationContext, root);
             }
         },
         [&](const auto& root) {
@@ -506,7 +506,8 @@ void serializeWithoutOmittingPrefix(StringBuilder& builder, const Child& child, 
     WTF::switchOn(child,
         [&](Leaf auto& op) {
             serializeCalculationTree(builder, op, state);
-        }, [&](auto& op) {
+        },
+        [&](auto& op) {
             serializeMathFunction(builder, op, state);
         }
     );
@@ -534,7 +535,7 @@ template<Numeric Op> void serializeCalculationTree(StringBuilder& builder, const
 {
     // 2. If root is a numeric value, or a non-math function, serialize root per the normal rules for it and return the result.
 
-    CSS::serializationForCSS(builder, state.serializationContext, CSS::SerializableNumber { root.value, CSSPrimitiveValue::unitTypeString(toCSSUnit(root)) });
+    CSS::serializationForCSS(builder, state.serializationContext, CSS::SerializableNumber { root.value, unitTypeString(toCSSUnit(root)) });
 }
 
 void serializeCalculationTree(StringBuilder& builder, const Symbol& root, SerializationState&)
@@ -692,6 +693,19 @@ void serializeCalculationTree(StringBuilder& builder, const IndirectNode<Invert>
 
     // - Append ")" to s, then return it.
     builder.append(state.closeGroup());
+}
+
+void serializeCalculationTree(StringBuilder& builder, const IndirectNode<Deg2Rad>& root, SerializationState& state)
+{
+    // Deg2Rad is an implementation-only node inserted at parse time inside trig functions. It has
+    // no CSS-level representation, so serialize it transparently by just serializing its child.
+    serializeCalculationTree(builder, root->angle, state);
+}
+
+void serializeMathFunction(StringBuilder& builder, const IndirectNode<Deg2Rad>& root, SerializationState& state)
+{
+    // Deg2Rad has no CSS-level representation, so defer to the child.
+    serializeMathFunction(builder, root->angle, state);
 }
 
 template<typename Op> void serializeCalculationTree(StringBuilder& builder, const IndirectNode<Op>& root, SerializationState& state)

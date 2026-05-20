@@ -37,6 +37,7 @@
 #include "Image.h"
 #include "ImageBitmap.h"
 #include "InspectorInstrumentation.h"
+#include <JavaScriptCore/HeapInlines.h>
 #include "OriginAccessPatterns.h"
 #include "PixelFormat.h"
 #include "SVGImageElement.h"
@@ -72,6 +73,7 @@ Lock& CanvasRenderingContext::instancesLock()
 CanvasRenderingContext::CanvasRenderingContext(CanvasBase& canvas, Type type)
     : m_canvas(canvas)
     , m_type(type)
+    , m_owningThreadUID(currentThreadID())
 {
     Locker locker { instancesLock() };
     instances().add(this);

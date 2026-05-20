@@ -38,6 +38,7 @@
 #include "JITOperations.h"
 #include "JITSizeStatistics.h"
 #include "JITThunks.h"
+#include "JumpTable.h"
 #include "LLIntEntrypoint.h"
 #include "LLIntThunks.h"
 #include "LinkBuffer.h"
@@ -52,7 +53,6 @@
 #include "ThunkGenerators.h"
 #include "TypeProfilerLog.h"
 #include <wtf/BubbleSort.h>
-#include <wtf/GraphNodeWorklist.h>
 #include <wtf/SequesteredMalloc.h>
 #include <wtf/SimpleStats.h>
 #include <wtf/text/MakeString.h>
@@ -272,6 +272,7 @@ void JIT::privateCompileMainPass()
         DEFINE_SLOW_OP(create_generator)
         DEFINE_SLOW_OP(create_async_generator)
         DEFINE_SLOW_OP(new_generator)
+        DEFINE_SLOW_OP(new_async_function_generator)
 
         DEFINE_OP(op_add)
         DEFINE_OP(op_bitnot)

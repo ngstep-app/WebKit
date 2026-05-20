@@ -31,6 +31,7 @@
 #include "Document.h"
 #include "DocumentLoader.h"
 #include "EventNames.h"
+#include "FrameDestructionObserverInlines.h"
 #include "FrameLoader.h"
 #include "HTMLBodyElement.h"
 #include "HTMLHeadElement.h"
@@ -43,6 +44,7 @@
 #include "LocalFrame.h"
 #include "LocalFrameLoaderClient.h"
 #include "RawDataDocumentParser.h"
+#include "RenderStyle+GettersInlines.h"
 #include "UserScriptTypes.h"
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/text/StringBuilder.h>
@@ -124,7 +126,7 @@ void ModelDocumentParser::createDocumentStructure()
         return;
 
     frame->loader().activeDocumentLoader()->setMainResourceDataBufferingPolicy(DataBufferingPolicy::DoNotBufferData);
-    frame->loader().setOutgoingReferrer(document->completeURL(m_outgoingReferrer));
+    frame->loader().setOutgoingReferrer(document->encodingParseURL(m_outgoingReferrer));
 }
 
 void ModelDocumentParser::appendBytes(DocumentWriter&, std::span<const uint8_t>)

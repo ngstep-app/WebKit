@@ -115,15 +115,6 @@ RuntimeConfigTestScope::RuntimeConfigTestScope(
 {
 }
 
-ForceExclusives::ForceExclusives()
-    : RuntimeConfigTestScope(
-        "force-exclusives",
-        [] (pas_heap_runtime_config& runtimeConfig) {
-            runtimeConfig.directory_size_bound_for_partial_views = 0;
-        })
-{
-}
-
 ForceTLAs::ForceTLAs()
     : RuntimeConfigTestScope(
         "force-tlas",
@@ -150,17 +141,6 @@ DisableBitfit::DisableBitfit()
         "disable-bitfit",
         [] (pas_heap_runtime_config& runtimeConfig) {
             runtimeConfig.max_bitfit_object_size = 0;
-        })
-{
-}
-
-ForcePartials::ForcePartials()
-    : RuntimeConfigTestScope(
-        "force-partials",
-        [] (pas_heap_runtime_config& runtimeConfig) {
-            if (&runtimeConfig == &pas_utility_heap_runtime_config)
-                return;
-            runtimeConfig.directory_size_bound_for_partial_views = UINT8_MAX;
         })
 {
 }
@@ -286,7 +266,7 @@ void iterateForward(TestScopeImpl* scope, const Func& func)
 }
 
 string currentSuite;
-bool runningOneTest;
+bool runningOneTestInProcess;
 
 struct Test {
     Test() = default;
@@ -362,8 +342,15 @@ unsigned testsPassed;
 unsigned testsRan;
 
 static constexpr char successByte = 'S';
-
-int resultPipe[2];
+int childSuccessReportingPipe = -1;
+[[noreturn]] void reportSuccessAndExitForkedProcess()
+{
+    PAS_ASSERT(childSuccessReportingPipe > 0);
+    ssize_t writeResult = write(childSuccessReportingPipe, &successByte, 1);
+    PAS_ASSERT(writeResult == 1);
+    exit(0);
+    PAS_ASSERT(!"Should have exited");
+}
 
 } // anonymous namespace
 
@@ -394,6 +381,7 @@ void addMinHeapTests();
 void addPGMTests();
 void addRaceTests();
 void addRedBlackTreeTests();
+void addReallocFastPathTests();
 void addScavengerExternalWorkTests();
 void addTLCDecommitTests();
 void addTSDTests();
@@ -403,7 +391,7 @@ void addViewCacheTests();
 
 void testSucceeded()
 {
-    if (runningOneTest) {
+    if (runningOneTestInProcess) {
         cout << "    PASS!" << endl;
         cout << endl;
         cout << "Exiting early due to test success." << endl;
@@ -412,10 +400,7 @@ void testSucceeded()
         exit(0);
     }
 
-    ssize_t writeResult = write(resultPipe[1], &successByte, 1);
-    PAS_ASSERT(writeResult == 1);
-    exit(0);
-    PAS_ASSERT(!"Should have exited");
+    reportSuccessAndExitForkedProcess();
 }
 
 unsigned deterministicRandomNumber(unsigned exclusiveUpperBound)
@@ -671,9 +656,9 @@ unsigned computeTestConcurrency(std::optional<int> childProcesses)
 }
 
 
-void runOneTest(const Test& test)
+void runOneTestInProcess(const Test& test)
 {
-    runningOneTest = true;
+    runningOneTestInProcess = true;
     cout << "Running " << test.fullName() << "..." << endl;
     test.run();
     testSucceeded();
@@ -699,11 +684,9 @@ RunningTest startForkedTest(const Test& test, size_t testIndex)
     if (!forkResult) {
         // Child process
         close(pipefd[0]);
+        childSuccessReportingPipe = pipefd[1];
         test.run();
-        ssize_t writeResult = write(pipefd[1], &successByte, 1);
-        PAS_ASSERT(writeResult == 1);
-        exit(0);
-        PAS_ASSERT(!"Should have exited");
+        reportSuccessAndExitForkedProcess();
     }
 
     // Parent process
@@ -779,7 +762,7 @@ void runTests(const vector<Test>& tests, std::optional<int> childProcesses)
     CHECK(tests.size());
 
     if (tests.size() == 1) {
-        runOneTest(tests[0]);
+        runOneTestInProcess(tests[0]);
         return;
     }
 
@@ -872,7 +855,6 @@ int main(int argc, char** argv)
     ADD_SUITE(IsoDynamicPrimitiveHeap);
     ADD_SUITE(IsoHeapChaos);
     ADD_SUITE(IsoHeapPageSharing);
-    ADD_SUITE(IsoHeapPartialAndBaseline);
     ADD_SUITE(IsoHeapReservedMemory);
     ADD_SUITE(JITHeap);
     ADD_SUITE(LargeFreeHeap);
@@ -885,6 +867,8 @@ int main(int argc, char** argv)
     ADD_SUITE(PGM);
     ADD_SUITE(Race);
     ADD_SUITE(RedBlackTree);
+    ADD_SUITE(ReallocFastPath);
+    ADD_SUITE(ScavengerExternalWork);
     ADD_SUITE(TLCDecommit);
     ADD_SUITE(TSD);
     ADD_SUITE(Utils);

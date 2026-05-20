@@ -78,6 +78,7 @@ b3/air/AirCustom.cpp
 b3/air/AirDisassembler.cpp
 b3/air/AirEliminateDeadCode.cpp
 b3/air/AirEmitShuffle.cpp
+b3/air/AirEnsureDedicatedLoopEntryExitBlocks.cpp
 b3/air/AirFixObviousSpills.cpp
 b3/air/AirFixPartialRegisterStalls.cpp
 b3/air/AirFixSpillsAfterTerminals.cpp
@@ -191,6 +192,11 @@ b3/B3VariableLiveness.cpp
 b3/B3VariableValue.cpp
 b3/B3WasmAddressValue.cpp
 b3/B3WasmBoundsCheckValue.cpp
+b3/B3WasmArrayElementValue.cpp
+b3/B3WasmArrayGetValue.cpp
+b3/B3WasmArrayLengthValue.cpp
+b3/B3WasmArrayNewValue.cpp
+b3/B3WasmArraySetValue.cpp
 b3/B3WasmStructFieldValue.cpp
 b3/B3WasmStructGetValue.cpp
 b3/B3WasmStructNewValue.cpp
@@ -794,6 +800,7 @@ runtime/ConstructData.cpp
 runtime/ControlFlowProfiler.cpp
 runtime/CrossTaskToken.cpp
 runtime/CustomGetterSetter.cpp
+runtime/CyclicModuleRecord.cpp
 runtime/DOMAttributeGetterSetter.cpp
 runtime/DataView.cpp
 runtime/DateConstructor.cpp
@@ -898,6 +905,7 @@ runtime/JSArrayBufferPrototype.cpp
 runtime/JSArrayBufferView.cpp
 runtime/JSAsyncDisposableStack.cpp
 runtime/JSAsyncFunction.cpp
+runtime/JSAsyncFunctionGenerator.cpp
 runtime/JSAsyncFromSyncIterator.cpp
 runtime/JSAsyncGenerator.cpp
 runtime/JSAsyncGeneratorFunction.cpp
@@ -906,7 +914,6 @@ runtime/JSBigInt.cpp
 runtime/JSBoundFunction.cpp
 runtime/JSCBytecodeCacheVersion.cpp
 runtime/JSCConfig.cpp
-runtime/JSHeapDouble.cpp
 runtime/JSCJSValue.cpp
 runtime/JSCPtrTag.cpp
 runtime/JSCallee.cpp
@@ -931,10 +938,6 @@ runtime/JSGlobalObjectDebuggable.cpp
 runtime/JSGlobalObjectFunctions.cpp
 runtime/JSGlobalProxy.cpp
 runtime/JSCellButterfly.cpp
-runtime/JSHeapInt32.cpp
-runtime/JSInternalPromise.cpp
-runtime/JSInternalPromiseConstructor.cpp
-runtime/JSInternalPromisePrototype.cpp
 runtime/JSIterator.cpp
 runtime/JSIteratorConstructor.cpp
 runtime/JSIteratorHelper.cpp
@@ -966,8 +969,6 @@ runtime/JSRegExpStringIterator.cpp
 runtime/JSRemoteFunction.cpp
 runtime/JSRunLoopTimer.cpp
 runtime/JSScope.cpp
-runtime/JSScriptFetcher.cpp
-runtime/JSScriptFetchParameters.cpp
 runtime/JSSegmentedVariableObject.cpp
 runtime/JSSet.cpp
 runtime/JSSetIterator.cpp
@@ -982,6 +983,10 @@ runtime/JSTypedArrayConstructors.cpp
 runtime/JSTypedArrayPrototypes.cpp
 runtime/JSTypedArrayViewConstructor.cpp
 runtime/JSTypedArrayViewPrototype.cpp
+runtime/JSTypedArrayViewPrototypeFunctions1.cpp @no-unify
+runtime/JSTypedArrayViewPrototypeFunctions2.cpp @no-unify
+runtime/JSTypedArrayViewPrototypeFunctions3.cpp @no-unify
+runtime/JSTypedArrayViewPrototypeFunctions4.cpp @no-unify
 runtime/JSTypedArrays.cpp
 runtime/JSWeakMap.cpp
 runtime/JSWeakObjectRef.cpp
@@ -1004,7 +1009,11 @@ runtime/MegamorphicCache.cpp
 runtime/MemoryMode.cpp
 runtime/MemoryStatistics.cpp
 runtime/MicrotaskQueue.cpp
+runtime/ModuleGraphLoadingState.cpp
+runtime/ModuleLoadingContext.cpp
+runtime/ModuleLoaderPayload.cpp
 runtime/ModuleProgramExecutable.cpp
+runtime/ModuleRegistryEntry.cpp
 runtime/NarrowingNumberPredictionFuzzerAgent.cpp
 runtime/NativeCallee.cpp
 runtime/NativeCalleeRegistry.cpp
@@ -1025,6 +1034,7 @@ runtime/Options.cpp
 runtime/OrderedHashTable.cpp
 runtime/PageCount.cpp
 runtime/PinballCompletion.cpp
+runtime/PinballHandlerContext.cpp
 runtime/PredictionFileCreatingFuzzerAgent.cpp
 runtime/PrivateFieldPutKind.cpp
 runtime/ProfilerSupport.cpp
@@ -1144,6 +1154,17 @@ runtime/WeakSetPrototype.cpp
 runtime/WideningNumberPredictionFuzzerAgent.cpp
 runtime/WrapForValidIteratorPrototype.cpp
 
+runtime/temporal/core/CalendarArithmetic.cpp
+runtime/temporal/core/CalendarFields.cpp
+runtime/temporal/core/CalendarICUBridge.cpp
+runtime/temporal/core/DurationArithmetic.cpp
+runtime/temporal/core/InstantCore.cpp
+runtime/temporal/core/ISOArithmetic.cpp
+runtime/temporal/core/PlainDateTimeCore.cpp
+runtime/temporal/core/Rounding.cpp
+runtime/temporal/core/TimeZoneICUBridge.cpp
+runtime/temporal/core/ZonedDateTimeCore.cpp
+
 tools/CellList.cpp
 tools/CharacterPropertyDataGenerator.cpp
 tools/CompilerTimingScope.cpp
@@ -1197,6 +1218,7 @@ wasm/WasmOperations.cpp
 wasm/WasmPlan.cpp
 wasm/WasmSectionParser.cpp
 wasm/WasmTypeDefinition.cpp
+wasm/WasmTypeSectionState.cpp
 wasm/WasmOpcodeCounter.cpp
 wasm/WasmSourceMappingURLSectionParser.cpp
 wasm/WasmStreamingCompiler.cpp
@@ -1222,6 +1244,7 @@ wasm/js/JSWebAssemblyInstance.cpp
 wasm/js/JSWebAssemblyLinkError.cpp
 wasm/js/JSWebAssemblyMemory.cpp
 wasm/js/JSWebAssemblyModule.cpp
+wasm/js/JSWebAssemblyStreamingContext.cpp
 wasm/js/WebAssemblyPromising.cpp
 wasm/js/JSWebAssemblyRuntimeError.cpp
 wasm/js/JSWebAssemblySuspendError.cpp

@@ -139,7 +139,7 @@ namespace WebCore {
     macro(CSSHSL) \
     macro(CSSHWB) \
     macro(CSSImageValue) \
-    macro(CSSKeywordValue) \
+    macro(CSSOMKeywordValue) \
     macro(CSSLCH) \
     macro(CSSLab) \
     macro(CSSMathClamp) \
@@ -285,6 +285,7 @@ namespace WebCore {
     macro(IDBKeyRange) \
     macro(IDBObjectStore) \
     macro(IDBOpenDBRequest) \
+    macro(IDBRecord) \
     macro(IDBRequest) \
     macro(IDBTransaction) \
     macro(IDBVersionChangeEvent) \
@@ -525,6 +526,7 @@ namespace WebCore {
     macro(WebTransportSendGroup) \
     macro(WebTransportSendStream) \
     macro(WindowClient) \
+    macro(Worker) \
     macro(Worklet) \
     macro(WorkletGlobalScope) \
     macro(WritableStream) \

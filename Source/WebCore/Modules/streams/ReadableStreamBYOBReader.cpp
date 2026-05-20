@@ -26,6 +26,8 @@
 #include "config.h"
 #include "ReadableStreamBYOBReader.h"
 
+#include "JSDOMConvertAny.h"
+#include "JSDOMGlobalObject.h"
 #include "JSDOMPromise.h"
 #include "JSDOMPromiseDeferred.h"
 #include "JSReadableStreamBYOBReader.h"
@@ -33,9 +35,9 @@
 #include "ReadableStream.h"
 #include "ReadableStreamReadRequest.h"
 #include "WebCoreOpaqueRootInlines.h"
-#include <wtf/TZoneMallocInlines.h>
 #include <JavaScriptCore/ArrayBuffer.h>
 #include <JavaScriptCore/ArrayBufferView.h>
+#include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
 
@@ -188,7 +190,7 @@ void ReadableStreamBYOBReader::genericRelease(JSDOMGlobalObject& globalObject)
         m_closedPromise = WTF::move(promise);
     }
 
-    if (RefPtr controller = stream->controller())
+    if (auto* controller = stream->controller())
         controller->runReleaseSteps();
 
     stream->setByobReader(nullptr);
@@ -277,7 +279,7 @@ WebCoreOpaqueRoot root(ReadableStreamBYOBReader* reader)
 
 bool JSReadableStreamBYOBReaderOwner::isReachableFromOpaqueRoots(JSC::Handle<JSC::Unknown> handle, void*, AbstractSlotVisitor& visitor, ASCIILiteral* reason)
 {
-    auto* jsReader = jsCast<JSReadableStreamBYOBReader*>(handle.slot()->asCell());
+    auto* jsReader = downcast<JSReadableStreamBYOBReader>(handle.slot()->asCell());
     SUPPRESS_UNCOUNTED_LOCAL auto& reader = jsReader->wrapped();
     SUPPRESS_UNCOUNTED_LOCAL if (reader.isReachableFromOpaqueRoots()) {
         if (reason) [[unlikely]]

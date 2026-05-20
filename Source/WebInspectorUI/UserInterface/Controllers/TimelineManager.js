@@ -84,7 +84,7 @@ WI.TimelineManager = class TimelineManager extends WI.Object
             return;
 
         // COMPATIBILITY (iOS 13): Timeline.enable did not exist yet.
-        // COMPATIBILITY (iOS 26.0, macOS 26.0): `Timeline.enable` did not exist yet for Worker targets.
+        // COMPATIBILITY (macOS 15.4, iOS 18.4): `Timeline.enable` did not exist yet for Worker targets.
         if (target.hasCommand("Timeline.enable"))
             target.TimelineAgent.enable();
 
@@ -269,7 +269,7 @@ WI.TimelineManager = class TimelineManager extends WI.Object
 
         for (let target of WI.targets) {
             // COMPATIBILITY (iOS 13): Timeline.disable did not exist yet.
-            // COMPATIBILITY (iOS 26.0, macOS 26.0): `Timeline.disable` did not exist yet for Worker targets.
+            // COMPATIBILITY (macOS 15.4, iOS 18.4): `Timeline.disable` did not exist yet for Worker targets.
             if (target.hasCommand("Timeline.disable"))
                 target.TimelineAgent.disable();
         }
@@ -858,6 +858,7 @@ WI.TimelineManager = class TimelineManager extends WI.Object
             var layoutRecordType = sourceCodeLocation ? WI.LayoutTimelineRecord.EventType.ForcedLayout : WI.LayoutTimelineRecord.EventType.Layout;
             return new WI.LayoutTimelineRecord(layoutRecordType, startTime, endTime, stackTrace, sourceCodeLocation, {
                 quad: new WI.Quad(recordPayload.data.root),
+                domNode: WI.domManager.nodeForId(recordPayload.data.nodeId),
             });
 
         case InspectorBackend.Enum.Timeline.EventType.Paint:
@@ -1442,7 +1443,7 @@ WI.TimelineManager = class TimelineManager extends WI.Object
         let enabledTimelineTypes = this.enabledTimelineTypes;
 
         for (let target of targets) {
-            // COMPATIBILITY (iOS 26.0, macOS 26.0): `Timeline.setInstruments` did not exist yet for Worker targets.
+            // COMPATIBILITY (macOS 15.4, iOS 18.4): `Timeline.setInstruments` did not exist yet for Worker targets.
             if (!target.hasCommand("Timeline.setInstruments"))
                 continue;
 

@@ -42,6 +42,10 @@
 #include "SkiaRecordingResult.h"
 #include "SkiaReplayCanvas.h"
 #include "SkiaUtilities.h"
+
+#if USE(GBM)
+#include "MemoryMappedGPUBuffer.h"
+#endif
 WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
 #include <skia/core/SkColorSpace.h>
 #include <skia/core/SkPictureRecorder.h>
@@ -125,7 +129,7 @@ Ref<CoordinatedTileBuffer> SkiaPaintingEngine::createBuffer(RenderingMode render
     return CoordinatedUnacceleratedTileBuffer::create(size, contentsOpaque ? CoordinatedTileBuffer::NoFlags : CoordinatedTileBuffer::SupportsAlpha);
 }
 
-RefPtr<SkiaGPUAtlas> SkiaPaintingEngine::createAtlas(const SkiaImageAtlasLayout& layout, AtlasUploadCondition& uploadCondition)
+RefPtr<SkiaGPUAtlas> SkiaPaintingEngine::createAtlas(const SkiaImageAtlasLayout& layout, AtlasUploadCondition& uploadCondition, bool& needsUploadFence)
 {
     const auto& atlasSize = layout.atlasSize();
 
@@ -154,6 +158,7 @@ RefPtr<SkiaGPUAtlas> SkiaPaintingEngine::createAtlas(const SkiaImageAtlasLayout&
     // GL path: upload synchronously.
     if (!isDMABufBackedTexture) [[unlikely]] {
         atlas->uploadImages();
+        needsUploadFence = true;
         return atlas;
     }
 
@@ -244,8 +249,9 @@ Ref<SkiaRecordingResult> SkiaPaintingEngine::record(const GraphicsLayerCoordinat
             auto uploadCondition = AtlasUploadCondition::create();
             gpuAtlases.reserveInitialCapacity(result->atlasLayouts().size());
 
+            bool needsUploadFence = false;
             for (const auto& layout : result->atlasLayouts()) {
-                if (auto atlas = createAtlas(layout.get(), uploadCondition.get()))
+                if (auto atlas = createAtlas(layout.get(), uploadCondition.get(), needsUploadFence))
                     gpuAtlases.append(atlas.releaseNonNull());
             }
 
@@ -261,11 +267,10 @@ Ref<SkiaRecordingResult> SkiaPaintingEngine::record(const GraphicsLayerCoordinat
                     result->setGPUAtlases(WTF::move(gpuAtlases), WTF::move(uploadCondition));
                 }
 
-                // Flush and fence for the GL upload path, where
+                // Flush and fence only for the GL upload path, where
                 // BitmapTexture::updateContents() issues GL upload commands.
-                // On the DMA-buf path, uploading is CPU-side (memory-mapped),
-                // so this is a no-op flush but harmless.
-                result->setUploadFence(SkiaUtilities::flushAndSubmitWithFence(grContext));
+                if (needsUploadFence)
+                    result->setUploadFence(SkiaUtilities::flushAndSubmitWithFence(grContext));
             }
         }
     } else {
@@ -372,6 +377,12 @@ bool SkiaPaintingEngine::shouldUseDMABufAtlasTextures()
             if (envStringView == "1"_s)
                 shouldUseDMABufAtlas = false;
         }
+
+        // On systems where allocating/exporting a gbm_bo succeeds but mmap'ing its dma-buf FD
+        // does not, stay on the pure-OpenGL path from the start rather than tripping the
+        // RELEASE_ASSERT in SkiaGPUAtlas::uploadImages() later.
+        if (shouldUseDMABufAtlas && !MemoryMappedGPUBuffer::isSupported())
+            shouldUseDMABufAtlas = false;
     });
 
     return shouldUseDMABufAtlas;

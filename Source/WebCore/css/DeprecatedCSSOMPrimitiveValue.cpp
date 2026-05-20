@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2016-2021 Apple Inc. All rights reserved.
+ * Copyright (C) 2026 Samuel Weinig <sam@webkit.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -26,10 +27,16 @@
 #include "config.h"
 #include "DeprecatedCSSOMPrimitiveValue.h"
 
+#include "CSSAttrValue.h"
+#include "CSSCalcValue.h"
 #include "CSSColorValue.h"
 #include "CSSCounterValue.h"
+#include "CSSCustomIdentValue.h"
+#include "CSSFontFamilyNameValue.h"
+#include "CSSKeywordValue.h"
 #include "CSSRectValue.h"
 #include "CSSSerializationContext.h"
+#include "CSSStringValue.h"
 #include "CSSURLValue.h"
 #include "DeprecatedCSSOMCounter.h"
 #include "DeprecatedCSSOMRGBColor.h"
@@ -52,24 +59,25 @@ unsigned short DeprecatedCSSOMPrimitiveValue::primitiveType() const
         return CSS_RGBCOLOR;
     if (m_value->isURL())
         return CSS_URI;
+    if (m_value->isKeywordValue() || m_value->isCustomIdentValue())
+        return CSS_IDENT;
+    if (m_value->isStringValue() || m_value->isFontFamilyNameValue())
+        return CSS_STRING;
+    if (m_value->isAttrValue())
+        return CSS_ATTR;
 
     RefPtr primitiveValue = dynamicDowncast<CSSPrimitiveValue>(m_value.get());
     if (!primitiveValue)
         return CSS_UNKNOWN;
 
     switch (primitiveValue->primitiveType()) {
-    case CSSUnitType::CSS_ATTR:                         return CSS_ATTR;
     case CSSUnitType::CSS_CM:                           return CSS_CM;
     case CSSUnitType::CSS_DEG:                          return CSS_DEG;
-    case CSSUnitType::CSS_DIMENSION:                    return CSS_DIMENSION;
     case CSSUnitType::CSS_EM:                           return CSS_EMS;
     case CSSUnitType::CSS_EX:                           return CSS_EXS;
-    case CSSUnitType::CSS_FONT_FAMILY:                  return CSS_STRING;
     case CSSUnitType::CSS_GRAD:                         return CSS_GRAD;
     case CSSUnitType::CSS_HZ:                           return CSS_HZ;
-    case CSSUnitType::CSS_IDENT:                        return CSS_IDENT;
     case CSSUnitType::CSS_INTEGER:                      return CSS_NUMBER;
-    case CSSUnitType::CustomIdent:                      return CSS_IDENT;
     case CSSUnitType::CSS_IN:                           return CSS_IN;
     case CSSUnitType::CSS_KHZ:                          return CSS_KHZ;
     case CSSUnitType::CSS_MM:                           return CSS_MM;
@@ -77,13 +85,10 @@ unsigned short DeprecatedCSSOMPrimitiveValue::primitiveType() const
     case CSSUnitType::CSS_NUMBER:                       return CSS_NUMBER;
     case CSSUnitType::CSS_PC:                           return CSS_PC;
     case CSSUnitType::CSS_PERCENTAGE:                   return CSS_PERCENTAGE;
-    case CSSUnitType::CSS_PROPERTY_ID:                  return CSS_IDENT;
     case CSSUnitType::CSS_PT:                           return CSS_PT;
     case CSSUnitType::CSS_PX:                           return CSS_PX;
     case CSSUnitType::CSS_RAD:                          return CSS_RAD;
     case CSSUnitType::CSS_S:                            return CSS_S;
-    case CSSUnitType::CSS_STRING:                       return CSS_STRING;
-    case CSSUnitType::CSS_VALUE_ID:                     return CSS_IDENT;
 
     // All other, including newer types, should return UNKNOWN.
     default:                                            return CSS_UNKNOWN;
@@ -92,11 +97,28 @@ unsigned short DeprecatedCSSOMPrimitiveValue::primitiveType() const
 
 ExceptionOr<float> DeprecatedCSSOMPrimitiveValue::getFloatValue(unsigned short unitType) const
 {
-    auto numericType = [&]() -> std::optional<CSSUnitType> {
+    RefPtr primitiveValue = dynamicDowncast<CSSPrimitiveValue>(m_value.get());
+    if (!primitiveValue)
+        return Exception { ExceptionCode::InvalidAccessError };
+
+    auto doubleValueDeprecated = [&] {
+        return WTF::switchOn(*primitiveValue,
+            [](const CSSPrimitiveValue::Calc& calc) {
+                return calc.doubleValueDeprecated();
+            },
+            [](const CSSPrimitiveValue::Raw& raw) {
+                return raw.value;
+            }
+        );
+    };
+
+    if (unitType == CSS_DIMENSION)
+        return clampTo<float>(doubleValueDeprecated());
+
+    auto requestedUnitType = [&] -> std::optional<CSSUnitType> {
         switch (unitType) {
         case CSS_CM:            return CSSUnitType::CSS_CM;
         case CSS_DEG:           return CSSUnitType::CSS_DEG;
-        case CSS_DIMENSION:     return CSSUnitType::CSS_DIMENSION;
         case CSS_EMS:           return CSSUnitType::CSS_EM;
         case CSS_EXS:           return CSSUnitType::CSS_EX;
         case CSS_GRAD:          return CSSUnitType::CSS_GRAD;
@@ -115,33 +137,113 @@ ExceptionOr<float> DeprecatedCSSOMPrimitiveValue::getFloatValue(unsigned short u
         default:                return std::nullopt;
         }
     }();
-
-    RefPtr primitiveValue = dynamicDowncast<CSSPrimitiveValue>(m_value.get());
-    if (!numericType || !primitiveValue)
+    if (!requestedUnitType)
         return Exception { ExceptionCode::InvalidAccessError };
-    return primitiveValue->getFloatValueDeprecated(*numericType);
+    auto targetUnitType = *requestedUnitType;
+
+    auto selfUnitType = WTF::switchOn(*primitiveValue,
+        [](const CSSPrimitiveValue::Calc&) -> std::optional<CSSUnitType> {
+            return std::nullopt;
+        },
+        [](const CSSPrimitiveValue::Raw& raw) -> std::optional<CSSUnitType> {
+            return raw.unit;
+        }
+    );
+    if (!selfUnitType)
+        return Exception { ExceptionCode::InvalidAccessError };
+    auto sourceUnitType = *selfUnitType;
+
+    if (targetUnitType == sourceUnitType)
+        return clampTo<float>(doubleValueDeprecated());
+
+    auto sourceCategory = unitCategory(sourceUnitType);
+    ASSERT(sourceCategory != CSSUnitCategory::Other);
+    auto targetCategory = unitCategory(targetUnitType);
+    ASSERT(targetCategory != CSSUnitCategory::Other);
+
+    // Cannot convert between unrelated unit categories if one of them is not CSSUnitCategory::Number.
+    if (sourceCategory != targetCategory && sourceCategory != CSSUnitCategory::Number && targetCategory != CSSUnitCategory::Number)
+        return Exception { ExceptionCode::InvalidAccessError };
+
+    if (targetCategory == CSSUnitCategory::Number) {
+        // Cannot convert between numbers and percent.
+        if (sourceCategory == CSSUnitCategory::Percent)
+            return Exception { ExceptionCode::InvalidAccessError };
+        // We interpret conversion to CSSUnitType::CSS_NUMBER as conversion to a canonical unit in this value's category.
+        targetUnitType = canonicalUnitTypeForCategory(sourceCategory);
+        if (targetUnitType == CSSUnitType::CSS_UNKNOWN)
+            return Exception { ExceptionCode::InvalidAccessError };
+    }
+
+    if (sourceUnitType == CSSUnitType::CSS_NUMBER || sourceUnitType == CSSUnitType::CSS_INTEGER) {
+        // Cannot convert between numbers and percent.
+        if (targetCategory == CSSUnitCategory::Percent)
+            return Exception { ExceptionCode::InvalidAccessError };
+        // We interpret conversion from CSSUnitType::CSS_NUMBER in the same way as CSSParser::validUnit() while using non-strict mode.
+        sourceUnitType = canonicalUnitTypeForCategory(targetCategory);
+        if (sourceUnitType == CSSUnitType::CSS_UNKNOWN)
+            return Exception { ExceptionCode::InvalidAccessError };
+    }
+
+    double convertedValue = doubleValueDeprecated();
+
+    // If we don't need to scale it, don't worry about if we can scale it.
+    if (sourceUnitType == targetUnitType)
+        return clampTo<float>(convertedValue);
+
+    // First convert the value from the source unit type the to the canonical type.
+    auto sourceFactor = conversionToCanonicalUnitsScaleFactor(sourceUnitType);
+    if (!sourceFactor.has_value())
+        return Exception { ExceptionCode::InvalidAccessError };
+    convertedValue *= sourceFactor.value();
+
+    // Now convert from canonical type to the target unitType.
+    auto targetFactor = conversionToCanonicalUnitsScaleFactor(targetUnitType);
+    if (!targetFactor.has_value())
+        return Exception { ExceptionCode::InvalidAccessError };
+    convertedValue /= targetFactor.value();
+
+    return clampTo<float>(convertedValue);
 }
 
 ExceptionOr<String> DeprecatedCSSOMPrimitiveValue::getStringValue() const
 {
     switch (primitiveType()) {
-    case CSS_ATTR:      return downcast<CSSPrimitiveValue>(m_value.get()).stringValue();
-    case CSS_IDENT:     return downcast<CSSPrimitiveValue>(m_value.get()).stringValue();
-    case CSS_STRING:    return downcast<CSSPrimitiveValue>(m_value.get()).stringValue();
-    case CSS_URI:       return downcast<CSSURLValue>(m_value.get()).stringValue();
+    case CSS_ATTR:
+        return downcast<CSSAttrValue>(m_value.get()).cssText(CSS::defaultSerializationContext());
+    case CSS_IDENT:
+        if (RefPtr customIdentValue = dynamicDowncast<CSSCustomIdentValue>(m_value))
+            return customIdentValue->stringValue();
+        return downcast<CSSKeywordValue>(m_value.get()).stringValue();
+    case CSS_STRING:
+        if (RefPtr fontFamilyNameValue = dynamicDowncast<CSSFontFamilyNameValue>(m_value))
+            return fontFamilyNameValue->stringValue();
+        return downcast<CSSStringValue>(m_value.get()).stringValue();
+    case CSS_URI:
+        return downcast<CSSURLValue>(m_value.get()).stringValue();
 
     // All other, including newer types, should raise an exception.
-    default:            return Exception { ExceptionCode::InvalidAccessError };
+    default:
+        return Exception { ExceptionCode::InvalidAccessError };
     }
 }
 
 ExceptionOr<Ref<DeprecatedCSSOMCounter>> DeprecatedCSSOMPrimitiveValue::getCounterValue() const
 {
-    if (RefPtr value = dynamicDowncast<CSSCounterValue>(m_value.get()))
-        return DeprecatedCSSOMCounter::create(value->identifier(), value->separator(), value->counterStyleCSSText());
+    if (RefPtr value = dynamicDowncast<CSSCounterValue>(m_value.get())) {
+        auto counterStyle = WTF::switchOn(value->counterStyle().identifier,
+            [](CSSValueID predefinedKeyword) -> String {
+                return nameLiteralForSerialization(predefinedKeyword);
+            },
+            [](const CSS::CustomIdent& customIdent) -> String {
+                return customIdent.value.string();
+            }
+        );
+        return DeprecatedCSSOMCounter::create(value->identifier().value, value->separator().value, WTF::move(counterStyle));
+    }
     return Exception { ExceptionCode::InvalidAccessError };
 }
-    
+
 ExceptionOr<Ref<DeprecatedCSSOMRect>> DeprecatedCSSOMPrimitiveValue::getRectValue() const
 {
     if (RefPtr rectValue = dynamicDowncast<CSSRectValue>(m_value.get()))
@@ -156,4 +258,11 @@ ExceptionOr<Ref<DeprecatedCSSOMRGBColor>> DeprecatedCSSOMPrimitiveValue::getRGBC
     return DeprecatedCSSOMRGBColor::create(m_owner, downcast<CSSColorValue>(m_value.get()).color().absoluteColor());
 }
 
+bool DeprecatedCSSOMPrimitiveValue::isCSSWideKeyword() const
+{
+    if (RefPtr keywordValue = dynamicDowncast<CSSKeywordValue>(m_value))
+        return WebCore::isCSSWideKeyword(keywordValue->valueID());
+    return false;
 }
+
+} // namespace WebCore

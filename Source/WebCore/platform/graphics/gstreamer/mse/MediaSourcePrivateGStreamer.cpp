@@ -41,6 +41,7 @@
 #include "Logging.h"
 #include "MediaPlayerPrivateGStreamer.h"
 #include "MediaPlayerPrivateGStreamerMSE.h"
+#include "MediaSourcePrivateClient.h"
 #include "MediaSourceTrackGStreamer.h"
 #include "NotImplemented.h"
 #include "SourceBufferPrivateGStreamer.h"
@@ -199,11 +200,12 @@ void MediaSourcePrivateGStreamer::markEndOfStream(EndOfStreamStatus endOfStreamS
     ASSERT(isMainThread());
 
     MediaSourcePrivate::markEndOfStream(endOfStreamStatus);
+
+#ifndef GST_DISABLE_GST_DEBUG
     RefPtr player = platformPlayer();
     if (!player)
         return;
 
-#ifndef GST_DISABLE_GST_DEBUG
     ASCIILiteral statusString;
     switch (endOfStreamStatus) {
     case EndOfStreamStatus::NoError:
@@ -216,15 +218,8 @@ void MediaSourcePrivateGStreamer::markEndOfStream(EndOfStreamStatus endOfStreamS
         statusString = "network-error"_s;
         break;
     }
-    GST_DEBUG_OBJECT(player->pipeline(), "Marking EOS, status is %s", statusString.characters());
+    GST_DEBUG_OBJECT(player->pipeline(), "Marked EOS, status is %s", statusString.characters());
 #endif
-    if (endOfStreamStatus == EndOfStreamStatus::NoError) {
-        auto bufferedRanges = buffered();
-        if (!bufferedRanges.length()) {
-            GST_DEBUG("EOS with no buffers");
-            player->setEosWithNoBuffers(true);
-        }
-    }
 }
 
 void MediaSourcePrivateGStreamer::unmarkEndOfStream()
@@ -234,7 +229,7 @@ void MediaSourcePrivateGStreamer::unmarkEndOfStream()
     if (!player)
         return;
 
-    player->setEosWithNoBuffers(false);
+    player->rebuildPipeline();
     MediaSourcePrivate::unmarkEndOfStream();
 }
 
@@ -295,12 +290,6 @@ MediaSourcePrivateGStreamer::RegisteredTrack MediaSourcePrivateGStreamer::regist
         GST_DEBUG_OBJECT(player->pipeline(), "Registered new Track with index %" PRIu64 " and ID %" PRIu64 " (preferred ID was %" PRIu64 ")", static_cast<uint64_t>(assignedIndex), static_cast<uint64_t>(assignedId), static_cast<uint64_t>(preferredId));
 
     return info;
-}
-
-void MediaSourcePrivateGStreamer::willSeek()
-{
-    for (auto* sourceBuffer : m_activeSourceBuffers)
-        downcast<SourceBufferPrivateGStreamer>(sourceBuffer)->willSeek();
 }
 
 void MediaSourcePrivateGStreamer::unregisterTrack(TrackID trackId)

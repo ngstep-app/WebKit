@@ -25,8 +25,10 @@
 
 #pragma once
 
-#include "CachedResource.h" // for CachedResource::Type.
+#include <JavaScriptCore/InspectorProtocolObjects.h>
+#include <WebCore/CachedResource.h>
 #include <wtf/Forward.h>
+#include <wtf/text/WTFString.h>
 
 namespace WebCore {
 class DocumentLoader;
@@ -38,9 +40,13 @@ class TextResourceDecoder;
 
 namespace Inspector {
 namespace Protocol {
+using ErrorString = String;
+namespace Page {
+enum class ResourceType : int;
+}
 }
 
-enum class ResourceType;
+enum class ResourceType : uint8_t;
 
 namespace ResourceUtilities {
 
@@ -50,9 +56,9 @@ void resourceContent(Inspector::Protocol::ErrorString&, WebCore::LocalFrame*, co
 bool mainResourceContent(WebCore::LocalFrame*, bool withBase64Encode, String* result);
 
 String sourceMapURLForResource(WebCore::CachedResource*);
-RefPtr<WebCore::CachedResource> cachedResource(const WebCore::LocalFrame*, const URL&);
-Inspector::ResourceType NODELETE inspectorResourceType(WebCore::CachedResource::Type);
-Inspector::ResourceType inspectorResourceType(const WebCore::CachedResource&);
+RefPtr<WebCore::CachedResource> WEBCORE_EXPORT cachedResource(const WebCore::LocalFrame*, const URL&);
+Inspector::ResourceType WEBCORE_EXPORT inspectorResourceType(WebCore::CachedResource::Type);
+Inspector::ResourceType WEBCORE_EXPORT inspectorResourceType(const WebCore::CachedResource&);
 
 Inspector::Protocol::Page::ResourceType NODELETE resourceTypeToProtocol(Inspector::ResourceType);
 Inspector::Protocol::Page::ResourceType cachedResourceTypeToProtocol(const WebCore::CachedResource&);

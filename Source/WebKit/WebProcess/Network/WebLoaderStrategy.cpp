@@ -248,7 +248,7 @@ void WebLoaderStrategy::scheduleLoad(ResourceLoader& resourceLoader, CachedResou
 
     if (resourceLoader.request().url().protocolIsData()) {
         LOG(NetworkScheduling, "(WebProcess) WebLoaderStrategy::scheduleLoad, url '%s' will be loaded as data.", resourceLoader.url().string().utf8().data());
-        WEBLOADERSTRATEGY_RELEASE_LOG_FORWARDABLE(WEBLOADERSTRATEGY_SCHEDULELOAD_URL_LOADED_AS_DATA);
+        WEBLOADERSTRATEGY_RELEASE_LOG_FORWARDABLE(WebLoaderStrategyScheduleLoadUrlLoadedAsData);
         startLocalLoad(resourceLoader);
         return;
     }
@@ -302,7 +302,7 @@ void WebLoaderStrategy::scheduleLoad(ResourceLoader& resourceLoader, CachedResou
         return;
     }
 
-    WEBLOADERSTRATEGY_RELEASE_LOG_FORWARDABLE(WEBLOADERSTRATEGY_SCHEDULELOAD);
+    WEBLOADERSTRATEGY_RELEASE_LOG_FORWARDABLE(WebLoaderStrategyScheduleLoad);
     scheduleLoadFromNetworkProcess(resourceLoader, resourceLoader.request(), *trackingParameters, shouldClearReferrerOnHTTPSToHTTPRedirect, maximumBufferingTime(resource));
 }
 
@@ -400,8 +400,9 @@ static void addParametersShared(const LocalFrame* frame, NetworkResourceLoadPara
         parameters.crossOriginEmbedderPolicy = document->crossOriginEmbedderPolicy();
         parameters.isClearSiteDataHeaderEnabled = document->settings().clearSiteDataHTTPHeaderEnabled();
         parameters.isClearSiteDataExecutionContextEnabled = document->settings().clearSiteDataExecutionContextsSupportEnabled();
-        parameters.mayBlockNetworkRequest = document->settings().scriptTrackingPrivacyNetworkRequestBlockingLatchEnabled() ?
+        parameters.mayBlockNetworkRequest = (!isMainFrameNavigation && document->settings().scriptTrackingPrivacyNetworkRequestBlockingLatchEnabled()) ?
             std::optional { WebProcess::singleton().shouldBlockRequest(parameters.request.url(), protect(document->topOrigin())) } : std::nullopt;
+        parameters.globalPrivacyControlEnabled = document->settings().globalPrivacyControlEnabled();
     }
 
     if (RefPtr page = frame->page()) {
@@ -421,6 +422,13 @@ static void addParametersShared(const LocalFrame* frame, NetworkResourceLoadPara
             parameters.parentFrameID = parentFrame->loader().frameID();
             parameters.parentCrossOriginEmbedderPolicy = ownerElement->document().crossOriginEmbedderPolicy();
             parameters.parentFrameURL = protect(ownerElement->document())->url();
+        }
+    } else if (frame) {
+        RefPtr webFrame = WebFrame::webFrame(frame->frameID());
+        RefPtr parentWebFrame = webFrame ? webFrame->parentFrame() : nullptr;
+        if (RefPtr parentCoreFrame = parentWebFrame ? parentWebFrame->coreFrame() : nullptr) {
+            if (auto securityPolicy = parentCoreFrame->frameDocumentSecurityPolicy())
+                parameters.parentCrossOriginEmbedderPolicy = securityPolicy->crossOriginEmbedderPolicy;
         }
     }
 
@@ -462,7 +470,12 @@ void WebLoaderStrategy::scheduleLoadFromNetworkProcess(ResourceLoader& resourceL
         trackingParameters.frameID,
         request
     };
-    loadParameters.createSandboxExtensionHandlesIfNecessary();
+    if (!loadParameters.createSandboxExtensionHandlesIfNecessary()) {
+        RunLoop::mainSingleton().dispatch([resourceLoader = Ref { resourceLoader }, error = blockedError(request)] {
+            resourceLoader->didFail(error);
+        });
+        return;
+    }
 
     loadParameters.identifier = identifier;
     loadParameters.parentPID = legacyPresentingApplicationPID();
@@ -537,7 +550,16 @@ void WebLoaderStrategy::scheduleLoadFromNetworkProcess(ResourceLoader& resourceL
             loadParameters.sourceOrigin = SecurityOrigin::createFromString(origin);
     }
     if (isMainFrameNavigation) {
-        if (request.url().protocolIsBlob() && resourceLoader.documentLoader() && !resourceLoader.documentLoader()->triggeringAction().isEmpty() && resourceLoader.documentLoader()->triggeringAction().requester())
+        // For blob URLs, use the requester's top origin so it matches what the BlobRegistry
+        // stored at creation time. Skip this for back-forward navigations: the requester is
+        // the document being navigated away from, whose top origin may be cross-origin with
+        // the blob. Deriving from the URL is correct since the main frame IS the top frame.
+        bool shouldUseBlobRequesterTopOrigin = request.url().protocolIsBlob()
+            && resourceLoader.documentLoader()
+            && !resourceLoader.documentLoader()->triggeringAction().isEmpty()
+            && resourceLoader.documentLoader()->triggeringAction().requester()
+            && resourceLoader.documentLoader()->triggeringAction().type() != NavigationType::BackForward;
+        if (shouldUseBlobRequesterTopOrigin)
             loadParameters.topOrigin = resourceLoader.documentLoader()->triggeringAction().requester()->topOrigin.ptr();
         else
             loadParameters.topOrigin = SecurityOrigin::create(request.url());
@@ -585,6 +607,8 @@ void WebLoaderStrategy::scheduleLoadFromNetworkProcess(ResourceLoader& resourceL
         if (RefPtr documentLoader = resourceLoader.documentLoader()) {
             loadParameters.navigationID = documentLoader->navigationID();
             loadParameters.navigationRequester = documentLoader->triggeringAction().requester();
+            if (loadParameters.navigationRequester && (!loadParameters.sourceOrigin || loadParameters.sourceOrigin->isOpaque()))
+                loadParameters.sourceOrigin = loadParameters.navigationRequester->securityOrigin.ptr();
         }
     }
     loadParameters.isCrossOriginOpenerPolicyEnabled = document && document->settings().crossOriginOpenerPolicyEnabled();
@@ -594,6 +618,12 @@ void WebLoaderStrategy::scheduleLoadFromNetworkProcess(ResourceLoader& resourceL
     if (RefPtr openerFrame = frame ? dynamicDowncast<LocalFrame>(frame->opener()) : nullptr) {
         if (RefPtr openerDocument = openerFrame->document())
             loadParameters.openerURL = openerDocument->url();
+    } else if (webFrame) {
+        // Populate openerURL when openerFrame is a RemoteFrame
+        if (RefPtr page = webFrame->page()) {
+            if (!page->mainFrameOpenerURL().isNull())
+                loadParameters.openerURL = page->mainFrameOpenerURL();
+        }
     }
 
     loadParameters.shouldEnableCrossOriginResourcePolicy = !loadParameters.isMainFrameNavigation;
@@ -624,7 +654,7 @@ void WebLoaderStrategy::scheduleLoadFromNetworkProcess(ResourceLoader& resourceL
     std::optional<NetworkResourceLoadIdentifier> existingNetworkResourceLoadIdentifierToResume;
     if (loadParameters.isMainFrameNavigation)
         existingNetworkResourceLoadIdentifierToResume = std::exchange(m_existingNetworkResourceLoadIdentifierToResume, std::nullopt);
-    WEBLOADERSTRATEGY_RELEASE_LOG_FORWARDABLE(WEBLOADERSTRATEGY_SCHEDULELOAD_RESOURCE_SCHEDULED_WITH_NETWORKPROCESS, static_cast<int>(resourceLoader.request().priority()), existingNetworkResourceLoadIdentifierToResume ? existingNetworkResourceLoadIdentifierToResume->toUInt64() : 0);
+    WEBLOADERSTRATEGY_RELEASE_LOG_FORWARDABLE(WebLoaderStrategyScheduleLoadResourceScheduledWithNetworkProcess, static_cast<int>(resourceLoader.request().priority()), existingNetworkResourceLoadIdentifierToResume ? existingNetworkResourceLoadIdentifierToResume->toUInt64() : 0);
 
     loadParameters.isInitiatedByDedicatedWorker = resourceLoader.options().initiatorContext == InitiatorContext::Worker && std::holds_alternative<std::monostate>(resourceLoader.options().workerIdentifier);
     if (WebProcess::singleton().ensureNetworkProcessConnection().connection().send(Messages::NetworkConnectionToWebProcess::ScheduleResourceLoad(WTF::move(loadParameters), existingNetworkResourceLoadIdentifierToResume), 0) != IPC::Error::NoError) {

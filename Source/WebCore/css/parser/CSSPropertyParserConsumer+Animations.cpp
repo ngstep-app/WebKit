@@ -27,16 +27,19 @@
 #include "CSSPropertyParserConsumer+Animations.h"
 
 #include "CSSCalcSymbolTable.h"
+#include "CSSCustomIdentValue.h"
 #include "CSSParserContext.h"
 #include "CSSParserIdioms.h"
 #include "CSSParserTokenRange.h"
 #include "CSSPrimitiveValue.h"
 #include "CSSPropertyParser.h"
-#include "CSSPropertyParserConsumer+CSSPrimitiveValueResolver.h"
 #include "CSSPropertyParserConsumer+Ident.h"
+#include "CSSPropertyParserConsumer+MetaConsumer.h"
 #include "CSSPropertyParserConsumer+PercentageDefinitions.h"
 #include "CSSPropertyParserConsumer+Timeline.h"
 #include "CSSPropertyParserState.h"
+#include "CSSStringValue.h"
+#include "StylePrimitiveNumericTypes+DeprecatedConversions.h"
 
 namespace WebCore {
 namespace CSSPropertyParserHelpers {
@@ -48,12 +51,12 @@ Vector<std::pair<CSSValueID, double>> consumeKeyframeKeyList(CSSParserTokenRange
 
     enum class RestrictedToZeroToHundredRange : bool { No, Yes };
     auto consumeAndConvertPercentage = [&](CSSParserTokenRange& range, RestrictedToZeroToHundredRange restricted) -> std::optional<double> {
-        // FIXME: We use resolveAsPercentageDeprecated() to deal with calc() and % values.
+        // FIXME: We use Style::deprecatedToStyle() to deal with calc() and % values.
         // We will eventually want to return a CSS value that can be kept as-is on a
         // BlendingKeyframe so that resolution happens when we have the necessary context
         // when the keyframes are associated with a target element.
-        if (auto percentageValue = CSSPrimitiveValueResolver<CSS::Percentage<>>::consumeAndResolve(range, state)) {
-            auto resolvedPercentage = percentageValue->resolveAsPercentageDeprecated();
+        if (auto percentageValue = MetaConsumer<CSS::Percentage<>>::consume(range, state)) {
+            auto resolvedPercentage = Style::deprecatedToStyle(*percentageValue).value;
             if (restricted == RestrictedToZeroToHundredRange::No)
                 return resolvedPercentage / 100;
             if (resolvedPercentage >= 0 && resolvedPercentage <= 100)
@@ -63,10 +66,7 @@ Vector<std::pair<CSSValueID, double>> consumeKeyframeKeyList(CSSParserTokenRange
     };
 
     auto timelineRange = [&](CSSParserTokenRange& range, CSSValueID id) -> std::optional<std::pair<CSSValueID, double>> {
-        if (CSSPropertyParserHelpers::isAnimationRangeKeyword(id)) {
-            // "normal" will be considered valid by isAnimationRangeKeyword() but is not valid for a @keyframes rule.
-            if (id == CSSValueNormal)
-                return { };
+        if (CSSPropertyParserHelpers::isTimelineRangeName(id)) {
             if (auto convertedPercentage = consumeAndConvertPercentage(range, RestrictedToZeroToHundredRange::No))
                 return { { id, *convertedPercentage } };
         }
@@ -122,7 +122,7 @@ Vector<std::pair<CSSValueID, double>> parseKeyframeKeyList(const String& string,
     return result;
 }
 
-RefPtr<CSSValue> consumeKeyframesName(CSSParserTokenRange& range, CSS::PropertyParserState&)
+RefPtr<CSSValue> consumeKeyframesName(CSSParserTokenRange& range, CSS::PropertyParserState& state)
 {
     // <keyframes-name> = <custom-ident> | <string>
     // https://drafts.csswg.org/css-animations/#typedef-keyframes-name
@@ -135,11 +135,11 @@ RefPtr<CSSValue> consumeKeyframesName(CSSParserTokenRange& range, CSS::PropertyP
 
         auto valueId = cssValueKeywordID(token.value());
         if (isValidCustomIdentifier(valueId) && valueId != CSSValueNone)
-            return CSSPrimitiveValue::createCustomIdent(token.value().toString());
-        return CSSPrimitiveValue::create(token.value().toString());
+            return CSSCustomIdentValue::create(CSS::CustomIdent { token.value().toAtomString() });
+        return CSSStringValue::create(CSS::String { token.value().toString() });
     }
 
-    return consumeCustomIdent(range);
+    return consumeCustomIdent(range, state);
 }
 
 } // namespace CSSPropertyParserHelpers

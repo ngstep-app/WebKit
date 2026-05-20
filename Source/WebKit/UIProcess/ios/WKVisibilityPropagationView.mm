@@ -31,8 +31,13 @@
 #import "AuxiliaryProcessProxy.h"
 #import "ExtensionKitSPI.h"
 #import "Logging.h"
+#import "UIKitSPI.h"
 #import <wtf/RetainPtr.h>
 #import <wtf/WeakPtr.h>
+
+#if PLATFORM(IOS_FAMILY)
+#import "UIKitSPI.h"
+#endif
 
 namespace WebKit {
 #if USE(EXTENSIONKIT)

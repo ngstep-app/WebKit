@@ -23,7 +23,6 @@
 
 import argparse
 import fnmatch
-import hashlib
 import os
 import re
 import sys
@@ -40,15 +39,20 @@ def log(args, text):
         print(text, file=sys.stderr)
 
 
+def sanitize(s: str) -> str:
+    return re.sub(r'[^A-Za-z0-9]+', '-', s).strip('-') or 'root'
+
+
 def bundle_prefix_and_size_for_path(path: Path, args) -> tuple[str, int]:
     top_level_directory = path.parent
     # Walk up until the parent's parent equals the parent (i.e., we're at a single-component path)
     while top_level_directory.parent.parent != top_level_directory.parent:
         top_level_directory = top_level_directory.parent
     for filt in args.dense_bundle_filter:
-        if fnmatch.fnmatch(path, filt):
-            return filt, MAX_DENSE_BUNDLE_SIZE
-    return str(top_level_directory), args.max_bundle_size
+        pattern, _, name = filt.partition('=')
+        if fnmatch.fnmatch(path, pattern):
+            return name or sanitize(pattern), MAX_DENSE_BUNDLE_SIZE
+    return sanitize(str(top_level_directory)), args.max_bundle_size
 
 
 @dataclass(init=False)
@@ -62,6 +66,7 @@ class SourceFile:
         self.unifiable = True
         self.file_index = file_index
         self._non_arc = False
+        self._header_group: Optional[str] = None
         self._derived: Optional[bool] = None
         self._args = args
 
@@ -74,6 +79,8 @@ class SourceFile:
                     self.unifiable = False
                 elif attribute == 'nonARC':
                     self._non_arc = True
+                elif attribute.startswith('header:'):
+                    self._header_group = attribute[7:]
                 else:
                     raise RuntimeError("unknown attribute: " + attribute)
             file_line = file_line[:attribute_start]
@@ -87,6 +94,9 @@ class SourceFile:
                 self.bundle_manager_key = '.nonARC-mm'
             else:
                 raise RuntimeError("used @nonARC with source file that does not have a .mm extension")
+        if self._header_group:
+            ext = self.path.suffix.lstrip('.')
+            self.bundle_manager_key = f'.header-{self._header_group}-{ext}'
 
     def sort_key(self):
         return self.path.parent.parts, self.file_index, self.path.name
@@ -118,8 +128,8 @@ class BundleManager:
         self.current_bundle_text = ""
         self.max_count = max_count
         self.extra_files: list[str] = []
-        self._current_directory: Optional[Path] = None
         self._last_bundling_prefix: Optional[str] = None
+        self._bundle_count_by_prefix: dict[str, int] = {}
         self._args = args
         self._generated_sources = generated_sources
         self._output_sources = output_sources
@@ -137,9 +147,7 @@ class BundleManager:
         if self.max_count is not None:
             id_str = str(self.bundle_count)
         else:
-            assert self._current_directory is not None, 'flush() without adding any files'
-            hash_val = hashlib.sha1(bytes(self._current_directory)).hexdigest()[:8]
-            id_str = "-{}-{}".format(hash_val, self.bundle_count)
+            id_str = "-{}-{}".format(self._last_bundling_prefix, self.bundle_count)
         return "{}UnifiedSource{}{}".format(self._args.bundle_filename_prefix, id_str, self.suffix)
 
     def flush(self) -> None:
@@ -163,12 +171,14 @@ class BundleManager:
         bundle_prefix, bundle_size = bundle_prefix_and_size_for_path(path, self._args)
         if self._last_bundling_prefix != bundle_prefix:
             if self.file_count != 0:
-                log(self._args, "Flushing because new top level directory; old: {}, new: {}".format(self._current_directory, path.parent))
+                log(self._args, "Flushing because new top level directory; old: {}, new: {}".format(self._last_bundling_prefix, bundle_prefix))
                 self.flush()
-            self._last_bundling_prefix = bundle_prefix
-            self._current_directory = path.parent
+            # Note: Files are not always listed in folder order in Sources.txt, or across Sources.txt + SourcesXXX.txt.
             if self.max_count is None:
-                self.bundle_count = 0
+                if self._last_bundling_prefix is not None:
+                    self._bundle_count_by_prefix[self._last_bundling_prefix] = self.bundle_count
+                self.bundle_count = self._bundle_count_by_prefix.get(bundle_prefix, 0)
+            self._last_bundling_prefix = bundle_prefix
         if self.file_count >= bundle_size:
             log(self._args, "Flushing because new bundle is full ({} sources)".format(self.file_count))
             self.flush()
@@ -222,10 +232,13 @@ def parse_args():
                         help='Use global sequential numbers for Obj-C bundle filenames and set the limit on the number.')
     parser.add_argument('--max-non-arc-obj-c-bundle-count', type=int, default=None,
                         help='Use global sequential numbers for non-ARC Obj-C bundle filenames and set the limit on the number.')
+    parser.add_argument('--max-header-bundle-count', type=int, default=None,
+                        help='Use global sequential numbers for header-grouped bundle filenames and set the limit on the number.')
     parser.add_argument('--max-bundle-size', type=int, default=8,
                         help='The number of files to merge into a single bundle (default: 8).')
     parser.add_argument('--dense-bundle-filter', action='append', default=[],
-                        help='Densely bundle files matching the given path glob (repeatable).')
+                        help='Densely bundle files matching the given path glob (repeatable). '
+                             'Use GLOB=NAME to set the bundle filename tag explicitly.')
     parser.add_argument('--bundle-filename-prefix', default='',
                         help='Prefix for generated bundle filenames.')
     parser.add_argument('source_files', nargs='+', metavar='sources-list-file',
@@ -303,6 +316,19 @@ def main() -> None:
 
         log(args, "Found {} source files in {}".format(len(result), path))
         source_files.extend(result)
+
+    # Create BundleManagers for any @header: groups discovered in source files.
+    header_keys_seen = set()
+    for sf in source_files:
+        if sf._header_group:
+            header_keys_seen.add(sf.bundle_manager_key)
+    for key in sorted(header_keys_seen):
+        # Extract extension from key like '.header-RenderStyleGetters-cpp'
+        parts = key.split('-')
+        ext = parts[-1]  # 'cpp' or 'mm'
+        header_group = '-'.join(parts[1:-1])  # 'RenderStyleGetters'
+        suffix = f'-header-{header_group}.{ext}'
+        bundle_managers[key] = BundleManager(ext, suffix, args.max_header_bundle_count, args, generated_sources, output_sources)
 
     log(args, "Found sources: {}".format(sorted(source_files, key=SourceFile.sort_key)))
 

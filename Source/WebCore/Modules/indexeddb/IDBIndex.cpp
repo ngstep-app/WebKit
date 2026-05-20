@@ -38,7 +38,6 @@
 #include "IDBRequest.h"
 #include "IDBTransaction.h"
 #include "Logging.h"
-#include "Settings.h"
 #include "WebCoreOpaqueRoot.h"
 #include <JavaScriptCore/HeapInlines.h>
 #include <wtf/TZoneMallocInlines.h>
@@ -152,7 +151,7 @@ void IDBIndex::rollbackInfoForVersionChangeAbort()
     m_deleted = false;
 }
 
-ExceptionOr<Ref<IDBRequest>> IDBIndex::doOpenCursor(IDBCursorDirection direction, Function<ExceptionOr<RefPtr<IDBKeyRange>>()>&& function)
+ExceptionOr<Ref<IDBRequest>> IDBIndex::doOpenCursor(IDBCursorDirection direction, NOESCAPE Function<ExceptionOr<RefPtr<IDBKeyRange>>()>&& function)
 {
     LOG(IndexedDB, "IDBIndex::openCursor");
     Ref transaction = m_objectStore->transaction();
@@ -196,7 +195,7 @@ ExceptionOr<Ref<IDBRequest>> IDBIndex::openCursor(JSGlobalObject& execState, JSV
     });
 }
 
-ExceptionOr<Ref<IDBRequest>> IDBIndex::doOpenKeyCursor(IDBCursorDirection direction, Function<ExceptionOr<RefPtr<IDBKeyRange>>()>&& function)
+ExceptionOr<Ref<IDBRequest>> IDBIndex::doOpenKeyCursor(IDBCursorDirection direction, NOESCAPE Function<ExceptionOr<RefPtr<IDBKeyRange>>()>&& function)
 {
     LOG(IndexedDB, "IDBIndex::openKeyCursor");
     Ref transaction = m_objectStore->transaction();
@@ -348,7 +347,7 @@ ExceptionOr<Ref<IDBRequest>> IDBIndex::doGetKey(ExceptionOr<IDBKeyRangeData> ran
 }
 
 // https://w3c.github.io/IndexedDB/#create-a-request-to-retrieve-multiple-items
-ExceptionOr<Ref<IDBRequest>> IDBIndex::doGetAllShared(IndexedDB::GetAllType getAllType, std::optional<uint32_t> count, Function<ExceptionOr<ParsedGetAllQueryOrOptions>()>&& function)
+ExceptionOr<Ref<IDBRequest>> IDBIndex::doGetAllShared(IndexedDB::GetAllType getAllType, NOESCAPE Function<ExceptionOr<ParsedGetAllQueryOrOptions>()>&& function)
 {
     String callingFunctionExceptionMessagePrefix;
     switch (getAllType) {
@@ -356,7 +355,10 @@ ExceptionOr<Ref<IDBRequest>> IDBIndex::doGetAllShared(IndexedDB::GetAllType getA
         callingFunctionExceptionMessagePrefix = "Failed to execute 'getAll' on IDBIdex': "_s;
         break;
     case IndexedDB::GetAllType::Keys:
-        callingFunctionExceptionMessagePrefix = "Failed to execute 'getAllValues' on IDBIdex': "_s;
+        callingFunctionExceptionMessagePrefix = "Failed to execute 'getAllKeys' on IDBIdex': "_s;
+        break;
+    case IndexedDB::GetAllType::Records:
+        callingFunctionExceptionMessagePrefix = "Failed to execute 'getAllRecords' on IDBIdex': "_s;
         break;
     }
 
@@ -376,65 +378,35 @@ ExceptionOr<Ref<IDBRequest>> IDBIndex::doGetAllShared(IndexedDB::GetAllType getA
     }
 
     auto parsedGetAllQueryOrOptions = exceptionOrParsedGetAllQueryOrOptions.releaseReturnValue();
-    if (parsedGetAllQueryOrOptions.count)
-        count = parsedGetAllQueryOrOptions.count;
 
-    return transaction->requestGetAllIndexRecords(*this, parsedGetAllQueryOrOptions.keyRange.get(), getAllType, count, parsedGetAllQueryOrOptions.cursorDirection);
+    return transaction->requestGetAllIndexRecords(*this, parsedGetAllQueryOrOptions.keyRange.get(), getAllType, parsedGetAllQueryOrOptions.count, parsedGetAllQueryOrOptions.cursorDirection);
 }
 
-ExceptionOr<Ref<IDBRequest>> IDBIndex::getAll(RefPtr<IDBKeyRange>&& range, std::optional<uint32_t> count)
+ExceptionOr<Ref<IDBRequest>> IDBIndex::getAll(JSGlobalObject& execState, JSValue queryOrOptions, std::optional<uint32_t> count)
 {
     LOG(IndexedDB, "IDBIndex::getAll");
 
-    return doGetAllShared(IndexedDB::GetAllType::Values, count, [range = WTF::move(range)]() {
-        return ParsedGetAllQueryOrOptions { range };
+    return doGetAllShared(IndexedDB::GetAllType::Values, [context = RefPtr { scriptExecutionContext() }, execState = &execState, queryOrOptions, count]() -> ExceptionOr<ParsedGetAllQueryOrOptions> {
+        return parseQueryOrOptions(*execState, context, queryOrOptions, count);
     });
 }
 
-ExceptionOr<Ref<IDBRequest>> IDBIndex::getAll(JSGlobalObject& execState, JSValue keyOrOptions, std::optional<uint32_t> count)
-{
-    LOG(IndexedDB, "IDBIndex::getAll");
-
-    return doGetAllShared(IndexedDB::GetAllType::Values, count, [context = RefPtr { scriptExecutionContext() }, execState = &execState, keyOrOptions, count]() -> ExceptionOr<ParsedGetAllQueryOrOptions> {
-        auto onlyResult = IDBKeyRange::only(*execState, keyOrOptions);
-        if (!onlyResult.hasException())
-            return ParsedGetAllQueryOrOptions { onlyResult.releaseReturnValue(), count };
-
-        if (!context || !context->settingsValues().indexedDBGetAllRecordsEnabled)
-            return Exception(ExceptionCode::DataError, "Failed to execute 'getAll' on 'IDBIndex': The parameter is not a valid key."_s);
-
-        return parseGetAllOptions(*execState, keyOrOptions);
-    });
-}
-
-ExceptionOr<Ref<IDBRequest>> IDBIndex::getAllKeys(RefPtr<IDBKeyRange>&& range, std::optional<uint32_t> count)
+ExceptionOr<Ref<IDBRequest>> IDBIndex::getAllKeys(JSGlobalObject& execState, JSValue queryOrOptions, std::optional<uint32_t> count)
 {
     LOG(IndexedDB, "IDBIndex::getAllKeys");
 
-    return doGetAllShared(IndexedDB::GetAllType::Keys, count, [range = WTF::move(range)]() {
-        return ParsedGetAllQueryOrOptions { range };
+    return doGetAllShared(IndexedDB::GetAllType::Keys, [context = RefPtr { scriptExecutionContext() }, execState = &execState, queryOrOptions, count]() -> ExceptionOr<ParsedGetAllQueryOrOptions> {
+        return parseQueryOrOptions(*execState, context, queryOrOptions, count);
     });
 }
 
-ExceptionOr<Ref<IDBRequest>> IDBIndex::getAllKeys(JSGlobalObject& execState, JSValue keyOrOptions, std::optional<uint32_t> count)
+ExceptionOr<Ref<IDBRequest>> IDBIndex::getAllRecords(JSGlobalObject& execState, IDBGetAllOptions&& options)
 {
-    LOG(IndexedDB, "IDBIndex::getAllKeys");
+    LOG(IndexedDB, "IDBIndex::getAllRecords");
 
-    return doGetAllShared(IndexedDB::GetAllType::Keys, count, [context = RefPtr { scriptExecutionContext() }, execState = &execState, keyOrOptions, count]() -> ExceptionOr<ParsedGetAllQueryOrOptions> {
-        auto onlyResult = IDBKeyRange::only(*execState, keyOrOptions);
-        if (!onlyResult.hasException())
-            return ParsedGetAllQueryOrOptions { onlyResult.releaseReturnValue(), count };
-
-        if (!context || !context->settingsValues().indexedDBGetAllRecordsEnabled)
-            return Exception(ExceptionCode::DataError, "Failed to execute 'getAllKeys' on 'IDBIndex': The parameter is not a valid key."_s);
-
-        return parseGetAllOptions(*execState, keyOrOptions);
+    return doGetAllShared(IndexedDB::GetAllType::Records, [execState = &execState, options]() -> ExceptionOr<ParsedGetAllQueryOrOptions> {
+        return parseGetAllOptions(*execState, options);
     });
-}
-
-ExceptionOr<Ref<IDBRequest>> IDBIndex::getAllRecords(JSGlobalObject&, IDBGetAllOptions&&)
-{
-    return Exception { ExceptionCode::NotSupportedError, "getAllRecords is not yet supported"_s };
 }
 
 void IDBIndex::markAsDeleted()

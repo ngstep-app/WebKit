@@ -242,6 +242,10 @@ static SDKAlignedBehaviors computeSDKAlignedBehaviors()
     if (linkedBefore(dyld_2025_SU_B_os_versions, DYLD_IOS_VERSION_26_1, DYLD_MACOSX_VERSION_26_1))
         disableBehavior(SDKAlignedBehavior::GetBoundingClientRectZoomed);
 
+    // This should be disabled unconditionally until WTF::String is made thread-safe. See the comment in UserScript.cpp.
+    // It's only enabled for clients that purposely enable all LOOA checks.
+    disableBehavior(SDKAlignedBehavior::EnableUserScriptAndUserStyleInterning);
+
     disableAdditionalSDKAlignedBehaviors(behaviors);
 
     return behaviors;
@@ -424,6 +428,8 @@ bool CocoaApplication::shouldOSFaultLogForAppleApplicationUsingWebKit1()
         if (bundleIdentifier.startsWith("com.apple.InstallerRemotePluginService."_s))
             return false;
         if (applicationBundleIsEqualTo("com.apple.WebKit.TestWebKitAPI"_s))
+            return false;
+        if (applicationBundleIsEqualTo("com.apple.dt.Xcode"_s))
             return false;
         if (applicationBundleIsEqualTo("com.apple.ibtool"_s))
             return false;
@@ -640,6 +646,18 @@ bool IOSApplication::isHimalaya()
 {
     static bool isHimalayaApp = applicationBundleIsEqualTo("com.gemd.iting"_s);
     return isHimalayaApp;
+}
+
+bool IOSApplication::isTableau()
+{
+    static bool isTableau = applicationBundleIdentifier().startsWith("com.tableausoftware"_s);
+    return isTableau;
+}
+
+bool IOSApplication::isTubular()
+{
+    static bool isTubular = applicationBundleIdentifier().startsWith("com.aaronbrannan.youtubeAVP"_s);
+    return isTubular;
 }
 
 #endif // PLATFORM(IOS_FAMILY)

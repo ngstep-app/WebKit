@@ -31,22 +31,31 @@
 
 #import "Mesh.h"
 #import "ModelInlineConverters.h"
+#import "ModelProcessModelPlayerTransformState.h"
 #import "ModelTypes.h"
 #import "RemoteGPUProxy.h"
+#import "RemoteMeshProxy.h"
 #import "WKStageModeOrbitSimulator.h"
-#import "WebKitSwiftSoftLink.h"
 #import <WebCore/Document.h>
+#import <WebCore/DocumentEventLoop.h>
 #import <WebCore/FloatPoint3D.h>
 #import <WebCore/GPU.h>
 #import <WebCore/GraphicsLayer.h>
 #import <WebCore/GraphicsLayerContentsDisplayDelegate.h>
 #import <WebCore/HTMLModelElement.h>
+#import <WebCore/ModelPlayerAnimationState.h>
 #import <WebCore/ModelPlayerGraphicsLayerConfiguration.h>
+#import <WebCore/ModelPlayerTransformState.h>
 #import <WebCore/Navigator.h>
 #import <WebCore/Page.h>
 #import <WebCore/PlatformCALayer.h>
 #import <WebCore/PlatformCALayerDelegatedContents.h>
+#import <WebCore/PlatformScreen.h>
+#import <WebCore/ScreenProperties.h>
 #import <wtf/RetainPtr.h>
+#import <wtf/threads/BinarySemaphore.h>
+
+#import "WebKitSwiftSoftLink.h"
 
 #if PLATFORM(COCOA)
 #import <Metal/Metal.h>
@@ -77,11 +86,8 @@ public:
         } else
             layer.clearContents();
 
-        layer.setNeedsDisplay();
-
         if (RefPtr player = m_modelPlayer.get())
-            player->update();
-
+            player->scheduleUpdateIfNeeded();
     }
     WebCore::GraphicsLayer::CompositingCoordinatesOrientation orientation() const final
     {
@@ -137,13 +143,11 @@ WebModelPlayer::WebModelPlayer(WebCore::Page& page, WebCore::ModelPlayerClient& 
 {
 }
 
-WebModelPlayer::~WebModelPlayer()
-{
-}
+WebModelPlayer::~WebModelPlayer() = default;
 
 void WebModelPlayer::ensureOnMainThreadWithProtectedThis(Function<void(Ref<WebModelPlayer>)>&& task)
 {
-    ensureOnMainThread([protectedThis = Ref { *this }, task = WTF::move(task)]() mutable {
+    ensureOnMainThread([protectedThis = protect(*this), task = WTF::move(task)]() mutable {
         task(protectedThis);
     });
 }
@@ -161,95 +165,18 @@ static Vector<uint8_t> loadData(RetainPtr<CFStringRef> filename)
     return makeVector(data.get());
 }
 
-static MTLPixelFormat computePixelFormat(size_t bytesPerComponent, size_t channelCount)
-{
-    switch (bytesPerComponent) {
-    default:
-    case 1:
-        switch (channelCount) {
-        case 1:
-            return MTLPixelFormatR8Unorm;
-        case 2:
-            return MTLPixelFormatRG8Unorm;
-        case 4:
-        default:
-            return MTLPixelFormatRGBA8Unorm;
-        }
-    case 2:
-        switch (channelCount) {
-        case 1:
-            return MTLPixelFormatR16Float;
-        case 2:
-            return MTLPixelFormatRG16Float;
-        case 4:
-        default:
-            return MTLPixelFormatRGBA16Float;
-        }
-    case 4:
-        switch (channelCount) {
-        case 1:
-            return MTLPixelFormatR32Float;
-        case 2:
-            return MTLPixelFormatRG32Float;
-        case 4:
-        default:
-            return MTLPixelFormatRGBA32Float;
-        }
-    }
-}
-
-static std::optional<WebModel::ImageAsset> loadIBL(Ref<WebCore::SharedBuffer>&& data)
-{
-    RetainPtr imageAssetData = data->createNSData();
-    RetainPtr imageSource = adoptCF(CGImageSourceCreateWithData((CFDataRef)imageAssetData.get(), nullptr));
-    if (!imageSource) {
-        ASSERT_NOT_REACHED();
-        return std::nullopt;
-    }
-
-    RetainPtr platformImage = adoptCF(CGImageSourceCreateImageAtIndex(imageSource.get(), 0, nullptr));
-    if (!platformImage) {
-        ASSERT_NOT_REACHED();
-        return std::nullopt;
-    }
-
-    RetainPtr pixelDataCfData = adoptCF(CGDataProviderCopyData(CGImageGetDataProvider(platformImage.get())));
-    auto byteSpan = span(pixelDataCfData.get());
-
-    auto width = CGImageGetWidth(platformImage.get());
-    auto height = CGImageGetHeight(platformImage.get());
-    auto bytesPerPixel = static_cast<size_t>(byteSpan.size() / (width * height));
-    auto bytesPerComponent = CGImageGetBitsPerComponent(platformImage.get()) / 8;
-
-    MTLPixelFormat pixelFormat = computePixelFormat(bytesPerComponent, bytesPerPixel / bytesPerComponent);
-
-    return WebModel::ImageAsset {
-        .data = Vector<uint8_t> { byteSpan },
-        .width = static_cast<long>(width),
-        .height = static_cast<long>(height),
-        .depth = 1,
-        .bytesPerPixel = static_cast<long>(bytesPerPixel),
-        .textureType = WebCore::WebGPU::TextureViewDimension::_2d,
-        .pixelFormat = toTextureFormat(pixelFormat),
-        .mipmapLevelCount = 1,
-        .arrayLength = 1,
-        .textureUsage = WebCore::WebGPU::TextureUsage::TextureBinding,
-        .swizzle = WebModel::ImageAssetSwizzle {
-            .red = MTLTextureSwizzleRed,
-            .green = MTLTextureSwizzleGreen,
-            .blue = MTLTextureSwizzleBlue,
-            .alpha = MTLTextureSwizzleAlpha
-        }
-    };
-}
-
 // MARK: - ModelPlayer overrides.
 
 void WebModelPlayer::load(WebCore::Model& modelSource, WebCore::LayoutSize size)
 {
     RefPtr corePage = m_page.get();
+    if (!corePage)
+        return;
     m_modelLoader = nil;
     m_didFinishLoading = false;
+    m_renderTextureIndex = 0;
+    m_displayTextureIndex = 0;
+    m_isUpdateLoopRunning = false;
     RefPtr document = corePage->localTopDocument();
     if (!document)
         return;
@@ -266,50 +193,32 @@ void WebModelPlayer::load(WebCore::Model& modelSource, WebCore::LayoutSize size)
     size.scale(document->deviceScaleFactor());
     m_currentPixelSize = WebCore::IntSize(size.width().toUnsigned(), size.height().toUnsigned());
 
-    WebModel::ImageAsset diffuseTexture {
-        .data = loadData(adoptCF(static_cast<CFStringRef>(@"modelDefaultDiffuseData"))),
-        .width = 64,
-        .height = 64,
-        .depth = 1,
-        .bytesPerPixel = 2,
-        .textureType = WebCore::WebGPU::TextureViewDimension::Cube,
-        .pixelFormat = WebCore::WebGPU::TextureFormat::R16float,
-        .mipmapLevelCount = 0,
-        .arrayLength = 6,
-        .textureUsage = WebCore::WebGPU::TextureUsage::TextureBinding,
-        .swizzle = { }
-    };
-    WebModel::ImageAsset specularTexture {
-        .data = loadData(adoptCF(static_cast<CFStringRef>(@"modelDefaultSpecularData"))),
-        .width = 256,
-        .height = 256,
-        .depth = 1,
-        .bytesPerPixel = 2,
-        .textureType = WebCore::WebGPU::TextureViewDimension::Cube,
-        .pixelFormat = WebCore::WebGPU::TextureFormat::R16float,
-        .mipmapLevelCount = 0,
-        .arrayLength = 6,
-        .textureUsage = WebCore::WebGPU::TextureUsage::TextureBinding,
-        .swizzle = { }
-    };
+    WEBMODEL_WEB_MODEL_PLAYER_DECLARE_DIFFUSE_AND_SPECULAR_TEXTURES
 
-    m_currentModel = static_cast<RemoteGPUProxy&>(gpu->backing()).createModelBacking(m_currentPixelSize.width(), m_currentPixelSize.height(), diffuseTexture, specularTexture, [protectedThis = Ref { *this }] (Vector<MachSendRight>&& surfaceHandles) {
+    m_currentModel = static_cast<RemoteGPUProxy&>(gpu->backing()).createModelBacking(m_currentPixelSize.width(), m_currentPixelSize.height(), diffuseTexture, specularTexture, [protectedThis = protect(*this)] (Vector<MachSendRight>&& surfaceHandles) {
         if (surfaceHandles.size())
             protectedThis->m_displayBuffers = WTF::move(surfaceHandles);
     });
+    if (!m_currentModel)
+        return;
     m_currentModel->setViewportSize(cssSize.width().toFloat(), cssSize.height().toFloat());
 
-    m_modelLoader = adoptNS([allocWKBridgeModelLoaderInstance() init]);
-    Ref protectedThis = Ref { *this };
-    [m_modelLoader setCallbacksWithModelUpdatedCallback:^(WKBridgeUpdateMesh *updateRequest) {
+    m_modelLoader = adoptNS([allocWKBridgeModelLoaderInstance() initWithGPUFamily:MTLGPUFamilyApple7]);
+    Ref protectedThis { *this };
+    [m_modelLoader setCallbacksWithModelUpdatedCallback:^(NSArray<WKBridgeUpdateMesh *> *updateRequest) {
         ensureOnMainThreadWithProtectedThis([updateRequest] (Ref<WebModelPlayer> protectedThis) {
             RefPtr model = protectedThis->m_currentModel;
             if (model) {
-                model->update(toCpp(updateRequest));
+                model->update(makeVector(updateRequest, [](WKBridgeUpdateMesh *update) {
+                    return std::optional { convert(update) };
+                }));
                 protectedThis->setStageMode(protectedThis->m_stageMode);
             }
 
             [protectedThis->m_modelLoader requestCompleted:updateRequest];
+
+            if (!model)
+                return;
 
             if (RefPtr client = protectedThis->m_client.get(); client && !protectedThis->m_didFinishLoading) {
                 protectedThis->m_didFinishLoading = true;
@@ -320,28 +229,40 @@ void WebModelPlayer::load(WebCore::Model& modelSource, WebCore::LayoutSize size)
                 client->didUpdateBoundingBox(protectedThis.get(), WebCore::FloatPoint3D(simdCenter.x, simdCenter.y, simdCenter.z), WebCore::FloatPoint3D(simdExtents.x, simdExtents.y, simdExtents.z));
                 protectedThis->notifyEntityTransformUpdated();
 
-                auto environmentMap = protectedThis->m_environmentMap;
-                if (model && environmentMap) {
-                    if (auto environmentMapImage = loadIBL(WTF::move(*environmentMap))) {
-                        model->setEnvironmentMap(*environmentMapImage);
-                        protectedThis->m_environmentMap = std::nullopt;
-                    }
-                }
+                if (auto environmentMap = protectedThis->m_environmentMap)
+                    protectedThis->setEnvironmentMap(WTF::move(*environmentMap));
             }
+            protectedThis->startUpdateLoopIfNeeded();
         });
-    } textureUpdatedCallback:^(WKBridgeUpdateTexture *updateTexture) {
+    } textureUpdatedCallback:^(NSArray<WKBridgeUpdateTexture *> *updateTexture) {
         ensureOnMainThreadWithProtectedThis([updateTexture] (Ref<WebModelPlayer> protectedThis) {
             if (protectedThis->m_currentModel)
-                protectedThis->m_currentModel->updateTexture(toCpp(updateTexture));
+                protectedThis->m_currentModel->updateTexture(makeVector(updateTexture, [](WKBridgeUpdateTexture *update) {
+                    return std::optional { convert(update) };
+                }));
 
             [protectedThis->m_modelLoader requestCompleted:updateTexture];
+            protectedThis->startUpdateLoopIfNeeded();
         });
-    } materialUpdatedCallback:^(WKBridgeUpdateMaterial *updateMaterial) {
+    } materialUpdatedCallback:^(NSArray<WKBridgeUpdateMaterial *> *updateMaterial) {
         ensureOnMainThreadWithProtectedThis([updateMaterial] (Ref<WebModelPlayer> protectedThis) {
             if (protectedThis->m_currentModel)
-                protectedThis->m_currentModel->updateMaterial(toCpp(updateMaterial));
+                protectedThis->m_currentModel->updateMaterial(makeVector(updateMaterial, [](WKBridgeUpdateMaterial *update) {
+                    return std::optional { convert(update) };
+                }));
 
             [protectedThis->m_modelLoader requestCompleted:updateMaterial];
+            protectedThis->startUpdateLoopIfNeeded();
+        });
+    } processRemovalsCallback:^(WKBridgeRemovals *removals) {
+        ensureOnMainThreadWithProtectedThis([removals] (Ref<WebModelPlayer> protectedThis) {
+            if (protectedThis->m_currentModel) {
+                protectedThis->m_currentModel->processRemovals(convert<WKBridgeTypedResourceId, WebModel::TypedResourceId>(removals.meshRemovals), convert<WKBridgeTypedResourceId, WebModel::TypedResourceId>(removals.materialRemovals), convert<WKBridgeTypedResourceId, WebModel::TypedResourceId>(removals.textureRemovals), [] (bool) {
+                });
+            }
+
+            [protectedThis->m_modelLoader requestCompleted:removals];
+            protectedThis->startUpdateLoopIfNeeded();
         });
     }];
 
@@ -356,6 +277,7 @@ void WebModelPlayer::notifyEntityTransformUpdated()
     if (!model || !client || !model->entityTransform())
         return;
 
+    m_needsEntityTransformNotification = false;
     client->didUpdateEntityTransform(*this, WebCore::TransformationMatrix(static_cast<simd_float4x4>(*model->entityTransform())));
 }
 
@@ -380,14 +302,16 @@ void WebModelPlayer::sizeDidChange(WebCore::LayoutSize size)
 
     m_currentPixelSize = newPixelSize;
 
-    currentModel->sizeDidChange(newPixelSize.width(), newPixelSize.height(), [protectedThis = Ref { *this }](Vector<MachSendRight>&& newBuffers) {
+    currentModel->sizeDidChange(newPixelSize.width(), newPixelSize.height(), [protectedThis = protect(*this)](Vector<MachSendRight>&& newBuffers) {
         if (newBuffers.isEmpty())
             return;
 
         protectedThis->m_displayBuffers = WTF::move(newBuffers);
-        protectedThis->m_currentTexture = 0;
+        protectedThis->m_renderTextureIndex = 0;
+        protectedThis->m_displayTextureIndex = 0;
         if (protectedThis->m_contentsDisplayDelegate)
-            RefPtr { protectedThis->m_contentsDisplayDelegate }->setDisplayBuffer(*protectedThis->displayBuffer());
+            protect(protectedThis->m_contentsDisplayDelegate)->setDisplayBuffer(*protectedThis->displayBuffer());
+        protectedThis->startUpdateLoopIfNeeded();
     });
 
     if (RefPtr model = m_currentModel)
@@ -405,6 +329,7 @@ void WebModelPlayer::handleMouseDown(const WebCore::LayoutPoint& startingPoint, 
     if (!m_orbitSimulator)
         m_orbitSimulator = adoptNS([[WKStageModeOrbitSimulator alloc] init]);
     [m_orbitSimulator gestureDidBegin];
+    startUpdateLoopIfNeeded();
 }
 
 void WebModelPlayer::handleMouseMove(const WebCore::LayoutPoint& currentPoint, MonotonicTime)
@@ -412,7 +337,11 @@ void WebModelPlayer::handleMouseMove(const WebCore::LayoutPoint& currentPoint, M
     if (!m_initialPoint)
         return;
 
-    static constexpr float kDragToRotationMultiplier = 0.005;
+    static constexpr float kDefaultDragToRotationMultiplier = 0.005;
+    static float kDragToRotationMultiplier = [] {
+        auto factor = [[NSUserDefaults standardUserDefaults] floatForKey:@"WebKitModelDragToRotationMultiplier"];
+        return kDefaultDragToRotationMultiplier * (factor > 0 ? factor : 1.0f);
+    }();
 
     float totalDeltaX = static_cast<float>(m_initialPoint->x() - currentPoint.x()) * kDragToRotationMultiplier;
     float totalDeltaY = static_cast<float>(currentPoint.y() - m_initialPoint->y()) * kDragToRotationMultiplier;
@@ -422,10 +351,7 @@ void WebModelPlayer::handleMouseMove(const WebCore::LayoutPoint& currentPoint, M
         return;
 
     [orbitSimulator gestureDidUpdateWithDeltaX:totalDeltaX deltaY:totalDeltaY];
-    if (RefPtr model = m_currentModel) {
-        model->setRotation([orbitSimulator currentYaw], [orbitSimulator currentPitch]);
-        notifyEntityTransformUpdated();
-    }
+    startUpdateLoopIfNeeded();
 }
 
 bool WebModelPlayer::supportsMouseInteraction()
@@ -436,8 +362,10 @@ bool WebModelPlayer::supportsMouseInteraction()
 void WebModelPlayer::handleMouseUp(const WebCore::LayoutPoint&, MonotonicTime)
 {
     m_initialPoint = std::nullopt;
-    if (RetainPtr orbitSimulator = m_orbitSimulator)
+    if (RetainPtr orbitSimulator = m_orbitSimulator) {
         [orbitSimulator gestureDidEnd];
+        startUpdateLoopIfNeeded();
+    }
 }
 
 void WebModelPlayer::getCamera(CompletionHandler<void(std::optional<WebCore::HTMLModelElementCamera>&&)>&&)
@@ -480,18 +408,6 @@ void WebModelPlayer::setAnimationCurrentTime(Seconds, CompletionHandler<void(boo
 {
 }
 
-void WebModelPlayer::hasAudio(CompletionHandler<void(std::optional<bool>&&)>&&)
-{
-}
-
-void WebModelPlayer::isMuted(CompletionHandler<void(std::optional<bool>&&)>&&)
-{
-}
-
-void WebModelPlayer::setIsMuted(bool, CompletionHandler<void(bool success)>&&)
-{
-}
-
 void WebModelPlayer::updateScene()
 {
 }
@@ -506,87 +422,168 @@ WebCore::ModelPlayerIdentifier WebModelPlayer::identifier() const
     return m_id;
 }
 
+bool WebModelPlayer::isPlaceholder() const
+{
+    return !m_currentModel;
+}
+
 void WebModelPlayer::configureGraphicsLayer(WebCore::GraphicsLayer& graphicsLayer, WebCore::ModelPlayerGraphicsLayerConfiguration&& configuration)
 {
+    m_graphicsLayer = graphicsLayer;
     graphicsLayer.setContentsDisplayDelegate(contentsDisplayDelegate(), WebCore::GraphicsLayer::ContentsLayerPurpose::Canvas);
     if (RefPtr currentModel = m_currentModel) {
         auto backgroundColor = configuration.backgroundColor;
-        if (backgroundColor.isValid()) {
+        if (backgroundColor.isValid() && m_backgroundColor != backgroundColor) {
+            m_backgroundColor = backgroundColor;
             auto opaqueColor = backgroundColor.opaqueColor();
             auto [r, g, b, _a] = opaqueColor.toResolvedColorComponentsInColorSpace(WebCore::ColorSpace::LinearSRGB);
             currentModel->setBackgroundColor(simd_make_float3(r, g, b));
+            startUpdateLoopIfNeeded();
         }
     }
 }
 
 const MachSendRight* WebModelPlayer::displayBuffer() const
 {
-    if (m_currentTexture >= m_displayBuffers.size())
+    if (m_displayTextureIndex >= m_displayBuffers.size())
         return nullptr;
 
-    return &m_displayBuffers[m_currentTexture];
+    return &m_displayBuffers[m_displayTextureIndex];
 }
 
 WebCore::GraphicsLayerContentsDisplayDelegate* WebModelPlayer::contentsDisplayDelegate()
 {
-    if (!m_contentsDisplayDelegate) {
+    if (auto buffer = displayBuffer(); !m_contentsDisplayDelegate && buffer) {
         RefPtr modelDisplayDelegate = ModelDisplayBufferDisplayDelegate::create(*this);
         m_contentsDisplayDelegate = modelDisplayDelegate;
-        modelDisplayDelegate->setDisplayBuffer(*displayBuffer());
+        modelDisplayDelegate->setDisplayBuffer(*buffer);
     }
 
     return m_contentsDisplayDelegate.get();
 }
 
-void WebModelPlayer::simulate(float elapsedTime)
+bool WebModelPlayer::simulate(float elapsedTime)
 {
     RefPtr model = m_currentModel;
-    if (!model || !m_didFinishLoading)
-        return;
+    if (!model)
+        return false;
 
     RetainPtr orbitSimulator = m_orbitSimulator;
     if (!orbitSimulator)
-        return;
-    if ([orbitSimulator stepWithElapsedTime:elapsedTime]) {
-        model->setRotation([orbitSimulator currentYaw], [orbitSimulator currentPitch]);
-        notifyEntityTransformUpdated();
+        return false;
+
+    bool isGestureActive = m_initialPoint.has_value();
+    bool inertiaActive = [orbitSimulator stepWithElapsedTime:elapsedTime];
+    if (isGestureActive || inertiaActive) {
+        float yaw = [orbitSimulator currentYaw];
+        float pitch = [orbitSimulator currentPitch];
+        model->setRotation(yaw, pitch);
+        m_needsEntityTransformNotification = true;
+        return true;
     }
+    return false;
 }
 
 void WebModelPlayer::setPlaybackRate(double newRate, CompletionHandler<void(double effectivePlaybackRate)>&& completion)
 {
     m_playbackRate = newRate;
+    startUpdateLoopIfNeeded();
     completion(newRate);
+}
+
+void WebModelPlayer::startUpdateLoopIfNeeded()
+{
+    if (m_isUpdateLoopRunning)
+        return;
+    m_isUpdateLoopRunning = true;
+    scheduleUpdateIfNeeded();
+}
+
+void WebModelPlayer::scheduleUpdateIfNeeded()
+{
+    if (!m_isUpdateLoopRunning || m_isUpdateScheduled)
+        return;
+
+    RefPtr corePage = m_page.get();
+    if (!corePage)
+        return;
+
+    RefPtr document = corePage->localTopDocument();
+    if (!document)
+        return;
+
+    m_isUpdateScheduled = true;
+    document->eventLoop().queueTask(WebCore::TaskSource::ModelElement, [protectedThis = protect(*this)] {
+        protectedThis->m_isUpdateScheduled = false;
+        protectedThis->update();
+    });
 }
 
 void WebModelPlayer::update()
 {
+    if (!m_isUpdateLoopRunning || m_isUpdating)
+        return;
+
+    m_isUpdating = true;
+
     auto now = MonotonicTime::now();
     float elapsed = m_lastUpdateTime ? static_cast<float>((now - m_lastUpdateTime).seconds()) : (1.f / 60.f);
     float elapsedTime = std::clamp(elapsed, 1.f / 120.f, 1.f / 15.f);
     m_lastUpdateTime = now;
 
-    simulate(elapsedTime);
+    bool stageModeActive = simulate(elapsedTime);
+    bool isAtRest = paused() && !stageModeActive;
 
     auto timeDelta = paused() ? 0.f : (m_playbackRate * elapsedTime);
 
     [m_modelLoader update:timeDelta];
-
     if (!m_isLooping && !paused() && [m_modelLoader currentTime] >= [m_modelLoader duration])
         m_pauseState = PauseState::Paused;
 
-    if (m_didFinishLoading) {
-        if (RefPtr currentModel = m_currentModel)
-            currentModel->render();
+    if (!render())
+        m_isUpdating = false;
 
-        if (++m_currentTexture >= m_displayBuffers.size())
-            m_currentTexture = 0;
-        if (auto* machSendRight = displayBuffer(); machSendRight && contentsDisplayDelegate())
-            RefPtr { m_contentsDisplayDelegate }->setDisplayBuffer(*machSendRight);
-    }
+    if (isAtRest)
+        m_isUpdateLoopRunning = false;
 
-    if (RefPtr client = m_client.get())
-        client->didUpdate(*this);
+    if (m_needsEntityTransformNotification)
+        notifyEntityTransformUpdated();
+}
+
+bool WebModelPlayer::render()
+{
+    if (!m_didFinishLoading)
+        return false;
+
+    RefPtr currentModel = m_currentModel;
+    if (!currentModel)
+        return false;
+
+    uint32_t textureIndex = m_renderTextureIndex;
+    if (++m_renderTextureIndex >= m_displayBuffers.size())
+        m_renderTextureIndex = 0;
+
+    currentModel->render(textureIndex, [protectedThis = protect(*this), textureIndex] (bool result) mutable {
+        protectedThis->ensureOnMainThreadWithProtectedThis([result, textureIndex] (Ref<WebModelPlayer> protectedThis) {
+            protectedThis->m_isUpdating = false;
+            if (!result)
+                return;
+
+            protectedThis->m_displayTextureIndex = textureIndex;
+            if (auto* machSendRight = protectedThis->displayBuffer(); machSendRight && protectedThis->contentsDisplayDelegate())
+                protect(protectedThis->m_contentsDisplayDelegate)->setDisplayBuffer(*machSendRight);
+
+            protectedThis->scheduleDisplayUpdate();
+        });
+    });
+
+    return true;
+}
+
+void WebModelPlayer::scheduleDisplayUpdate()
+{
+    if (RefPtr graphicsLayer = m_graphicsLayer.get())
+        graphicsLayer->setContentsNeedsDisplay();
 }
 
 bool WebModelPlayer::supportsTransform(WebCore::TransformationMatrix transformationMatrix)
@@ -594,10 +591,7 @@ bool WebModelPlayer::supportsTransform(WebCore::TransformationMatrix transformat
     if (m_stageMode != WebCore::StageModeOperation::None)
         return false;
 
-    if (RefPtr currentModel = m_currentModel)
-        return currentModel->supportsTransform(transformationMatrix);
-
-    return false;
+    return RemoteMeshProxy::supportsTransform(transformationMatrix);
 }
 
 void WebModelPlayer::play(bool playing)
@@ -607,6 +601,8 @@ void WebModelPlayer::play(bool playing)
             [m_modelLoader setCurrentTime:0];
         model->play(playing);
         m_pauseState = playing ? PauseState::Playing : PauseState::Paused;
+        if (playing)
+            startUpdateLoopIfNeeded();
     }
 }
 
@@ -617,6 +613,7 @@ void WebModelPlayer::setLoop(bool loop)
 
     m_isLooping = loop;
     [m_modelLoader setLoop:loop];
+    startUpdateLoopIfNeeded();
 }
 
 void WebModelPlayer::setAutoplay(bool autoplay)
@@ -648,6 +645,7 @@ void WebModelPlayer::setCurrentTime(Seconds currentTime, CompletionHandler<void(
 {
     double clamped = std::clamp(currentTime.seconds(), 0.0, duration());
     [m_modelLoader setCurrentTime:clamped];
+    startUpdateLoopIfNeeded();
     completion();
 }
 
@@ -668,6 +666,7 @@ void WebModelPlayer::setStageMode(WebCore::StageModeOperation stageMode)
     if (RefPtr model = m_currentModel) {
         model->setStageMode(m_stageMode);
         notifyEntityTransformUpdated();
+        startUpdateLoopIfNeeded();
     }
 }
 
@@ -676,24 +675,166 @@ void WebModelPlayer::setEntityTransform(WebCore::TransformationMatrix matrix)
     if (RefPtr model = m_currentModel) {
         model->setEntityTransform(static_cast<simd_float4x4>(matrix));
         notifyEntityTransformUpdated();
+        startUpdateLoopIfNeeded();
     }
 }
 
 void WebModelPlayer::setEnvironmentMap(Ref<WebCore::SharedBuffer>&& data)
 {
     bool success = false;
-    if (RefPtr currentModel = m_currentModel; currentModel && m_didFinishLoading) {
-        if (auto environmentMap = loadIBL(WTF::move(data))) {
-            currentModel->setEnvironmentMap(*environmentMap);
+    if (RefPtr currentModel = m_currentModel; currentModel && m_didFinishLoading && m_modelLoader) {
+        if (auto environmentMap = [m_modelLoader loadEnvironmentMap:data->createNSData().get()]) {
+            currentModel->setEnvironmentMap(convert(environmentMap));
             m_environmentMap = std::nullopt;
         }
         success = true;
+        startUpdateLoopIfNeeded();
     } else
         m_environmentMap = WTF::move(data);
 
     if (RefPtr client = m_client.get())
         client->didFinishEnvironmentMapLoading(*this, success);
 }
+
+void WebModelPlayer::visibilityStateDidChange()
+{
+    // When the model becomes invisible, release memory-intensive resources.
+    // When it becomes visible again, HTMLModelElement will trigger a reload through startLoadModelTimer().
+    RefPtr client = m_client.get();
+    if (!client)
+        return;
+
+    if (!client->isVisible()) {
+        m_cachedAnimationState = currentAnimationState();
+        m_cachedTransformState = currentTransformState();
+
+        // Model is no longer visible - release resources to save memory
+        m_currentModel = nullptr;
+        m_retainedData = nil;
+        m_didFinishLoading = false;
+        m_modelLoader = nil;
+        m_displayBuffers.clear();
+        m_environmentMap = std::nullopt;
+        m_backgroundColor = std::nullopt;
+        m_isUpdateLoopRunning = false;
+        m_isUpdateScheduled = false;
+        m_isUpdating = false;
+    }
+}
+
+void WebModelPlayer::reload(WebCore::Model& modelSource, WebCore::LayoutSize size, WebCore::ModelPlayerAnimationState& animationState, std::unique_ptr<WebCore::ModelPlayerTransformState>&& transformState)
+{
+    load(modelSource, size);
+    if (transformState) {
+        if (auto entityTransform = transformState->entityTransform())
+            setEntityTransform(*entityTransform);
+    }
+
+    setAutoplay(animationState.autoplay());
+    setLoop(animationState.loop());
+    setPaused(animationState.paused(), [] (bool) { });
+    if (auto playbackRate = animationState.effectivePlaybackRate())
+        setPlaybackRate(*playbackRate, [] (double) { });
+    setCurrentTime(animationState.currentTime(), [] { });
+}
+
+std::optional<WebCore::ModelPlayerAnimationState> WebModelPlayer::currentAnimationState() const
+{
+    if (!m_currentModel)
+        return m_cachedAnimationState;
+
+    bool paused = m_pauseState != PauseState::Playing;
+    bool autoplay = !paused;
+    Seconds animationDuration { duration() };
+    std::optional<double> effectivePlaybackRate = m_playbackRate;
+    std::optional<Seconds> lastCachedCurrentTime = currentTime();
+    std::optional<MonotonicTime> lastCachedClockTimestamp = MonotonicTime::now();
+
+    return WebCore::ModelPlayerAnimationState(autoplay, m_isLooping, paused, animationDuration, effectivePlaybackRate, lastCachedCurrentTime, lastCachedClockTimestamp);
+}
+
+std::optional<std::unique_ptr<WebCore::ModelPlayerTransformState>> WebModelPlayer::currentTransformState() const
+{
+    if (!m_currentModel) {
+        if (m_cachedTransformState)
+            return (*m_cachedTransformState)->clone();
+        return std::nullopt;
+    }
+
+    std::optional<WebCore::TransformationMatrix> transform = entityTransform();
+
+    auto [simdCenter, simdExtents] = m_currentModel->getCenterAndExtents();
+    std::optional<WebCore::FloatPoint3D> center = WebCore::FloatPoint3D(simdCenter.x, simdCenter.y, simdCenter.z);
+    std::optional<WebCore::FloatPoint3D> extents = WebCore::FloatPoint3D(simdExtents.x, simdExtents.y, simdExtents.z);
+
+    return ModelProcessModelPlayerTransformState::create(transform, center, extents, false, m_stageMode);
+}
+
+#if HAVE(SUPPORT_HDR_DISPLAY) && ENABLE(PIXEL_FORMAT_RGBA16F)
+static float interpolateHeadroom(float headroomForLow, float headroomForHigh, float limit, float limitLow, float limitHigh)
+{
+    if (headroomForHigh <= headroomForLow || limitHigh <= limitLow)
+        return headroomForHigh;
+    return std::lerp(headroomForLow, headroomForHigh, (limit - limitLow) / (limitHigh - limitLow));
+}
+
+float WebModelPlayer::computeContentsHeadroom()
+{
+    if (m_currentEDRHeadroom <= 1.f)
+        return m_currentEDRHeadroom;
+
+    if (m_dynamicRangeLimit == WebCore::PlatformDynamicRangeLimit::noLimit())
+        return m_currentEDRHeadroom;
+
+    constexpr auto forcedStandardHeadroom = 1.0000001f;
+
+    if (m_dynamicRangeLimit == WebCore::PlatformDynamicRangeLimit::standard())
+        return forcedStandardHeadroom;
+
+    auto limitValue = m_dynamicRangeLimit.value();
+
+    if (m_suppressEDR) {
+        if (limitValue >= WebCore::PlatformDynamicRangeLimit::constrained().value())
+            return m_currentEDRHeadroom;
+        return interpolateHeadroom(forcedStandardHeadroom, m_currentEDRHeadroom, limitValue, WebCore::PlatformDynamicRangeLimit::standard().value(), WebCore::PlatformDynamicRangeLimit::constrained().value());
+    }
+
+    constexpr auto maxConstrainedHeadroom = 1.6f;
+    auto suppressedHeadroom = std::min(maxConstrainedHeadroom, m_currentEDRHeadroom);
+    if (limitValue <= WebCore::PlatformDynamicRangeLimit::constrained().value())
+        return interpolateHeadroom(forcedStandardHeadroom, suppressedHeadroom, limitValue, WebCore::PlatformDynamicRangeLimit::standard().value(), WebCore::PlatformDynamicRangeLimit::constrained().value());
+    return interpolateHeadroom(suppressedHeadroom, m_currentEDRHeadroom, limitValue, WebCore::PlatformDynamicRangeLimit::constrained().value(), WebCore::PlatformDynamicRangeLimit::noLimit().value());
+}
+
+void WebModelPlayer::updateContentsHeadroom()
+{
+    auto headroom = computeContentsHeadroom();
+    if (RefPtr model = m_currentModel)
+        model->updateContentsHeadroom(headroom);
+}
+
+void WebModelPlayer::setDynamicRangeLimit(WebCore::PlatformDynamicRangeLimit dynamicRangeLimit, float currentEDRHeadroom, bool suppressEDR)
+{
+    bool limitChanged = m_dynamicRangeLimit != dynamicRangeLimit;
+    bool headroomChanged = m_suppressEDR != suppressEDR || m_currentEDRHeadroom != currentEDRHeadroom;
+
+    if (!limitChanged && !headroomChanged)
+        return;
+
+    m_dynamicRangeLimit = dynamicRangeLimit;
+    m_currentEDRHeadroom = currentEDRHeadroom;
+    m_suppressEDR = suppressEDR;
+
+    updateContentsHeadroom();
+}
+
+std::optional<double> WebModelPlayer::getEffectiveDynamicRangeLimitValue() const
+{
+    auto limitValue = m_dynamicRangeLimit.value();
+    auto suppressValue = m_suppressEDR ? WebCore::PlatformDynamicRangeLimit::constrained().value() : WebCore::PlatformDynamicRangeLimit::noLimit().value();
+    return std::min(limitValue, suppressValue);
+}
+#endif
 
 }
 

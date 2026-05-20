@@ -33,9 +33,9 @@
 #include "BlendingKeyframes.h"
 #include "CSSCustomPropertyValue.h"
 #include "CSSFontSelector.h"
+#include "CSSKeywordValueInlines.h"
 #include "CSSKeyframeRule.h"
 #include "CSSKeyframesRule.h"
-#include "CSSPrimitiveValueMappings.h"
 #include "CSSPropertyNames.h"
 #include "CSSSelector.h"
 #include "CSSStyleRule.h"
@@ -78,6 +78,7 @@
 #include "StyleBuilder.h"
 #include "StyleEasingFunction.h"
 #include "StyleFontSizeFunctions.h"
+#include "StyleKeyword+Mappings.h"
 #include "StyleProperties.h"
 #include "StylePropertyShorthand.h"
 #include "StyleResolveForDocument.h"
@@ -451,10 +452,10 @@ std::unique_ptr<RenderStyle> Resolver::styleForKeyframe(Element& element, const 
     return state.takeStyle();
 }
 
-bool Resolver::isAnimationNameValid(const String& name) const
+bool Resolver::isAnimationNameValid(const AtomString& name) const
 {
-    return m_keyframesRuleMap.find(AtomString(name)) != m_keyframesRuleMap.end()
-        || userAgentKeyframes().find(AtomString(name)) != userAgentKeyframes().end();
+    return m_keyframesRuleMap.find(name) != m_keyframesRuleMap.end()
+        || userAgentKeyframes().find(name) != userAgentKeyframes().end();
 }
 
 Vector<Ref<StyleRuleKeyframe>> Resolver::keyframeRulesForName(const AtomString& animationName, const TimingFunction* defaultTimingFunction) const
@@ -646,7 +647,7 @@ std::unique_ptr<RenderStyle> Resolver::defaultStyleForElement(const Element* ele
     auto style = RenderStyle::createPtrWithRegisteredInitialValues(document().customPropertyRegistry());
 
     FontCascadeDescription fontDescription;
-    fontDescription.setOneFamily(standardFamily);
+    fontDescription.setOneFamily(WebCore::FontFamily { standardFamily, FontFamilyKind::Generic });
     fontDescription.setKeywordSizeFromIdentifier(CSSValueMedium);
 
     auto size = fontSizeForKeyword(CSSValueMedium, false, document());
@@ -756,7 +757,7 @@ void Resolver::applyMatchedProperties(State& state, const MatchResult& matchResu
     // High priority properties may affect resolution of other properties (they are mostly font related).
     builder.applyHighPriorityProperties();
 
-    if (cacheResult && !cacheResult->entry.isUsableAfterHighPriorityProperties(style)) {
+    if (hasUsableEntry && !cacheResult->entry.isUsableAfterHighPriorityProperties(style)) {
         // High-priority properties may affect resolution of other properties. Kick out the existing cache entry and try again.
         m_matchedDeclarationsCache.remove(cacheHash);
         applyMatchedProperties(state, matchResult, PropertyCascade::normalProperties());

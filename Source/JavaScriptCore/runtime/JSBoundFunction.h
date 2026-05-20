@@ -33,8 +33,6 @@ namespace JSC {
 JSC_DECLARE_HOST_FUNCTION(boundThisNoArgsFunctionCall);
 JSC_DECLARE_HOST_FUNCTION(boundFunctionCall);
 JSC_DECLARE_HOST_FUNCTION(boundFunctionConstruct);
-JSC_DECLARE_HOST_FUNCTION(isBoundFunction);
-JSC_DECLARE_HOST_FUNCTION(hasInstanceBoundFunction);
 
 class JSBoundFunction final : public JSFunction {
 public:
@@ -59,16 +57,16 @@ public:
     unsigned boundArgsLength() const { return m_boundArgsLength; }
     JSArray* boundArgsCopy(JSGlobalObject*);
     JSString* nameMayBeNull() LIFETIME_BOUND { return m_nameMayBeNull.get(); }
-    JSString* name()
+    JSString* name(VM& vm)
     {
         if (m_nameMayBeNull)
             return m_nameMayBeNull.get();
-        return nameSlow(vm());
+        return nameSlow(vm);
     }
-    String nameString()
+    String nameString(VM& vm)
     {
         if (!m_nameMayBeNull)
-            name();
+            name(vm);
         ASSERT(!m_nameMayBeNull->isRope());
         bool allocationAllowed = false;
         return m_nameMayBeNull->tryGetValue(allocationAllowed);
@@ -100,7 +98,7 @@ public:
     static constexpr ptrdiff_t offsetOfLength() { return OBJECT_OFFSETOF(JSBoundFunction, m_length); }
     static constexpr ptrdiff_t offsetOfCanConstruct() { return OBJECT_OFFSETOF(JSBoundFunction, m_canConstruct); }
 
-    void forEachBoundArg(const Invocable<IterationStatus(JSValue)> auto& func);
+    inline void forEachBoundArg(const Invocable<IterationStatus(JSValue)> auto& func);
 
     bool canConstruct()
     {

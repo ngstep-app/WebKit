@@ -96,7 +96,7 @@ auto CSSCustomPropertySyntax::parseComponent(std::span<const CharacterType> span
 
     auto multiplier = consumeMultiplier();
 
-    return Component { Type::CustomIdent, multiplier, ident };
+    return Component { Type::Ident, multiplier, ident };
 }
 
 std::optional<CSSCustomPropertySyntax> CSSCustomPropertySyntax::parse(StringView syntax)
@@ -126,8 +126,11 @@ std::optional<CSSCustomPropertySyntax> CSSCustomPropertySyntax::parse(StringView
 
             definition.append(*component);
 
-            skipExactly(buffer, '|');
-            skipWhile<isCSSSpace>(buffer);
+            if (skipExactly(buffer, '|')) {
+                skipWhile<isCSSSpace>(buffer);
+                if (!buffer.hasCharactersRemaining())
+                    return { };
+            }
         }
 
         if (definition.isEmpty())
@@ -182,7 +185,7 @@ bool CSSCustomPropertySyntax::containsUnknownType() const
 
 auto CSSCustomPropertySyntax::typeForTypeName(StringView dataTypeName) -> Type
 {
-    static constexpr SortedArrayMap typeMap { std::to_array<std::pair<ComparableASCIILiteral, Type>>({
+    static constexpr SortedArrayMap typeMap { WTF::toArray<std::pair<ComparableASCIILiteral, Type>>({
         { "angle"_s, Type::Angle },
         { "color"_s, Type::Color },
         { "custom-ident"_s, Type::CustomIdent },

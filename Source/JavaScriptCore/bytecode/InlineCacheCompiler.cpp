@@ -30,6 +30,7 @@
 
 #include "AccessCaseSnippetParams.h"
 #include "BaselineJITCode.h"
+#include "BaselineJITRegisters.h"
 #include "BinarySwitch.h"
 #include "CCallHelpers.h"
 #include "CacheableIdentifierInlines.h"
@@ -260,6 +261,7 @@ static bool NODELETE needsScratchFPR(AccessCase::AccessType type)
     case AccessCase::ScopedArgumentsLength:
     case AccessCase::RegExpLastIndexLoad:
     case AccessCase::RegExpLastIndexStore:
+    case AccessCase::ArrayLengthStore:
     case AccessCase::ModuleNamespaceLoad:
     case AccessCase::ProxyObjectIn:
     case AccessCase::ProxyObjectLoad:
@@ -292,6 +294,22 @@ static bool NODELETE needsScratchFPR(AccessCase::AccessType type)
     case AccessCase::IndexedResizableTypedArrayInt32Load:
     case AccessCase::IndexedStringLoad:
     case AccessCase::IndexedNoIndexingMiss:
+    case AccessCase::IndexedUndefinedKeyLoad:
+    case AccessCase::IndexedUndefinedKeyMiss:
+    case AccessCase::IndexedNullKeyLoad:
+    case AccessCase::IndexedNullKeyMiss:
+    case AccessCase::IndexedTrueKeyLoad:
+    case AccessCase::IndexedTrueKeyMiss:
+    case AccessCase::IndexedFalseKeyLoad:
+    case AccessCase::IndexedFalseKeyMiss:
+    case AccessCase::IndexedUndefinedKeyReplace:
+    case AccessCase::IndexedUndefinedKeyTransition:
+    case AccessCase::IndexedNullKeyReplace:
+    case AccessCase::IndexedNullKeyTransition:
+    case AccessCase::IndexedTrueKeyReplace:
+    case AccessCase::IndexedTrueKeyTransition:
+    case AccessCase::IndexedFalseKeyReplace:
+    case AccessCase::IndexedFalseKeyTransition:
     case AccessCase::IndexedInt32Store:
     case AccessCase::IndexedContiguousStore:
     case AccessCase::IndexedArrayStorageStore:
@@ -381,6 +399,7 @@ static bool NODELETE forInBy(AccessCase::AccessType type)
     case AccessCase::ScopedArgumentsLength:
     case AccessCase::RegExpLastIndexLoad:
     case AccessCase::RegExpLastIndexStore:
+    case AccessCase::ArrayLengthStore:
     case AccessCase::CheckPrivateBrand:
     case AccessCase::SetPrivateBrand:
     case AccessCase::IndexedMegamorphicLoad:
@@ -437,6 +456,22 @@ static bool NODELETE forInBy(AccessCase::AccessType type)
     case AccessCase::IndexedResizableTypedArrayFloat64Store:
     case AccessCase::IndexedStringLoad:
     case AccessCase::IndexedNoIndexingMiss:
+    case AccessCase::IndexedUndefinedKeyLoad:
+    case AccessCase::IndexedUndefinedKeyMiss:
+    case AccessCase::IndexedNullKeyLoad:
+    case AccessCase::IndexedNullKeyMiss:
+    case AccessCase::IndexedTrueKeyLoad:
+    case AccessCase::IndexedTrueKeyMiss:
+    case AccessCase::IndexedFalseKeyLoad:
+    case AccessCase::IndexedFalseKeyMiss:
+    case AccessCase::IndexedUndefinedKeyReplace:
+    case AccessCase::IndexedUndefinedKeyTransition:
+    case AccessCase::IndexedNullKeyReplace:
+    case AccessCase::IndexedNullKeyTransition:
+    case AccessCase::IndexedTrueKeyReplace:
+    case AccessCase::IndexedTrueKeyTransition:
+    case AccessCase::IndexedFalseKeyReplace:
+    case AccessCase::IndexedFalseKeyTransition:
     case AccessCase::InstanceOfMegamorphic:
     case AccessCase::Getter:
     case AccessCase::Setter:
@@ -507,6 +542,22 @@ static bool NODELETE isStateless(AccessCase::AccessType type)
     case AccessCase::CheckPrivateBrand:
     case AccessCase::SetPrivateBrand:
     case AccessCase::IndexedNoIndexingMiss:
+    case AccessCase::IndexedUndefinedKeyLoad:
+    case AccessCase::IndexedUndefinedKeyMiss:
+    case AccessCase::IndexedNullKeyLoad:
+    case AccessCase::IndexedNullKeyMiss:
+    case AccessCase::IndexedTrueKeyLoad:
+    case AccessCase::IndexedTrueKeyMiss:
+    case AccessCase::IndexedFalseKeyLoad:
+    case AccessCase::IndexedFalseKeyMiss:
+    case AccessCase::IndexedUndefinedKeyReplace:
+    case AccessCase::IndexedUndefinedKeyTransition:
+    case AccessCase::IndexedNullKeyReplace:
+    case AccessCase::IndexedNullKeyTransition:
+    case AccessCase::IndexedTrueKeyReplace:
+    case AccessCase::IndexedTrueKeyTransition:
+    case AccessCase::IndexedFalseKeyReplace:
+    case AccessCase::IndexedFalseKeyTransition:
     case AccessCase::Getter:
     case AccessCase::Setter:
     case AccessCase::ProxyObjectIn:
@@ -534,6 +585,7 @@ static bool NODELETE isStateless(AccessCase::AccessType type)
     case AccessCase::ScopedArgumentsLength:
     case AccessCase::RegExpLastIndexLoad:
     case AccessCase::RegExpLastIndexStore:
+    case AccessCase::ArrayLengthStore:
     case AccessCase::IndexedProxyObjectLoad:
     case AccessCase::IndexedMegamorphicLoad:
     case AccessCase::IndexedMegamorphicStore:
@@ -626,7 +678,7 @@ static bool NODELETE isStateless(AccessCase::AccessType type)
 }
 #endif
 
-static bool NODELETE doesJSCalls(AccessCase::AccessType type)
+bool NODELETE doesJSCalls(AccessCase::AccessType type)
 {
     switch (type) {
     case AccessCase::Getter:
@@ -653,6 +705,22 @@ static bool NODELETE doesJSCalls(AccessCase::AccessType type)
     case AccessCase::CheckPrivateBrand:
     case AccessCase::SetPrivateBrand:
     case AccessCase::IndexedNoIndexingMiss:
+    case AccessCase::IndexedUndefinedKeyLoad:
+    case AccessCase::IndexedUndefinedKeyMiss:
+    case AccessCase::IndexedNullKeyLoad:
+    case AccessCase::IndexedNullKeyMiss:
+    case AccessCase::IndexedTrueKeyLoad:
+    case AccessCase::IndexedTrueKeyMiss:
+    case AccessCase::IndexedFalseKeyLoad:
+    case AccessCase::IndexedFalseKeyMiss:
+    case AccessCase::IndexedUndefinedKeyReplace:
+    case AccessCase::IndexedUndefinedKeyTransition:
+    case AccessCase::IndexedNullKeyReplace:
+    case AccessCase::IndexedNullKeyTransition:
+    case AccessCase::IndexedTrueKeyReplace:
+    case AccessCase::IndexedTrueKeyTransition:
+    case AccessCase::IndexedFalseKeyReplace:
+    case AccessCase::IndexedFalseKeyTransition:
     case AccessCase::CustomValueGetter:
     case AccessCase::CustomAccessorGetter:
     case AccessCase::CustomValueSetter:
@@ -670,6 +738,7 @@ static bool NODELETE doesJSCalls(AccessCase::AccessType type)
     case AccessCase::ScopedArgumentsLength:
     case AccessCase::RegExpLastIndexLoad:
     case AccessCase::RegExpLastIndexStore:
+    case AccessCase::ArrayLengthStore:
     case AccessCase::IndexedMegamorphicLoad:
     case AccessCase::IndexedMegamorphicStore:
     case AccessCase::IndexedInt32Load:
@@ -790,6 +859,22 @@ static bool NODELETE isMegamorphic(AccessCase::AccessType type)
     case AccessCase::CheckPrivateBrand:
     case AccessCase::SetPrivateBrand:
     case AccessCase::IndexedNoIndexingMiss:
+    case AccessCase::IndexedUndefinedKeyLoad:
+    case AccessCase::IndexedUndefinedKeyMiss:
+    case AccessCase::IndexedNullKeyLoad:
+    case AccessCase::IndexedNullKeyMiss:
+    case AccessCase::IndexedTrueKeyLoad:
+    case AccessCase::IndexedTrueKeyMiss:
+    case AccessCase::IndexedFalseKeyLoad:
+    case AccessCase::IndexedFalseKeyMiss:
+    case AccessCase::IndexedUndefinedKeyReplace:
+    case AccessCase::IndexedUndefinedKeyTransition:
+    case AccessCase::IndexedNullKeyReplace:
+    case AccessCase::IndexedNullKeyTransition:
+    case AccessCase::IndexedTrueKeyReplace:
+    case AccessCase::IndexedTrueKeyTransition:
+    case AccessCase::IndexedFalseKeyReplace:
+    case AccessCase::IndexedFalseKeyTransition:
     case AccessCase::CustomValueGetter:
     case AccessCase::CustomAccessorGetter:
     case AccessCase::CustomValueSetter:
@@ -807,6 +892,7 @@ static bool NODELETE isMegamorphic(AccessCase::AccessType type)
     case AccessCase::ScopedArgumentsLength:
     case AccessCase::RegExpLastIndexLoad:
     case AccessCase::RegExpLastIndexStore:
+    case AccessCase::ArrayLengthStore:
     case AccessCase::IndexedInt32Load:
     case AccessCase::IndexedDoubleLoad:
     case AccessCase::IndexedContiguousLoad:
@@ -904,6 +990,18 @@ bool canBeViaGlobalProxy(AccessCase::AccessType type)
     case AccessCase::Setter:
     case AccessCase::CustomValueSetter:
     case AccessCase::CustomAccessorSetter:
+    case AccessCase::IndexedUndefinedKeyLoad:
+    case AccessCase::IndexedUndefinedKeyMiss:
+    case AccessCase::IndexedNullKeyLoad:
+    case AccessCase::IndexedNullKeyMiss:
+    case AccessCase::IndexedTrueKeyLoad:
+    case AccessCase::IndexedTrueKeyMiss:
+    case AccessCase::IndexedFalseKeyLoad:
+    case AccessCase::IndexedFalseKeyMiss:
+    case AccessCase::IndexedUndefinedKeyReplace:
+    case AccessCase::IndexedNullKeyReplace:
+    case AccessCase::IndexedTrueKeyReplace:
+    case AccessCase::IndexedFalseKeyReplace:
         return true;
     case AccessCase::Transition:
     case AccessCase::Delete:
@@ -912,6 +1010,10 @@ bool canBeViaGlobalProxy(AccessCase::AccessType type)
     case AccessCase::CheckPrivateBrand:
     case AccessCase::SetPrivateBrand:
     case AccessCase::IndexedNoIndexingMiss:
+    case AccessCase::IndexedUndefinedKeyTransition:
+    case AccessCase::IndexedNullKeyTransition:
+    case AccessCase::IndexedTrueKeyTransition:
+    case AccessCase::IndexedFalseKeyTransition:
     case AccessCase::ProxyObjectIn:
     case AccessCase::ProxyObjectLoad:
     case AccessCase::ProxyObjectStore:
@@ -934,6 +1036,7 @@ bool canBeViaGlobalProxy(AccessCase::AccessType type)
     case AccessCase::ScopedArgumentsLength:
     case AccessCase::RegExpLastIndexLoad:
     case AccessCase::RegExpLastIndexStore:
+    case AccessCase::ArrayLengthStore:
     case AccessCase::IndexedMegamorphicLoad:
     case AccessCase::IndexedMegamorphicStore:
     case AccessCase::IndexedInt32Load:
@@ -1238,20 +1341,6 @@ ScratchRegisterAllocator InlineCacheCompiler::makeDefaultScratchAllocator(GPRReg
 
     return allocator;
 }
-
-#if CPU(X86_64)
-static constexpr size_t prologueSizeInBytesDataIC = 1;
-#elif CPU(ARM64E)
-static constexpr size_t prologueSizeInBytesDataIC = 4;
-#elif CPU(ARM64)
-static constexpr size_t prologueSizeInBytesDataIC = 0;
-#elif CPU(ARM_THUMB2)
-static constexpr size_t prologueSizeInBytesDataIC = 0;
-#elif CPU(RISCV64)
-static constexpr size_t prologueSizeInBytesDataIC = 0;
-#else
-#error "unsupported architecture"
-#endif
 
 void InlineCacheCompiler::emitDataICPrologue(CCallHelpers& jit)
 {
@@ -1941,6 +2030,55 @@ void InlineCacheCompiler::generateWithGuard(unsigned index, AccessCase& accessCa
         return;
     }
 
+    case AccessCase::ArrayLengthStore: {
+        ASSERT(!accessCase.viaGlobalProxy());
+
+        jit.load8(CCallHelpers::Address(baseGPR, JSCell::indexingTypeAndMiscOffset()), scratchGPR);
+        jit.and32(CCallHelpers::TrustedImm32(IndexingModeMask), scratchGPR);
+        auto isInt32 = jit.branch32(CCallHelpers::Equal, scratchGPR, CCallHelpers::TrustedImm32(IsArray | Int32Shape));
+        auto isContiguous = jit.branch32(CCallHelpers::Equal, scratchGPR, CCallHelpers::TrustedImm32(IsArray | ContiguousShape));
+        fallThrough.append(jit.branch32(CCallHelpers::NotEqual, scratchGPR, CCallHelpers::TrustedImm32(IsArray | DoubleShape)));
+        jit.move(CCallHelpers::TrustedImm64(std::bit_cast<int64_t>(PNaN)), scratchGPR);
+        auto holeReady = jit.jump();
+        isInt32.link(&jit);
+        isContiguous.link(&jit);
+        jit.move(CCallHelpers::TrustedImm64(JSValue::encode(JSValue())), scratchGPR);
+        holeReady.link(&jit);
+
+        m_failAndIgnore.append(jit.branchIfNotInt32(valueRegs));
+
+        auto allocator = makeDefaultScratchAllocator(scratchGPR);
+        GPRReg scratch2GPR = allocator.allocateScratchGPR();
+        GPRReg scratch3GPR = allocator.allocateScratchGPR();
+        ScratchRegisterAllocator::PreservedState preservedState = allocator.preserveReusedRegistersByPushing(jit, ScratchRegisterAllocator::ExtraStackSpace::NoExtraSpace);
+
+        CCallHelpers::JumpList failAndIgnore;
+
+        jit.loadPtr(CCallHelpers::Address(baseGPR, JSObject::butterflyOffset()), scratch2GPR);
+        jit.load32(CCallHelpers::Address(scratch2GPR, Butterfly::offsetOfPublicLength()), scratch3GPR);
+        failAndIgnore.append(jit.branch32(CCallHelpers::Above, valueRegs.payloadGPR(), scratch3GPR));
+
+        auto loopStart = jit.label();
+        auto loopDone = jit.branch32(CCallHelpers::BelowOrEqual, scratch3GPR, valueRegs.payloadGPR());
+        jit.sub32(CCallHelpers::TrustedImm32(1), scratch3GPR);
+        jit.store64(scratchGPR, CCallHelpers::BaseIndex(scratch2GPR, scratch3GPR, CCallHelpers::TimesEight));
+        jit.jump().linkTo(loopStart, &jit);
+        loopDone.link(&jit);
+
+        jit.store32(valueRegs.payloadGPR(), CCallHelpers::Address(scratch2GPR, Butterfly::offsetOfPublicLength()));
+
+        allocator.restoreReusedRegistersByPopping(jit, preservedState);
+        succeed();
+
+        if (allocator.didReuseRegisters()) {
+            failAndIgnore.link(&jit);
+            allocator.restoreReusedRegistersByPopping(jit, preservedState);
+            m_failAndIgnore.append(jit.jump());
+        } else
+            m_failAndIgnore.append(failAndIgnore);
+        return;
+    }
+
     case AccessCase::RegExpLastIndexStore: {
         ASSERT(!accessCase.viaGlobalProxy());
         fallThrough.append(jit.branchIfNotType(baseGPR, RegExpObjectType));
@@ -2289,6 +2427,60 @@ void InlineCacheCompiler::generateWithGuard(unsigned index, AccessCase& accessCa
         emitDefaultGuard();
         GPRReg propertyGPR = m_propertyCache.propertyGPR();
         m_failAndIgnore.append(jit.branch32(CCallHelpers::LessThan, propertyGPR, CCallHelpers::TrustedImm32(0)));
+        break;
+    }
+
+    case AccessCase::IndexedUndefinedKeyLoad:
+    case AccessCase::IndexedUndefinedKeyMiss:
+    case AccessCase::IndexedUndefinedKeyReplace:
+    case AccessCase::IndexedUndefinedKeyTransition: {
+#if USE(JSVALUE64)
+        fallThrough.append(jit.branchIfNotUndefined(m_propertyCache.propertyGPR()));
+#else
+        fallThrough.append(jit.branchIfNotUndefined(m_propertyCache.propertyTagGPR()));
+#endif
+        emitDefaultGuard();
+        break;
+    }
+
+    case AccessCase::IndexedNullKeyLoad:
+    case AccessCase::IndexedNullKeyMiss:
+    case AccessCase::IndexedNullKeyReplace:
+    case AccessCase::IndexedNullKeyTransition: {
+#if USE(JSVALUE64)
+        fallThrough.append(jit.branchIfNotNull(m_propertyCache.propertyGPR()));
+#else
+        fallThrough.append(jit.branchIfNotNull(m_propertyCache.propertyTagGPR()));
+#endif
+        emitDefaultGuard();
+        break;
+    }
+
+    case AccessCase::IndexedTrueKeyLoad:
+    case AccessCase::IndexedTrueKeyMiss:
+    case AccessCase::IndexedTrueKeyReplace:
+    case AccessCase::IndexedTrueKeyTransition: {
+#if USE(JSVALUE64)
+        fallThrough.append(jit.branchIfNotTrue(m_propertyCache.propertyGPR()));
+#else
+        fallThrough.append(jit.branch32(CCallHelpers::NotEqual, m_propertyCache.propertyTagGPR(), CCallHelpers::TrustedImm32(JSValue::BooleanTag)));
+        fallThrough.append(jit.branchTest32(CCallHelpers::Zero, m_propertyCache.propertyPayloadGPR(), CCallHelpers::TrustedImm32(1)));
+#endif
+        emitDefaultGuard();
+        break;
+    }
+
+    case AccessCase::IndexedFalseKeyLoad:
+    case AccessCase::IndexedFalseKeyMiss:
+    case AccessCase::IndexedFalseKeyReplace:
+    case AccessCase::IndexedFalseKeyTransition: {
+#if USE(JSVALUE64)
+        fallThrough.append(jit.branchIfNotFalse(m_propertyCache.propertyGPR()));
+#else
+        fallThrough.append(jit.branch32(CCallHelpers::NotEqual, m_propertyCache.propertyTagGPR(), CCallHelpers::TrustedImm32(JSValue::BooleanTag)));
+        fallThrough.append(jit.branchTest32(CCallHelpers::NonZero, m_propertyCache.propertyPayloadGPR(), CCallHelpers::TrustedImm32(1)));
+#endif
+        emitDefaultGuard();
         break;
     }
 
@@ -2799,16 +2991,9 @@ void InlineCacheCompiler::generateWithGuard(unsigned index, AccessCase& accessCa
 
         ScratchRegisterAllocator::PreservedState preservedState = allocator.preserveReusedRegistersByPushing(jit, ScratchRegisterAllocator::ExtraStackSpace::NoExtraSpace);
 
-        CCallHelpers::JumpList notString;
         GPRReg propertyGPR = m_propertyCache.propertyGPR();
-        if (!m_propertyCache.propertyIsString) {
-            slowCases.append(jit.branchIfNotCell(propertyGPR));
-            slowCases.append(jit.branchIfNotString(propertyGPR));
-        }
 
-        jit.loadPtr(CCallHelpers::Address(propertyGPR, JSString::offsetOfValue()), scratch4GPR);
-        slowCases.append(jit.branchIfRopeStringImpl(scratch4GPR));
-        slowCases.append(jit.branchTest32(CCallHelpers::Zero, CCallHelpers::Address(scratch4GPR, StringImpl::flagsOffset()), CCallHelpers::TrustedImm32(StringImpl::flagIsAtom())));
+        slowCases.append(jit.loadCacheableIdentifierImpl(propertyGPR, scratch4GPR, m_propertyCache.propertyIsString, m_propertyCache.propertyIsSymbol));
 
         slowCases.append(jit.loadMegamorphicProperty(vm, baseGPR, scratch4GPR, nullptr, valueRegs.payloadGPR(), scratchGPR, scratch2GPR, scratch3GPR));
 
@@ -2975,16 +3160,8 @@ void InlineCacheCompiler::generateWithGuard(unsigned index, AccessCase& accessCa
 
         ScratchRegisterAllocator::PreservedState preservedState = allocator.preserveReusedRegistersByPushing(jit, ScratchRegisterAllocator::ExtraStackSpace::NoExtraSpace);
 
-        CCallHelpers::JumpList notString;
         GPRReg propertyGPR = m_propertyCache.propertyGPR();
-        if (!m_propertyCache.propertyIsString) {
-            slowCases.append(jit.branchIfNotCell(propertyGPR));
-            slowCases.append(jit.branchIfNotString(propertyGPR));
-        }
-
-        jit.loadPtr(CCallHelpers::Address(propertyGPR, JSString::offsetOfValue()), scratch4GPR);
-        slowCases.append(jit.branchIfRopeStringImpl(scratch4GPR));
-        slowCases.append(jit.branchTest32(CCallHelpers::Zero, CCallHelpers::Address(scratch4GPR, StringImpl::flagsOffset()), CCallHelpers::TrustedImm32(StringImpl::flagIsAtom())));
+        slowCases.append(jit.loadCacheableIdentifierImpl(propertyGPR, scratch4GPR, m_propertyCache.propertyIsString, m_propertyCache.propertyIsSymbol));
 
         slowCases.append(jit.hasMegamorphicProperty(vm, baseGPR, scratch4GPR, nullptr, valueRegs.payloadGPR(), scratchGPR, scratch2GPR, scratch3GPR));
 
@@ -3014,16 +3191,9 @@ void InlineCacheCompiler::generateWithGuard(unsigned index, AccessCase& accessCa
 
         ScratchRegisterAllocator::PreservedState preservedState = allocator.preserveReusedRegistersByPushing(jit, ScratchRegisterAllocator::ExtraStackSpace::SpaceForCCall);
 
-        CCallHelpers::JumpList notString;
         GPRReg propertyGPR = m_propertyCache.propertyGPR();
-        if (!m_propertyCache.propertyIsString) {
-            slowCases.append(jit.branchIfNotCell(propertyGPR));
-            slowCases.append(jit.branchIfNotString(propertyGPR));
-        }
 
-        jit.loadPtr(CCallHelpers::Address(propertyGPR, JSString::offsetOfValue()), scratch4GPR);
-        slowCases.append(jit.branchIfRopeStringImpl(scratch4GPR));
-        slowCases.append(jit.branchTest32(CCallHelpers::Zero, CCallHelpers::Address(scratch4GPR, StringImpl::flagsOffset()), CCallHelpers::TrustedImm32(StringImpl::flagIsAtom())));
+        slowCases.append(jit.loadCacheableIdentifierImpl(propertyGPR, scratch4GPR, m_propertyCache.propertyIsString, m_propertyCache.propertyIsSymbol));
 
         auto [slow, reallocating] = jit.storeMegamorphicProperty(vm, baseGPR, scratch4GPR, nullptr, valueRegs.payloadGPR(), scratchGPR, scratch2GPR, scratch3GPR);
         slowCases.append(WTF::move(slow));
@@ -3145,6 +3315,11 @@ void InlineCacheCompiler::generateAccessCase(unsigned index, AccessCase& accessC
         return;
 
     case AccessCase::Miss:
+    case AccessCase::IndexedNoIndexingMiss:
+    case AccessCase::IndexedUndefinedKeyMiss:
+    case AccessCase::IndexedNullKeyMiss:
+    case AccessCase::IndexedTrueKeyMiss:
+    case AccessCase::IndexedFalseKeyMiss:
         jit.moveTrustedValue(jsUndefined(), valueRegs);
         succeed();
         return;
@@ -3156,7 +3331,11 @@ void InlineCacheCompiler::generateAccessCase(unsigned index, AccessCase& accessC
         return;
 
     case AccessCase::Load:
-    case AccessCase::GetGetter: {
+    case AccessCase::GetGetter:
+    case AccessCase::IndexedUndefinedKeyLoad:
+    case AccessCase::IndexedNullKeyLoad:
+    case AccessCase::IndexedTrueKeyLoad:
+    case AccessCase::IndexedFalseKeyLoad: {
         Structure* currStructure = accessCase.structure();
         if (auto* object = accessCase.tryGetAlternateBase())
             currStructure = object->structure();
@@ -3503,7 +3682,11 @@ void InlineCacheCompiler::generateAccessCase(unsigned index, AccessCase& accessC
         return;
     }
 
-    case AccessCase::Replace: {
+    case AccessCase::Replace:
+    case AccessCase::IndexedUndefinedKeyReplace:
+    case AccessCase::IndexedNullKeyReplace:
+    case AccessCase::IndexedTrueKeyReplace:
+    case AccessCase::IndexedFalseKeyReplace: {
         ASSERT(canBeViaGlobalProxy(accessCase.m_type));
         GPRReg base = baseGPR;
         if (accessCase.viaGlobalProxy()) {
@@ -3554,7 +3737,11 @@ void InlineCacheCompiler::generateAccessCase(unsigned index, AccessCase& accessC
         return;
     }
 
-    case AccessCase::Transition: {
+    case AccessCase::Transition:
+    case AccessCase::IndexedUndefinedKeyTransition:
+    case AccessCase::IndexedNullKeyTransition:
+    case AccessCase::IndexedTrueKeyTransition:
+    case AccessCase::IndexedFalseKeyTransition: {
         ASSERT(!accessCase.viaGlobalProxy());
         // AccessCase::createTransition() should have returned null if this wasn't true.
         RELEASE_ASSERT(GPRInfo::numberOfRegisters >= 6 || !accessCase.structure()->outOfLineCapacity() || accessCase.structure()->outOfLineCapacity() == accessCase.newStructure()->outOfLineCapacity());
@@ -3782,11 +3969,6 @@ void InlineCacheCompiler::generateAccessCase(unsigned index, AccessCase& accessC
         return;
     }
 
-    case AccessCase::IndexedNoIndexingMiss:
-        jit.moveTrustedValue(jsUndefined(), valueRegs);
-        succeed();
-        return;
-
     case AccessCase::IndexedNoIndexingInMiss:
         jit.moveTrustedValue(jsBoolean(false), valueRegs);
         succeed();
@@ -3796,6 +3978,7 @@ void InlineCacheCompiler::generateAccessCase(unsigned index, AccessCase& accessC
     case AccessCase::ScopedArgumentsLength:
     case AccessCase::RegExpLastIndexLoad:
     case AccessCase::RegExpLastIndexStore:
+    case AccessCase::ArrayLengthStore:
     case AccessCase::ModuleNamespaceLoad:
     case AccessCase::ProxyObjectIn:
     case AccessCase::ProxyObjectLoad:
@@ -6207,6 +6390,248 @@ MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithSymbolMissHandler(VM& vm)
     return getByValMissHandlerImpl<isSymbol>(vm);
 }
 
+// NonStringPrimitiveKey (undefined/null/true/false) handler IC helpers.
+
+enum class NonStringPrimitiveKeyType : uint8_t { Undefined, Null, True, False };
+
+template<NonStringPrimitiveKeyType keyType>
+static CCallHelpers::JumpList emitNonStringPrimitiveKeyCheck(CCallHelpers& jit, JSValueRegs propertyJSR)
+{
+    CCallHelpers::JumpList fallThrough;
+#if USE(JSVALUE64)
+    if constexpr (keyType == NonStringPrimitiveKeyType::Undefined)
+        fallThrough.append(jit.branchIfNotUndefined(propertyJSR.payloadGPR()));
+    else if constexpr (keyType == NonStringPrimitiveKeyType::Null)
+        fallThrough.append(jit.branchIfNotNull(propertyJSR.payloadGPR()));
+    else if constexpr (keyType == NonStringPrimitiveKeyType::True)
+        fallThrough.append(jit.branchIfNotTrue(propertyJSR.payloadGPR()));
+    else
+        fallThrough.append(jit.branchIfNotFalse(propertyJSR.payloadGPR()));
+#else
+    if constexpr (keyType == NonStringPrimitiveKeyType::Undefined)
+        fallThrough.append(jit.branchIfNotUndefined(propertyJSR.tagGPR()));
+    else if constexpr (keyType == NonStringPrimitiveKeyType::Null)
+        fallThrough.append(jit.branchIfNotNull(propertyJSR.tagGPR()));
+    else if constexpr (keyType == NonStringPrimitiveKeyType::True) {
+        fallThrough.append(jit.branch32(CCallHelpers::NotEqual, propertyJSR.tagGPR(), CCallHelpers::TrustedImm32(JSValue::BooleanTag)));
+        fallThrough.append(jit.branchTest32(CCallHelpers::Zero, propertyJSR.payloadGPR(), CCallHelpers::TrustedImm32(1)));
+    } else {
+        fallThrough.append(jit.branch32(CCallHelpers::NotEqual, propertyJSR.tagGPR(), CCallHelpers::TrustedImm32(JSValue::BooleanTag)));
+        fallThrough.append(jit.branchTest32(CCallHelpers::NonZero, propertyJSR.payloadGPR(), CCallHelpers::TrustedImm32(1)));
+    }
+#endif
+    return fallThrough;
+}
+
+template<bool ownProperty, NonStringPrimitiveKeyType keyType>
+static MacroAssemblerCodeRef<JITThunkPtrTag> getByValNonStringPrimitiveKeyLoadHandlerImpl(VM& vm)
+{
+    CCallHelpers jit;
+
+    using BaselineJITRegisters::GetByVal::baseJSR;
+    using BaselineJITRegisters::GetByVal::propertyJSR;
+    using BaselineJITRegisters::GetByVal::scratch1GPR;
+    using BaselineJITRegisters::GetByVal::scratch2GPR;
+    using BaselineJITRegisters::GetByVal::resultJSR;
+
+    InlineCacheCompiler::emitDataICPrologue(jit);
+    traceHandler(jit, ownProperty ? ICEvent::GetByValLoadOwnPropertyHandler : ICEvent::GetByValLoadPrototypePropertyHandler, " NonStringPrimitiveKey");
+
+    CCallHelpers::JumpList fallThrough;
+
+    fallThrough.append(emitNonStringPrimitiveKeyCheck<keyType>(jit, propertyJSR));
+    fallThrough.append(InlineCacheCompiler::emitDataICCheckStructure(jit, baseJSR.payloadGPR(), scratch1GPR));
+
+    loadHandlerImpl<ownProperty>(vm, jit, baseJSR, resultJSR, scratch1GPR, scratch2GPR);
+    InlineCacheCompiler::emitDataICEpilogue(jit);
+    jit.ret();
+
+    fallThrough.link(&jit);
+    InlineCacheCompiler::emitDataICJumpNextHandler(jit);
+
+    LinkBuffer patchBuffer(jit, GLOBAL_THUNK_ID, LinkBuffer::Profile::InlineCache);
+    return FINALIZE_THUNK(patchBuffer, JITThunkPtrTag, "GetByVal NonStringPrimitiveKey Load handler"_s, "GetByVal NonStringPrimitiveKey Load handler");
+}
+
+template<NonStringPrimitiveKeyType keyType>
+static MacroAssemblerCodeRef<JITThunkPtrTag> getByValNonStringPrimitiveKeyMissHandlerImpl(VM&)
+{
+    CCallHelpers jit;
+
+    using BaselineJITRegisters::GetByVal::baseJSR;
+    using BaselineJITRegisters::GetByVal::propertyJSR;
+    using BaselineJITRegisters::GetByVal::scratch1GPR;
+    using BaselineJITRegisters::GetByVal::resultJSR;
+
+    InlineCacheCompiler::emitDataICPrologue(jit);
+    traceHandler(jit, ICEvent::GetByValMissHandler, " NonStringPrimitiveKey");
+
+    CCallHelpers::JumpList fallThrough;
+
+    fallThrough.append(emitNonStringPrimitiveKeyCheck<keyType>(jit, propertyJSR));
+    fallThrough.append(InlineCacheCompiler::emitDataICCheckStructure(jit, baseJSR.payloadGPR(), scratch1GPR));
+
+    jit.moveTrustedValue(jsUndefined(), resultJSR);
+    InlineCacheCompiler::emitDataICEpilogue(jit);
+    jit.ret();
+
+    fallThrough.link(&jit);
+    InlineCacheCompiler::emitDataICJumpNextHandler(jit);
+
+    LinkBuffer patchBuffer(jit, GLOBAL_THUNK_ID, LinkBuffer::Profile::InlineCache);
+    return FINALIZE_THUNK(patchBuffer, JITThunkPtrTag, "GetByVal NonStringPrimitiveKey Miss handler"_s, "GetByVal NonStringPrimitiveKey Miss handler");
+}
+
+#define DEFINE_CONSTANT_KEY_GETBYVAL_HANDLERS(KeyName, keyType) \
+    MacroAssemblerCodeRef<JITThunkPtrTag> getByValWith##KeyName##KeyLoadOwnPropertyHandler(VM& vm) \
+    { return getByValNonStringPrimitiveKeyLoadHandlerImpl<true, NonStringPrimitiveKeyType::keyType>(vm); } \
+    MacroAssemblerCodeRef<JITThunkPtrTag> getByValWith##KeyName##KeyLoadPrototypePropertyHandler(VM& vm) \
+    { return getByValNonStringPrimitiveKeyLoadHandlerImpl<false, NonStringPrimitiveKeyType::keyType>(vm); } \
+    MacroAssemblerCodeRef<JITThunkPtrTag> getByValWith##KeyName##KeyMissHandler(VM& vm) \
+    { return getByValNonStringPrimitiveKeyMissHandlerImpl<NonStringPrimitiveKeyType::keyType>(vm); }
+
+DEFINE_CONSTANT_KEY_GETBYVAL_HANDLERS(Undefined, Undefined)
+DEFINE_CONSTANT_KEY_GETBYVAL_HANDLERS(Null, Null)
+DEFINE_CONSTANT_KEY_GETBYVAL_HANDLERS(True, True)
+DEFINE_CONSTANT_KEY_GETBYVAL_HANDLERS(False, False)
+
+#undef DEFINE_CONSTANT_KEY_GETBYVAL_HANDLERS
+
+template<NonStringPrimitiveKeyType keyType>
+static MacroAssemblerCodeRef<JITThunkPtrTag> putByValNonStringPrimitiveKeyReplaceHandlerImpl(VM&)
+{
+    CCallHelpers jit;
+
+    using BaselineJITRegisters::PutByVal::baseJSR;
+    using BaselineJITRegisters::PutByVal::propertyJSR;
+    using BaselineJITRegisters::PutByVal::valueJSR;
+    using BaselineJITRegisters::PutByVal::scratch1GPR;
+    using BaselineJITRegisters::PutByVal::scratch2GPR;
+
+    InlineCacheCompiler::emitDataICPrologue(jit);
+    traceHandler(jit, ICEvent::PutByValReplaceHandler, " NonStringPrimitiveKey");
+
+    CCallHelpers::JumpList fallThrough;
+
+    fallThrough.append(emitNonStringPrimitiveKeyCheck<keyType>(jit, propertyJSR));
+    fallThrough.append(InlineCacheCompiler::emitDataICCheckStructure(jit, baseJSR.payloadGPR(), scratch1GPR));
+
+    jit.load32(CCallHelpers::Address(GPRInfo::handlerGPR, InlineCacheHandler::offsetOfOffset()), scratch1GPR);
+    jit.storeProperty(valueJSR, baseJSR.payloadGPR(), scratch1GPR, scratch2GPR);
+    InlineCacheCompiler::emitDataICEpilogue(jit);
+    jit.ret();
+
+    fallThrough.link(&jit);
+    InlineCacheCompiler::emitDataICJumpNextHandler(jit);
+
+    LinkBuffer patchBuffer(jit, GLOBAL_THUNK_ID, LinkBuffer::Profile::InlineCache);
+    return FINALIZE_THUNK(patchBuffer, JITThunkPtrTag, "PutByVal NonStringPrimitiveKey Replace handler"_s, "PutByVal NonStringPrimitiveKey Replace handler");
+}
+
+template<bool allocating, bool reallocating, NonStringPrimitiveKeyType keyType>
+static MacroAssemblerCodeRef<JITThunkPtrTag> putByValNonStringPrimitiveKeyTransitionHandlerImpl(VM& vm)
+{
+    CCallHelpers jit;
+
+    using BaselineJITRegisters::PutByVal::baseJSR;
+    using BaselineJITRegisters::PutByVal::valueJSR;
+    using BaselineJITRegisters::PutByVal::propertyJSR;
+    using BaselineJITRegisters::PutByVal::propertyCacheGPR;
+    using BaselineJITRegisters::PutByVal::scratch1GPR;
+    using BaselineJITRegisters::PutByVal::scratch2GPR;
+    using BaselineJITRegisters::PutByVal::profileGPR;
+
+    InlineCacheCompiler::emitDataICPrologue(jit);
+    traceHandler(jit, ICEvent::PutByValTransitionHandler, " NonStringPrimitiveKey");
+
+    CCallHelpers::JumpList fallThrough;
+    CCallHelpers::JumpList allocationFailure;
+
+    fallThrough.append(emitNonStringPrimitiveKeyCheck<keyType>(jit, propertyJSR));
+    fallThrough.append(InlineCacheCompiler::emitDataICCheckStructure(jit, baseJSR.payloadGPR(), scratch1GPR));
+
+    transitionHandlerImpl<allocating, reallocating>(vm, jit, allocationFailure, baseJSR, valueJSR, scratch1GPR, scratch2GPR, propertyJSR.payloadGPR(), profileGPR);
+    InlineCacheCompiler::emitDataICEpilogue(jit);
+    jit.ret();
+
+    if (!allocationFailure.empty()) {
+        ASSERT(allocating);
+        allocationFailure.link(&jit);
+        jit.transfer32(CCallHelpers::Address(propertyCacheGPR, PropertyInlineCache::offsetOfCallSiteIndex()), CCallHelpers::tagFor(CallFrameSlot::argumentCountIncludingThis));
+        InlineCacheCompiler::emitDataICPrepareForCall(jit);
+        jit.makeSpaceOnStackForCCall();
+        jit.setupArguments<decltype(operationReallocateButterflyAndTransition)>(CCallHelpers::TrustedImmPtr(&vm), baseJSR.payloadGPR(), GPRInfo::handlerGPR, valueJSR);
+        jit.prepareCallOperation(vm);
+        jit.callOperation<OperationPtrTag>(operationReallocateButterflyAndTransition);
+        jit.reclaimSpaceOnStackForCCall();
+        InlineCacheCompiler::emitDataICRestoreAfterCall(jit);
+        InlineCacheCompiler::emitDataICEpilogue(jit);
+        jit.ret();
+    }
+
+    fallThrough.link(&jit);
+    InlineCacheCompiler::emitDataICJumpNextHandler(jit);
+
+    LinkBuffer patchBuffer(jit, GLOBAL_THUNK_ID, LinkBuffer::Profile::InlineCache);
+    return FINALIZE_THUNK(patchBuffer, JITThunkPtrTag, "PutByVal NonStringPrimitiveKey Transition handler"_s, "PutByVal NonStringPrimitiveKey Transition handler");
+}
+
+template<NonStringPrimitiveKeyType keyType>
+static MacroAssemblerCodeRef<JITThunkPtrTag> putByValNonStringPrimitiveKeyTransitionOutOfLineHandlerImpl(VM& vm)
+{
+    CCallHelpers jit;
+
+    using BaselineJITRegisters::PutByVal::baseJSR;
+    using BaselineJITRegisters::PutByVal::valueJSR;
+    using BaselineJITRegisters::PutByVal::propertyJSR;
+    using BaselineJITRegisters::PutByVal::propertyCacheGPR;
+    using BaselineJITRegisters::PutByVal::scratch1GPR;
+
+    InlineCacheCompiler::emitDataICPrologue(jit);
+    traceHandler(jit, ICEvent::PutByValTransitionOutOfLineHandler, " NonStringPrimitiveKey");
+
+    CCallHelpers::JumpList fallThrough;
+
+    fallThrough.append(emitNonStringPrimitiveKeyCheck<keyType>(jit, propertyJSR));
+    fallThrough.append(InlineCacheCompiler::emitDataICCheckStructure(jit, baseJSR.payloadGPR(), scratch1GPR));
+
+    jit.transfer32(CCallHelpers::Address(propertyCacheGPR, PropertyInlineCache::offsetOfCallSiteIndex()), CCallHelpers::tagFor(CallFrameSlot::argumentCountIncludingThis));
+    InlineCacheCompiler::emitDataICPrepareForCall(jit);
+    jit.makeSpaceOnStackForCCall();
+    jit.setupArguments<decltype(operationReallocateButterflyAndTransition)>(CCallHelpers::TrustedImmPtr(&vm), baseJSR.payloadGPR(), GPRInfo::handlerGPR, valueJSR);
+    jit.prepareCallOperation(vm);
+    jit.callOperation<OperationPtrTag>(operationReallocateButterflyAndTransition);
+    jit.reclaimSpaceOnStackForCCall();
+    InlineCacheCompiler::emitDataICRestoreAfterCall(jit);
+    InlineCacheCompiler::emitDataICEpilogue(jit);
+    jit.ret();
+
+    fallThrough.link(&jit);
+    InlineCacheCompiler::emitDataICJumpNextHandler(jit);
+
+    LinkBuffer patchBuffer(jit, GLOBAL_THUNK_ID, LinkBuffer::Profile::InlineCache);
+    return FINALIZE_THUNK(patchBuffer, JITThunkPtrTag, "PutByVal NonStringPrimitiveKey Transition OOL handler"_s, "PutByVal NonStringPrimitiveKey Transition OOL handler");
+}
+
+#define DEFINE_CONSTANT_KEY_PUTBYVAL_HANDLERS(KeyName, keyType) \
+    MacroAssemblerCodeRef<JITThunkPtrTag> putByValWith##KeyName##KeyReplaceHandler(VM& vm) \
+    { return putByValNonStringPrimitiveKeyReplaceHandlerImpl<NonStringPrimitiveKeyType::keyType>(vm); } \
+    MacroAssemblerCodeRef<JITThunkPtrTag> putByValWith##KeyName##KeyTransitionNonAllocatingHandler(VM& vm) \
+    { return putByValNonStringPrimitiveKeyTransitionHandlerImpl<false, false, NonStringPrimitiveKeyType::keyType>(vm); } \
+    MacroAssemblerCodeRef<JITThunkPtrTag> putByValWith##KeyName##KeyTransitionNewlyAllocatingHandler(VM& vm) \
+    { return putByValNonStringPrimitiveKeyTransitionHandlerImpl<true, false, NonStringPrimitiveKeyType::keyType>(vm); } \
+    MacroAssemblerCodeRef<JITThunkPtrTag> putByValWith##KeyName##KeyTransitionReallocatingHandler(VM& vm) \
+    { return putByValNonStringPrimitiveKeyTransitionHandlerImpl<true, true, NonStringPrimitiveKeyType::keyType>(vm); } \
+    MacroAssemblerCodeRef<JITThunkPtrTag> putByValWith##KeyName##KeyTransitionReallocatingOutOfLineHandler(VM& vm) \
+    { return putByValNonStringPrimitiveKeyTransitionOutOfLineHandlerImpl<NonStringPrimitiveKeyType::keyType>(vm); }
+
+DEFINE_CONSTANT_KEY_PUTBYVAL_HANDLERS(Undefined, Undefined)
+DEFINE_CONSTANT_KEY_PUTBYVAL_HANDLERS(Null, Null)
+DEFINE_CONSTANT_KEY_PUTBYVAL_HANDLERS(True, True)
+DEFINE_CONSTANT_KEY_PUTBYVAL_HANDLERS(False, False)
+
+#undef DEFINE_CONSTANT_KEY_PUTBYVAL_HANDLERS
+
 template<bool isAccessor, bool isSymbol>
 static MacroAssemblerCodeRef<JITThunkPtrTag> getByValCustomHandlerImpl(VM& vm)
 {
@@ -7254,7 +7679,11 @@ AccessGenerationResult InlineCacheCompiler::compileOneAccessCaseHandler(const Ve
             case AccessType::GetPrivateName: {
                 switch (accessCase.m_type) {
                 case AccessCase::GetGetter:
-                case AccessCase::Load: {
+                case AccessCase::Load:
+                case AccessCase::IndexedUndefinedKeyLoad:
+                case AccessCase::IndexedNullKeyLoad:
+                case AccessCase::IndexedTrueKeyLoad:
+                case AccessCase::IndexedFalseKeyLoad: {
                     ASSERT(canBeViaGlobalProxy(accessCase.m_type));
                     if (!accessCase.viaGlobalProxy()) {
                         collectConditions(accessCase, watchedConditions, checkingConditions);
@@ -7267,15 +7696,47 @@ AccessGenerationResult InlineCacheCompiler::compileOneAccessCaseHandler(const Ve
 
                             MacroAssemblerCodeRef<JITStubRoutinePtrTag> code;
                             if (!accessCase.tryGetAlternateBase()) {
-                                if (accessCase.uid()->isSymbol())
-                                    code = vm.getCTIStub(CommonJITThunkID::GetByValWithSymbolLoadOwnPropertyHandler).retagged<JITStubRoutinePtrTag>();
-                                else
-                                    code = vm.getCTIStub(CommonJITThunkID::GetByValWithStringLoadOwnPropertyHandler).retagged<JITStubRoutinePtrTag>();
+                                switch (accessCase.m_type) {
+                                case AccessCase::GetGetter:
+                                case AccessCase::Load:
+                                    code = vm.getCTIStub(accessCase.uid()->isSymbol() ? CommonJITThunkID::GetByValWithSymbolLoadOwnPropertyHandler : CommonJITThunkID::GetByValWithStringLoadOwnPropertyHandler).retagged<JITStubRoutinePtrTag>();
+                                    break;
+                                case AccessCase::IndexedUndefinedKeyLoad:
+                                    code = vm.getCTIStub(CommonJITThunkID::GetByValWithUndefinedKeyLoadOwnPropertyHandler).retagged<JITStubRoutinePtrTag>();
+                                    break;
+                                case AccessCase::IndexedNullKeyLoad:
+                                    code = vm.getCTIStub(CommonJITThunkID::GetByValWithNullKeyLoadOwnPropertyHandler).retagged<JITStubRoutinePtrTag>();
+                                    break;
+                                case AccessCase::IndexedTrueKeyLoad:
+                                    code = vm.getCTIStub(CommonJITThunkID::GetByValWithTrueKeyLoadOwnPropertyHandler).retagged<JITStubRoutinePtrTag>();
+                                    break;
+                                case AccessCase::IndexedFalseKeyLoad:
+                                    code = vm.getCTIStub(CommonJITThunkID::GetByValWithFalseKeyLoadOwnPropertyHandler).retagged<JITStubRoutinePtrTag>();
+                                    break;
+                                default:
+                                    RELEASE_ASSERT_NOT_REACHED();
+                                }
                             } else {
-                                if (accessCase.uid()->isSymbol())
-                                    code = vm.getCTIStub(CommonJITThunkID::GetByValWithSymbolLoadPrototypePropertyHandler).retagged<JITStubRoutinePtrTag>();
-                                else
-                                    code = vm.getCTIStub(CommonJITThunkID::GetByValWithStringLoadPrototypePropertyHandler).retagged<JITStubRoutinePtrTag>();
+                                switch (accessCase.m_type) {
+                                case AccessCase::GetGetter:
+                                case AccessCase::Load:
+                                    code = vm.getCTIStub(accessCase.uid()->isSymbol() ? CommonJITThunkID::GetByValWithSymbolLoadPrototypePropertyHandler : CommonJITThunkID::GetByValWithStringLoadPrototypePropertyHandler).retagged<JITStubRoutinePtrTag>();
+                                    break;
+                                case AccessCase::IndexedUndefinedKeyLoad:
+                                    code = vm.getCTIStub(CommonJITThunkID::GetByValWithUndefinedKeyLoadPrototypePropertyHandler).retagged<JITStubRoutinePtrTag>();
+                                    break;
+                                case AccessCase::IndexedNullKeyLoad:
+                                    code = vm.getCTIStub(CommonJITThunkID::GetByValWithNullKeyLoadPrototypePropertyHandler).retagged<JITStubRoutinePtrTag>();
+                                    break;
+                                case AccessCase::IndexedTrueKeyLoad:
+                                    code = vm.getCTIStub(CommonJITThunkID::GetByValWithTrueKeyLoadPrototypePropertyHandler).retagged<JITStubRoutinePtrTag>();
+                                    break;
+                                case AccessCase::IndexedFalseKeyLoad:
+                                    code = vm.getCTIStub(CommonJITThunkID::GetByValWithFalseKeyLoadPrototypePropertyHandler).retagged<JITStubRoutinePtrTag>();
+                                    break;
+                                default:
+                                    RELEASE_ASSERT_NOT_REACHED();
+                                }
                             }
                             auto stub = createPreCompiledICJITStubRoutine(WTF::move(code), vm, codeBlock);
                             connectWatchpointSets(stub.get(), WTF::move(watchedConditions), WTF::move(additionalWatchpointSets));
@@ -7284,16 +7745,35 @@ AccessGenerationResult InlineCacheCompiler::compileOneAccessCaseHandler(const Ve
                     }
                     break;
                 }
-                case AccessCase::Miss: {
+                case AccessCase::Miss:
+                case AccessCase::IndexedUndefinedKeyMiss:
+                case AccessCase::IndexedNullKeyMiss:
+                case AccessCase::IndexedTrueKeyMiss:
+                case AccessCase::IndexedFalseKeyMiss: {
                     ASSERT(canBeViaGlobalProxy(accessCase.m_type));
                     if (!accessCase.viaGlobalProxy()) {
                         collectConditions(accessCase, watchedConditions, checkingConditions);
                         if (checkingConditions.isEmpty()) {
                             MacroAssemblerCodeRef<JITStubRoutinePtrTag> code;
-                            if (accessCase.uid()->isSymbol())
-                                code = vm.getCTIStub(CommonJITThunkID::GetByValWithSymbolMissHandler).retagged<JITStubRoutinePtrTag>();
-                            else
-                                code = vm.getCTIStub(CommonJITThunkID::GetByValWithStringMissHandler).retagged<JITStubRoutinePtrTag>();
+                            switch (accessCase.m_type) {
+                            case AccessCase::Miss:
+                                code = vm.getCTIStub(accessCase.uid()->isSymbol() ? CommonJITThunkID::GetByValWithSymbolMissHandler : CommonJITThunkID::GetByValWithStringMissHandler).retagged<JITStubRoutinePtrTag>();
+                                break;
+                            case AccessCase::IndexedUndefinedKeyMiss:
+                                code = vm.getCTIStub(CommonJITThunkID::GetByValWithUndefinedKeyMissHandler).retagged<JITStubRoutinePtrTag>();
+                                break;
+                            case AccessCase::IndexedNullKeyMiss:
+                                code = vm.getCTIStub(CommonJITThunkID::GetByValWithNullKeyMissHandler).retagged<JITStubRoutinePtrTag>();
+                                break;
+                            case AccessCase::IndexedTrueKeyMiss:
+                                code = vm.getCTIStub(CommonJITThunkID::GetByValWithTrueKeyMissHandler).retagged<JITStubRoutinePtrTag>();
+                                break;
+                            case AccessCase::IndexedFalseKeyMiss:
+                                code = vm.getCTIStub(CommonJITThunkID::GetByValWithFalseKeyMissHandler).retagged<JITStubRoutinePtrTag>();
+                                break;
+                            default:
+                                RELEASE_ASSERT_NOT_REACHED();
+                            }
                             auto stub = createPreCompiledICJITStubRoutine(WTF::move(code), vm, codeBlock);
                             connectWatchpointSets(stub.get(), WTF::move(watchedConditions), WTF::move(additionalWatchpointSets));
                             return finishPreCompiledCodeGeneration(WTF::move(stub));
@@ -7379,49 +7859,83 @@ AccessGenerationResult InlineCacheCompiler::compileOneAccessCaseHandler(const Ve
             case AccessType::SetPrivateNameByVal: {
                 bool isStrict = m_propertyCache.accessType == AccessType::PutByValDirectStrict || m_propertyCache.accessType == AccessType::PutByValStrict || m_propertyCache.accessType == AccessType::DefinePrivateNameByVal || m_propertyCache.accessType == AccessType::SetPrivateNameByVal;
                 switch (accessCase.m_type) {
-                case AccessCase::Replace: {
+                case AccessCase::Replace:
+                case AccessCase::IndexedUndefinedKeyReplace:
+                case AccessCase::IndexedNullKeyReplace:
+                case AccessCase::IndexedTrueKeyReplace:
+                case AccessCase::IndexedFalseKeyReplace: {
                     ASSERT(canBeViaGlobalProxy(accessCase.m_type));
                     ASSERT(accessCase.conditionSet().isEmpty());
                     if (!accessCase.viaGlobalProxy()) {
                         MacroAssemblerCodeRef<JITStubRoutinePtrTag> code;
-                        if (accessCase.uid()->isSymbol())
-                            code = vm.getCTIStub(CommonJITThunkID::PutByValWithSymbolReplaceHandler).retagged<JITStubRoutinePtrTag>();
-                        else
-                            code = vm.getCTIStub(CommonJITThunkID::PutByValWithStringReplaceHandler).retagged<JITStubRoutinePtrTag>();
+                        switch (accessCase.m_type) {
+                        case AccessCase::Replace:
+                            code = vm.getCTIStub(accessCase.uid()->isSymbol() ? CommonJITThunkID::PutByValWithSymbolReplaceHandler : CommonJITThunkID::PutByValWithStringReplaceHandler).retagged<JITStubRoutinePtrTag>();
+                            break;
+                        case AccessCase::IndexedUndefinedKeyReplace:
+                            code = vm.getCTIStub(CommonJITThunkID::PutByValWithUndefinedKeyReplaceHandler).retagged<JITStubRoutinePtrTag>();
+                            break;
+                        case AccessCase::IndexedNullKeyReplace:
+                            code = vm.getCTIStub(CommonJITThunkID::PutByValWithNullKeyReplaceHandler).retagged<JITStubRoutinePtrTag>();
+                            break;
+                        case AccessCase::IndexedTrueKeyReplace:
+                            code = vm.getCTIStub(CommonJITThunkID::PutByValWithTrueKeyReplaceHandler).retagged<JITStubRoutinePtrTag>();
+                            break;
+                        case AccessCase::IndexedFalseKeyReplace:
+                            code = vm.getCTIStub(CommonJITThunkID::PutByValWithFalseKeyReplaceHandler).retagged<JITStubRoutinePtrTag>();
+                            break;
+                        default:
+                            RELEASE_ASSERT_NOT_REACHED();
+                        }
                         auto stub = createPreCompiledICJITStubRoutine(WTF::move(code), vm, codeBlock);
                         connectWatchpointSets(stub.get(), { }, WTF::move(additionalWatchpointSets));
                         return finishPreCompiledCodeGeneration(WTF::move(stub));
                     }
                     break;
                 }
-                case AccessCase::Transition: {
+                case AccessCase::Transition:
+                case AccessCase::IndexedUndefinedKeyTransition:
+                case AccessCase::IndexedNullKeyTransition:
+                case AccessCase::IndexedTrueKeyTransition:
+                case AccessCase::IndexedFalseKeyTransition: {
                     ASSERT(!accessCase.viaGlobalProxy());
                     bool allocating = accessCase.newStructure()->outOfLineCapacity() != accessCase.structure()->outOfLineCapacity();
                     bool reallocating = allocating && accessCase.structure()->outOfLineCapacity();
                     bool allocatingInline = allocating && !accessCase.structure()->couldHaveIndexingHeader();
                     collectConditions(accessCase, watchedConditions, checkingConditions);
                     if (checkingConditions.isEmpty()) {
+                        auto selectTransitionHandler = [&](CommonJITThunkID nonAlloc, CommonJITThunkID reallocOOL, CommonJITThunkID newlyAlloc, CommonJITThunkID realloc) -> MacroAssemblerCodeRef<JITStubRoutinePtrTag> {
+                            if (!allocating)
+                                return vm.getCTIStub(nonAlloc).retagged<JITStubRoutinePtrTag>();
+                            if (!allocatingInline)
+                                return vm.getCTIStub(reallocOOL).retagged<JITStubRoutinePtrTag>();
+                            if (!reallocating)
+                                return vm.getCTIStub(newlyAlloc).retagged<JITStubRoutinePtrTag>();
+                            return vm.getCTIStub(realloc).retagged<JITStubRoutinePtrTag>();
+                        };
+
                         MacroAssemblerCodeRef<JITStubRoutinePtrTag> code;
-                        if (!allocating) {
+                        switch (accessCase.m_type) {
+                        case AccessCase::Transition:
                             if (accessCase.uid()->isSymbol())
-                                code = vm.getCTIStub(CommonJITThunkID::PutByValWithSymbolTransitionNonAllocatingHandler).retagged<JITStubRoutinePtrTag>();
+                                code = selectTransitionHandler(CommonJITThunkID::PutByValWithSymbolTransitionNonAllocatingHandler, CommonJITThunkID::PutByValWithSymbolTransitionReallocatingOutOfLineHandler, CommonJITThunkID::PutByValWithSymbolTransitionNewlyAllocatingHandler, CommonJITThunkID::PutByValWithSymbolTransitionReallocatingHandler);
                             else
-                                code = vm.getCTIStub(CommonJITThunkID::PutByValWithStringTransitionNonAllocatingHandler).retagged<JITStubRoutinePtrTag>();
-                        } else if (!allocatingInline) {
-                            if (accessCase.uid()->isSymbol())
-                                code = vm.getCTIStub(CommonJITThunkID::PutByValWithSymbolTransitionReallocatingOutOfLineHandler).retagged<JITStubRoutinePtrTag>();
-                            else
-                                code = vm.getCTIStub(CommonJITThunkID::PutByValWithStringTransitionReallocatingOutOfLineHandler).retagged<JITStubRoutinePtrTag>();
-                        } else if (!reallocating) {
-                            if (accessCase.uid()->isSymbol())
-                                code = vm.getCTIStub(CommonJITThunkID::PutByValWithSymbolTransitionNewlyAllocatingHandler).retagged<JITStubRoutinePtrTag>();
-                            else
-                                code = vm.getCTIStub(CommonJITThunkID::PutByValWithStringTransitionNewlyAllocatingHandler).retagged<JITStubRoutinePtrTag>();
-                        } else {
-                            if (accessCase.uid()->isSymbol())
-                                code = vm.getCTIStub(CommonJITThunkID::PutByValWithSymbolTransitionReallocatingHandler).retagged<JITStubRoutinePtrTag>();
-                            else
-                                code = vm.getCTIStub(CommonJITThunkID::PutByValWithStringTransitionReallocatingHandler).retagged<JITStubRoutinePtrTag>();
+                                code = selectTransitionHandler(CommonJITThunkID::PutByValWithStringTransitionNonAllocatingHandler, CommonJITThunkID::PutByValWithStringTransitionReallocatingOutOfLineHandler, CommonJITThunkID::PutByValWithStringTransitionNewlyAllocatingHandler, CommonJITThunkID::PutByValWithStringTransitionReallocatingHandler);
+                            break;
+                        case AccessCase::IndexedUndefinedKeyTransition:
+                            code = selectTransitionHandler(CommonJITThunkID::PutByValWithUndefinedKeyTransitionNonAllocatingHandler, CommonJITThunkID::PutByValWithUndefinedKeyTransitionReallocatingOutOfLineHandler, CommonJITThunkID::PutByValWithUndefinedKeyTransitionNewlyAllocatingHandler, CommonJITThunkID::PutByValWithUndefinedKeyTransitionReallocatingHandler);
+                            break;
+                        case AccessCase::IndexedNullKeyTransition:
+                            code = selectTransitionHandler(CommonJITThunkID::PutByValWithNullKeyTransitionNonAllocatingHandler, CommonJITThunkID::PutByValWithNullKeyTransitionReallocatingOutOfLineHandler, CommonJITThunkID::PutByValWithNullKeyTransitionNewlyAllocatingHandler, CommonJITThunkID::PutByValWithNullKeyTransitionReallocatingHandler);
+                            break;
+                        case AccessCase::IndexedTrueKeyTransition:
+                            code = selectTransitionHandler(CommonJITThunkID::PutByValWithTrueKeyTransitionNonAllocatingHandler, CommonJITThunkID::PutByValWithTrueKeyTransitionReallocatingOutOfLineHandler, CommonJITThunkID::PutByValWithTrueKeyTransitionNewlyAllocatingHandler, CommonJITThunkID::PutByValWithTrueKeyTransitionReallocatingHandler);
+                            break;
+                        case AccessCase::IndexedFalseKeyTransition:
+                            code = selectTransitionHandler(CommonJITThunkID::PutByValWithFalseKeyTransitionNonAllocatingHandler, CommonJITThunkID::PutByValWithFalseKeyTransitionReallocatingOutOfLineHandler, CommonJITThunkID::PutByValWithFalseKeyTransitionNewlyAllocatingHandler, CommonJITThunkID::PutByValWithFalseKeyTransitionReallocatingHandler);
+                            break;
+                        default:
+                            RELEASE_ASSERT_NOT_REACHED();
                         }
                         auto stub = createPreCompiledICJITStubRoutine(WTF::move(code), vm, codeBlock);
                         connectWatchpointSets(stub.get(), WTF::move(watchedConditions), WTF::move(additionalWatchpointSets));
@@ -7811,6 +8325,18 @@ MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithSymbolMissHandler(VM&) { retur
 MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithSymbolCustomAccessorHandler(VM&) { return { }; }
 MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithSymbolCustomValueHandler(VM&) { return { }; }
 MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithSymbolGetterHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithUndefinedKeyLoadOwnPropertyHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithUndefinedKeyLoadPrototypePropertyHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithUndefinedKeyMissHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithNullKeyLoadOwnPropertyHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithNullKeyLoadPrototypePropertyHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithNullKeyMissHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithTrueKeyLoadOwnPropertyHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithTrueKeyLoadPrototypePropertyHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithTrueKeyMissHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithFalseKeyLoadOwnPropertyHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithFalseKeyLoadPrototypePropertyHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> getByValWithFalseKeyMissHandler(VM&) { return { }; }
 MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithStringReplaceHandler(VM&) { return { }; }
 MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithStringTransitionNonAllocatingHandler(VM&) { return { }; }
 MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithStringTransitionNewlyAllocatingHandler(VM&) { return { }; }
@@ -7829,6 +8355,26 @@ MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithSymbolCustomAccessorHandler(VM
 MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithSymbolCustomValueHandler(VM&) { return { }; }
 MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithSymbolStrictSetterHandler(VM&) { return { }; }
 MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithSymbolSloppySetterHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithUndefinedKeyReplaceHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithUndefinedKeyTransitionNonAllocatingHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithUndefinedKeyTransitionNewlyAllocatingHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithUndefinedKeyTransitionReallocatingHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithUndefinedKeyTransitionReallocatingOutOfLineHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithNullKeyReplaceHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithNullKeyTransitionNonAllocatingHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithNullKeyTransitionNewlyAllocatingHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithNullKeyTransitionReallocatingHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithNullKeyTransitionReallocatingOutOfLineHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithTrueKeyReplaceHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithTrueKeyTransitionNonAllocatingHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithTrueKeyTransitionNewlyAllocatingHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithTrueKeyTransitionReallocatingHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithTrueKeyTransitionReallocatingOutOfLineHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithFalseKeyReplaceHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithFalseKeyTransitionNonAllocatingHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithFalseKeyTransitionNewlyAllocatingHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithFalseKeyTransitionReallocatingHandler(VM&) { return { }; }
+MacroAssemblerCodeRef<JITThunkPtrTag> putByValWithFalseKeyTransitionReallocatingOutOfLineHandler(VM&) { return { }; }
 MacroAssemblerCodeRef<JITThunkPtrTag> inByValWithStringHitHandler(VM&) { return { }; }
 MacroAssemblerCodeRef<JITThunkPtrTag> inByValWithStringMissHandler(VM&) { return { }; }
 MacroAssemblerCodeRef<JITThunkPtrTag> inByValWithSymbolHitHandler(VM&) { return { }; }

@@ -67,9 +67,9 @@ RenderSVGRoot::RenderSVGRoot(SVGSVGElement& element, RenderStyle&& style)
 {
     ASSERT(isRenderSVGRoot());
     LayoutSize intrinsicSize(computeIntrinsicSize());
-    if (!intrinsicSize.width())
+    if (!svgSVGElement().hasIntrinsicWidth())
         intrinsicSize.setWidth(defaultWidth);
-    if (!intrinsicSize.height())
+    if (!svgSVGElement().hasIntrinsicHeight())
         intrinsicSize.setHeight(defaultHeight);
     setIntrinsicSize(intrinsicSize);
 }
@@ -91,12 +91,15 @@ RenderSVGViewportContainer* RenderSVGRoot::viewportContainer() const
 
 bool RenderSVGRoot::hasIntrinsicAspectRatio() const
 {
-    return computeIntrinsicAspectRatio();
+    return preferredAspectRatioAsSize().aspectRatioDouble();
 }
 
 FloatSize RenderSVGRoot::computeIntrinsicSize() const
 {
-    ASSERT_IMPLIES(view().frameView().layoutContext().isInRenderTreeLayout(), !shouldApplySizeContainment());
+    // Size containment suppresses intrinsic dimensions from content.
+    // The base class returns values from the cache / contain-intrinsic-size without querying image data.
+    if (shouldApplySizeOrInlineSizeContainment())
+        return { intrinsicLogicalWidth(), intrinsicLogicalHeight() };
     // https://www.w3.org/TR/SVG/coords.html#IntrinsicSizing
     FloatSize intrinsicSize = { svgSVGElement().intrinsicWidth(), svgSVGElement().intrinsicHeight() };
     // Transpose for vertical writing mode
@@ -105,9 +108,13 @@ FloatSize RenderSVGRoot::computeIntrinsicSize() const
     return intrinsicSize;
 }
 
-FloatSize RenderSVGRoot::preferredAspectRatio() const
+FloatSize RenderSVGRoot::preferredAspectRatioAsSize() const
 {
-    ASSERT(!shouldApplySizeContainment());
+    // Size containment suppresses intrinsic dimensions from content, but the
+    // aspect ratio from the CSS aspect-ratio property is still available via the
+    // base class (which doesn't query image data).
+    if (shouldApplySizeOrInlineSizeContainment())
+        return RenderReplaced::preferredAspectRatioAsSize();
 
     if (style().aspectRatio().isRatio())
         return FloatSize::narrowPrecision(style().aspectRatioLogicalWidth().value, style().aspectRatioLogicalHeight().value);
@@ -132,7 +139,6 @@ FloatSize RenderSVGRoot::preferredAspectRatio() const
     if (style().aspectRatio().isAutoAndRatio())
         return FloatSize::narrowPrecision(style().aspectRatioLogicalWidth().value, style().aspectRatioLogicalHeight().value);
     return { };
-
 }
 
 bool RenderSVGRoot::isEmbeddedThroughSVGImage() const
@@ -371,6 +377,12 @@ void RenderSVGRoot::paintContents(PaintInfo& paintInfo, const LayoutPoint& paint
     else if (paintInfo.phase == PaintPhase::ChildBlockBackgrounds)
         paintInfoForChild.phase = PaintPhase::ChildBlockBackground;
 
+    // When the SVG root has a self-painting layer, children are painted by
+    // paintChildrenInDOMOrderForSVG() to ensure correct DOM-order interleaving
+    // of layer and non-layer children.
+    if (hasSelfPaintingLayer())
+        return;
+
     paintInfoForChild.updateSubtreePaintRootForChildren(this);
     for (auto& child : childrenOfType<RenderElement>(*this)) {
         if (!child.hasSelfPaintingLayer())
@@ -451,22 +463,12 @@ bool RenderSVGRoot::nodeAtPoint(const HitTestRequest& request, HitTestResult& re
 {
     auto adjustedLocation = accumulatedOffset + location();
 
-    auto visualOverflowRect = this->visualOverflowRect();
-    visualOverflowRect.moveBy(adjustedLocation);
-
-    // Test SVG content if the point is in our content box or it is inside the visualOverflowRect and the overflow is visible.
-    if (contentBoxRect().contains(adjustedLocation) || (!shouldApplyViewportClip() && locationInContainer.intersects(visualOverflowRect))) {
-        // Check kids first.
-        for (auto* child = lastChild(); child; child = child->previousSibling()) {
-            if (!child->hasLayer() && child->nodeAtPoint(request, result, locationInContainer, adjustedLocation, hitTestAction)) {
-                updateHitTestResult(result, locationInContainer.point() - toLayoutSize(adjustedLocation));
-                return true;
-            }
-        }
-    }
+    // SVG children are hit tested by RenderLayer::hitTestChildrenInDOMOrderForSVG(),
+    // which inverse-transforms through non-layer SVG transforms; iterating children here
+    // would bypass that and cause false positives.
 
     // If we didn't early exit above, we've just hit the container <svg> element. Unlike SVG 1.1, 2nd Edition allows container elements to be hit.
-    if ((hitTestAction == HitTestBlockBackground || hitTestAction == HitTestChildBlockBackground) && visibleToHitTesting(request)) {
+    if ((hitTestAction == HitTestAction::BlockBackground || hitTestAction == HitTestAction::ChildBlockBackground) && visibleToHitTesting(request)) {
         LayoutRect boundsRect(adjustedLocation, size());
         if (locationInContainer.intersects(boundsRect)) {
             updateHitTestResult(result, flipForWritingMode(locationInContainer.point() - toLayoutSize(adjustedLocation)));
@@ -507,17 +509,17 @@ void RenderSVGRoot::mapLocalToContainer(const RenderLayerModelObject* repaintCon
     // If this box has a transform, it acts as a fixed position container for fixed descendants,
     // and may itself also be fixed position. So propagate 'fixed' up only if this box is fixed position.
     if (isFixedPos)
-        mode.add(IsFixed);
-    else if (mode.contains(IsFixed) && canContainFixedPositionObjects())
-        mode.remove(IsFixed);
+        mode.add(MapCoordinatesMode::IsFixed);
+    else if (mode.contains(MapCoordinatesMode::IsFixed) && canContainFixedPositionObjects())
+        mode.remove(MapCoordinatesMode::IsFixed);
 
     if (wasFixed)
-        *wasFixed = mode.contains(IsFixed);
+        *wasFixed = mode.contains(MapCoordinatesMode::IsFixed);
 
     auto containerOffset = offsetFromContainer(*container, LayoutPoint(transformState.mappedPoint()));
 
-    bool preserve3D = mode & UseTransforms && participatesInPreserve3D();
-    if (mode & UseTransforms && shouldUseTransformFromContainer(container.get())) {
+    bool preserve3D = mode & MapCoordinatesMode::UseTransforms && participatesInPreserve3D();
+    if (mode & MapCoordinatesMode::UseTransforms && shouldUseTransformFromContainer(container.get())) {
         TransformationMatrix t;
         getTransformFromContainer(containerOffset, t);
 
@@ -546,7 +548,7 @@ void RenderSVGRoot::mapLocalToContainer(const RenderLayerModelObject* repaintCon
         return;
     }
 
-    mode.remove(ApplyContainerFlip);
+    mode.remove(MapCoordinatesMode::ApplyContainerFlip);
     if (transformState.transformMatrixTracking() == TransformState::DoNotTrackTransformMatrix) {
         container->mapLocalToContainer(repaintContainer, transformState, mode, wasFixed);
         return;
@@ -605,7 +607,7 @@ void RenderSVGRoot::absoluteQuads(Vector<FloatQuad>& quads, bool* wasFixed) cons
     if (CheckedPtr fragmentedFlow = enclosingFragmentedFlow(); fragmentedFlow && fragmentedFlow->absoluteQuadsForBox(quads, wasFixed, *this))
         return;
 
-    quads.append(localToAbsoluteQuad(FloatRect { borderBoxRect() }, UseTransforms, wasFixed));
+    quads.append(localToAbsoluteQuad(FloatRect { borderBoxRect() }, MapCoordinatesMode::UseTransforms, wasFixed));
 }
 
 }

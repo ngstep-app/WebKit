@@ -51,7 +51,7 @@ RemoteMesh::RemoteMesh(GPUConnectionToWebProcess& gpuConnectionToWebProcess, Rem
     , m_gpuConnectionToWebProcess(gpuConnectionToWebProcess)
     , m_gpu(gpu)
 {
-    Ref { m_streamConnection }->startReceivingMessages(*this, Messages::RemoteMesh::messageReceiverName(), m_identifier.toUInt64());
+    protect(m_streamConnection)->startReceivingMessages(*this, Messages::RemoteMesh::messageReceiverName(), m_identifier.toUInt64());
 }
 
 RemoteMesh::~RemoteMesh() = default;
@@ -66,7 +66,7 @@ RefPtr<IPC::Connection> RemoteMesh::connection() const
 
 void RemoteMesh::stopListeningForIPC()
 {
-    Ref { m_streamConnection }->stopReceivingMessages(Messages::RemoteMesh::messageReceiverName(), m_identifier.toUInt64());
+    protect(m_streamConnection)->stopReceivingMessages(Messages::RemoteMesh::messageReceiverName(), m_identifier.toUInt64());
 }
 
 void RemoteMesh::destruct()
@@ -79,26 +79,31 @@ void RemoteMesh::setLabel(String&& label)
     m_backing->setLabel(WTF::move(label));
 }
 
-void RemoteMesh::update(const WebModel::UpdateMeshDescriptor& descriptor, CompletionHandler<void(bool)>&& completionHandler)
+void RemoteMesh::update(Vector<WebModel::UpdateMeshDescriptor>&& descriptor, CompletionHandler<void(bool)>&& completionHandler)
 {
-    m_backing->update(descriptor);
+    m_backing->update(WTF::move(descriptor));
     completionHandler(true);
 }
 
-void RemoteMesh::render()
+void RemoteMesh::render(uint32_t textureIndex, CompletionHandler<void(bool)>&& completionHandler)
 {
-    m_backing->render();
+    Ref workQueue = m_gpu->workQueue();
+    m_backing->render(textureIndex, [workQueue = WTF::move(workQueue), completionHandler = WTF::move(completionHandler)] (bool result) mutable {
+        protect(workQueue)->dispatch([result, completionHandler = WTF::move(completionHandler)] mutable {
+            completionHandler(result);
+        });
+    });
 }
 
-void RemoteMesh::updateTexture(const WebModel::UpdateTextureDescriptor& descriptor, CompletionHandler<void(bool)>&& completionHandler)
+void RemoteMesh::updateTexture(Vector<WebModel::UpdateTextureDescriptor>&& descriptor, CompletionHandler<void(bool)>&& completionHandler)
 {
-    m_backing->updateTexture(descriptor);
+    m_backing->updateTexture(WTF::move(descriptor));
     completionHandler(true);
 }
 
-void RemoteMesh::updateMaterial(const WebModel::UpdateMaterialDescriptor& descriptor, CompletionHandler<void(bool)>&& completionHandler)
+void RemoteMesh::updateMaterial(Vector<WebModel::UpdateMaterialDescriptor>&& descriptor, CompletionHandler<void(bool)>&& completionHandler)
 {
-    m_backing->updateMaterial(descriptor);
+    m_backing->updateMaterial(WTF::move(descriptor));
     completionHandler(true);
 }
 
@@ -122,9 +127,18 @@ void RemoteMesh::play(bool playing)
     m_backing->play(playing);
 }
 
-void RemoteMesh::setEnvironmentMap(const WebModel::ImageAsset& imageAsset)
+void RemoteMesh::setEnvironmentMap(const WebModel::UpdateTextureDescriptor& imageAsset)
 {
     m_backing->setEnvironmentMap(imageAsset);
+}
+
+void RemoteMesh::updateContentsHeadroom(float headroom)
+{
+#if HAVE(SUPPORT_HDR_DISPLAY)
+    m_backing->updateContentsHeadroom(headroom);
+#else
+    UNUSED_PARAM(headroom);
+#endif
 }
 
 void RemoteMesh::updateRenderBuffers(unsigned width, unsigned height, CompletionHandler<void(Vector<MachSendRight>&&)>&& completionHandler)
@@ -139,6 +153,11 @@ void RemoteMesh::updateRenderBuffers(unsigned width, unsigned height, Completion
     WebModel::ResizeMeshDescriptor descriptor { width, height, WTF::move(renderBuffers) };
     m_backing->updateRenderBuffers(WTF::move(descriptor));
     completionHandler(m_backing->ioSurfaceHandles());
+}
+
+void RemoteMesh::processRemovals(Vector<WebModel::TypedResourceId>&& meshRemovals, Vector<WebModel::TypedResourceId>&& materialRemovals, Vector<WebModel::TypedResourceId>&& textureRemovals, CompletionHandler<void(bool)>&& completionHandler)
+{
+    m_backing->processRemovals(WTF::move(meshRemovals), WTF::move(materialRemovals), WTF::move(textureRemovals), WTF::move(completionHandler));
 }
 
 } // namespace WebKit

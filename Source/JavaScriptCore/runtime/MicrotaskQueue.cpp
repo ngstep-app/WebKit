@@ -38,7 +38,6 @@
 #include "MicrotaskQueueInlines.h"
 #include "ScriptProfilingScope.h"
 #include "SlotVisitorInlines.h"
-#include <wtf/SetForScope.h>
 #include <wtf/TZoneMallocInlines.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
@@ -52,8 +51,8 @@ WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(DebuggableMicrotaskDispatcher);
 bool QueuedTask::isRunnable() const
 {
     if (isJSMicrotaskDispatcher()) [[unlikely]]
-        return jsCast<JSMicrotaskDispatcher*>(dispatcher())->dispatcher()->isRunnable();
-    return jsCast<JSGlobalObject*>(dispatcher())->microtaskRunnability() == QueuedTaskResult::Executed;
+        return uncheckedDowncast<JSMicrotaskDispatcher>(dispatcher())->dispatcher()->isRunnable();
+    return uncheckedDowncast<JSGlobalObject>(dispatcher())->microtaskRunnability() == QueuedTaskResult::Executed;
 }
 
 static bool runMicrotask(JSGlobalObject* globalObject, TopExceptionScope& catchScope, VM& vm, QueuedTask& task, MicrotaskCall* microtaskCall)
@@ -177,7 +176,7 @@ ALWAYS_INLINE std::pair<JSGlobalObject*, bool> MicrotaskQueue::drainImpl(JSGloba
         auto& front = m_queue.front();
 
         if (!front.isJSMicrotaskDispatcher()) [[likely]] {
-            auto* globalObject = jsCast<JSGlobalObject*>(front.dispatcher());
+            auto* globalObject = uncheckedDowncast<JSGlobalObject>(front.dispatcher());
             auto result = globalObject->microtaskRunnability();
             if (result != QueuedTask::Result::Executed) [[unlikely]] {
                 auto task = m_queue.dequeue();
@@ -195,7 +194,7 @@ ALWAYS_INLINE std::pair<JSGlobalObject*, bool> MicrotaskQueue::drainImpl(JSGloba
                 return { nullptr, true };
             }
         } else {
-            auto* jsMicrotaskDispatcher = jsCast<JSMicrotaskDispatcher*>(front.dispatcher());
+            auto* jsMicrotaskDispatcher = uncheckedDowncast<JSMicrotaskDispatcher>(front.dispatcher());
             auto* globalObject = front.globalObject();
 
             if (globalObject != currentGlobalObject) [[unlikely]]

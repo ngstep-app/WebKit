@@ -26,6 +26,7 @@
 #include "JSCInlines.h"
 #include "NumberPrototype.h"
 #include "ParseInt.h"
+#include "RegExpConstructorInlines.h"
 #include "RegExpGlobalDataInlines.h"
 #include "RegExpPrototype.h"
 #include "YarrFlags.h"
@@ -110,19 +111,19 @@ JSC_DEFINE_HOST_FUNCTION(regExpConstructorEscape, (JSGlobalObject* globalObject,
     if (!value.isString()) [[unlikely]]
         return throwVMTypeError(globalObject, scope, "RegExp.escape requires a string"_s);
 
-    auto string = asString(value)->value(globalObject);
+    auto view = asString(value)->view(globalObject);
     RETURN_IF_EXCEPTION(scope, { });
 
     StringBuilder builder(OverflowPolicy::RecordOverflow);
-    builder.reserveCapacity(string->length());
+    builder.reserveCapacity(view->length());
 
-    for (unsigned i = 0; i < string->length() && !builder.hasOverflowed();) {
+    for (unsigned i = 0; i < view->length() && !builder.hasOverflowed();) {
         char32_t codePoint;
-        if (string->is8Bit())
-            codePoint = string->span8()[i++];
+        if (view->is8Bit())
+            codePoint = view->span8()[i++];
         else {
-            auto characters = string->span16();
-            U16_NEXT(characters, i, string->length(), codePoint);
+            auto characters = view->span16();
+            U16_NEXT(characters, i, view->length(), codePoint);
         }
 
         if (builder.isEmpty() && isASCIIAlphanumeric(codePoint)) {
@@ -308,7 +309,7 @@ inline OptionSet<Yarr::Flags> toFlags(JSGlobalObject* globalObject, JSValue flag
     return result.value();
 }
 
-static JSObject* regExpCreate(JSGlobalObject* globalObject, JSValue newTarget, JSValue patternArg, JSValue flagsArg)
+JSObject* regExpCreate(JSGlobalObject* globalObject, JSValue newTarget, JSValue patternArg, JSValue flagsArg)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -351,7 +352,7 @@ JSObject* constructRegExp(JSGlobalObject* globalObject, const ArgList& args,  JS
     }
 
     if (isPatternRegExp) {
-        RegExp* regExp = jsCast<RegExpObject*>(patternArg)->regExp();
+        RegExp* regExp = uncheckedDowncast<RegExpObject>(patternArg)->regExp();
         Structure* structure = getRegExpStructure(globalObject, newTarget);
         RETURN_IF_EXCEPTION(scope, nullptr);
 

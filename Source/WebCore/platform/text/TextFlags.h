@@ -26,10 +26,8 @@
 #pragma once
 
 #include <WebCore/FontTaggedSettings.h>
-#include <optional>
-#include <vector>
-#include <wtf/Hasher.h>
 #include <wtf/Markable.h>
+#include <wtf/text/WTFString.h>
 
 namespace WTF {
 class TextStream;
@@ -122,12 +120,19 @@ struct ExpansionBehavior {
 WTF::TextStream& operator<<(WTF::TextStream&, ExpansionBehavior::Behavior);
 WTF::TextStream& operator<<(WTF::TextStream&, ExpansionBehavior);
 
-enum class FontSynthesisLonghandValue : bool {
+enum class FontSynthesisLonghandValue : uint8_t {
     None,
-    Auto
+    Auto,
+};
+
+enum class FontSynthesisStyleLonghandValue : uint8_t {
+    None,
+    Auto,
+    ObliqueOnly
 };
 
 WTF::TextStream& operator<<(WTF::TextStream&, FontSynthesisLonghandValue);
+WTF::TextStream& operator<<(WTF::TextStream&, FontSynthesisStyleLonghandValue);
 
 enum class FontVariantLigatures : uint8_t { Normal, Yes, No };
 enum class FontVariantPosition : uint8_t { Normal, Subscript, Superscript };

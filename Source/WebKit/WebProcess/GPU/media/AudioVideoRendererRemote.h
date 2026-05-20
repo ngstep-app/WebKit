@@ -37,6 +37,8 @@
 #include <WebCore/HTMLMediaElementIdentifier.h>
 #include <WebCore/MediaPlayerIdentifier.h>
 #include <WebCore/MediaSampleConverter.h>
+#include <WebCore/MediaTimeUpdateData.h>
+#include <WebCore/VideoPlaybackQualityMetrics.h>
 #include <wtf/Forward.h>
 #include <wtf/LoggerHelper.h>
 #include <wtf/RefPtr.h>
@@ -82,7 +84,7 @@ public:
         void didReceiveMessage(IPC::Connection&, IPC::Decoder&) final;
 
         void firstFrameAvailable(RemoteAudioVideoRendererState);
-        void hasAvailableVideoFrame(MediaTime, double, RemoteAudioVideoRendererState);
+        void hasAvailableVideoFrame(MediaTime, double, RemoteAudioVideoRendererState, std::optional<WebCore::VideoPlaybackQualityMetrics>);
         void requiresFlushToResume(RemoteAudioVideoRendererState);
         void renderingModeChanged(RemoteAudioVideoRendererState);
         void sizeChanged(MediaTime, WebCore::FloatSize, RemoteAudioVideoRendererState);
@@ -93,11 +95,34 @@ public:
         void errorOccurred(WebCore::PlatformMediaError);
         void readyForMoreMediaData(WebCore::SamplesRendererTrackIdentifier);
         void stateUpdate(RemoteAudioVideoRendererState);
+        void updatePlaybackQualityMetrics(WebCore::VideoPlaybackQualityMetrics);
 
 #if PLATFORM(COCOA)
         void layerHostingContextChanged(RemoteAudioVideoRendererState, WebCore::HostingContext&&, const WebCore::FloatSize&);
 #endif
         ThreadSafeWeakPtr<AudioVideoRendererRemote> m_parent;
+    };
+
+    class TimeProgressEstimator final {
+    public:
+        MediaTime currentTime() const;
+        bool timeIsProgressing() const;
+        double effectiveRate() const { return m_effectiveRate.load(); }
+        void setTime(const WebCore::MediaTimeUpdateData&);
+        void setRate(double);
+        void pause();
+        void setStallCap(const MediaTime&);
+        void clearStallCap();
+
+    private:
+        static constexpr Seconds kUpdateInterval = remoteAudioVideoRendererUpdateInterval;
+        mutable Lock m_lock;
+        MediaTime m_cachedTime WTF_GUARDED_BY_LOCK(m_lock);
+        MonotonicTime m_wallTime WTF_GUARDED_BY_LOCK(m_lock);
+        std::atomic<double> m_effectiveRate { 0 };
+        bool m_forceUseCachedTime WTF_GUARDED_BY_LOCK(m_lock) { false };
+        mutable std::optional<MediaTime> m_lastReturnedTime WTF_GUARDED_BY_LOCK(m_lock);
+        std::optional<MediaTime> m_stallCap WTF_GUARDED_BY_LOCK(m_lock);
     };
 
 private:
@@ -147,9 +172,10 @@ private:
     void setRate(double) final;
     double effectiveRate() const final;
     void stall() final;
-    void prepareToSeek() final;
-    Ref<WebCore::MediaTimePromise> seekTo(const MediaTime&) final;
+    Ref<WebCore::MediaTimePromise> prepareToSeek(const MediaTime&) final;
+    Ref<GenericPromise> finishSeek(const MediaTime&) final;
     bool seeking() const final;
+    void setScreenReserved(bool) final;
 
     void setPreferences(WebCore::VideoRendererPreferences) final;
     void setHasProtectedVideoContent(bool) final;
@@ -220,6 +246,7 @@ private:
     bool isGPURunning() const { return !m_shutdown; }
 
     void updateCacheState(const RemoteAudioVideoRendererState&);
+    void updateVideoPlaybackMetricsUpdateInterval(const Seconds&);
     class ReadyForMoreDataState {
     public:
         static constexpr size_t kMaxPendingSample = 20;
@@ -235,6 +262,8 @@ private:
     ReadyForMoreDataState& readyForMoreDataState(TrackIdentifier);
     void resolveRequestMediaDataWhenReadyIfNeeded(TrackIdentifier);
 
+    void cancelPendingSeek();
+
     const ThreadSafeWeakPtr<GPUProcessConnection> m_gpuProcessConnection;
     const Ref<MessageReceiver> m_receiver;
     const RemoteAudioVideoRendererIdentifier m_identifier;
@@ -242,7 +271,14 @@ private:
     std::atomic<bool> m_shutdown { false };
 
     mutable Lock m_lock;
-    RemoteAudioVideoRendererState m_state WTF_GUARDED_BY_LOCK(m_lock);
+    struct CachedState {
+        bool paused { false };
+        std::optional<WebCore::VideoPlaybackQualityMetrics> videoPlaybackQualityMetrics;
+    };
+    CachedState m_cachedState WTF_GUARDED_BY_LOCK(m_lock);
+    MonotonicTime m_lastPlaybackQualityMetricsQueryTime WTF_GUARDED_BY_LOCK(m_lock);
+    Seconds m_videoPlaybackMetricsUpdateInterval WTF_GUARDED_BY_LOCK(m_lock);
+    TimeProgressEstimator m_timeEstimator;
 
     Function<void(WebCore::PlatformMediaError)> m_errorCallback WTF_GUARDED_BY_CAPABILITY(queueSingleton());
     Function<void()> m_firstFrameAvailableCallback WTF_GUARDED_BY_CAPABILITY(queueSingleton());
@@ -265,8 +301,15 @@ private:
     Vector<LayerHostingContextCallback> m_layerHostingContextRequests WTF_GUARDED_BY_CAPABILITY(queueSingleton());
     WebCore::HostingContext m_layerHostingContext WTF_GUARDED_BY_LOCK(m_lock);
     WebCore::FloatSize m_naturalSize WTF_GUARDED_BY_LOCK(m_lock);
+
+    // Seek Tracking
+    Ref<NativePromiseRequest> m_prepareSeekRequest WTF_GUARDED_BY_CAPABILITY(queueSingleton());
+    std::optional<WebCore::MediaTimePromise::Producer> m_prepareSeekPromise WTF_GUARDED_BY_CAPABILITY(queueSingleton());
+    Ref<NativePromiseRequest> m_finishSeekRequest WTF_GUARDED_BY_CAPABILITY(queueSingleton());
+    std::optional<GenericPromise::Producer> m_finishSeekPromise WTF_GUARDED_BY_CAPABILITY(queueSingleton());
     std::atomic<bool> m_seeking { false };
-    MediaTime m_lastSeekTime; // Always call on the renderer's client thread.
+    MediaTime m_lastSeekTime; // Always called on the renderer's client thread.
+
 #if PLATFORM(COCOA)
     const UniqueRef<WebCore::VideoLayerManager> m_videoLayerManager WTF_GUARDED_BY_LOCK(m_lock);
     mutable PlatformLayerContainer m_videoLayer WTF_GUARDED_BY_LOCK(m_lock);
@@ -276,6 +319,7 @@ private:
     const Ref<const Logger> m_logger;
     const uint64_t m_logIdentifier;
 #endif
+    bool m_keyframeNeeded { true };
 };
 
 }

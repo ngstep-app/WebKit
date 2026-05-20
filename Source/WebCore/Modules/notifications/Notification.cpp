@@ -42,7 +42,6 @@
 #include "DocumentSecurityOrigin.h"
 #include "Event.h"
 #include "EventNames.h"
-#include "EventTargetInlines.h"
 #include "FrameDestructionObserverInlines.h"
 #include "JSDOMConvertEnumeration.h"
 #include "JSDOMConvertStrings.h"
@@ -92,7 +91,7 @@ static ExceptionOr<Ref<SerializedScriptValue>> createSerializedScriptValue(Scrip
         return Exception { ExceptionCode::TypeError, "Notification cannot be created without a global object"_s };
 
     Vector<Ref<MessagePort>> dummyPorts;
-    return SerializedScriptValue::create(*globalObject, value, { }, dummyPorts);
+    return SerializedScriptValue::create(*globalObject, value, { }, dummyPorts, SerializationForStorage::Yes);
 }
 
 ExceptionOr<Ref<Notification>> Notification::create(ScriptExecutionContext& context, String&& title, Options&& options)
@@ -190,14 +189,14 @@ Notification::Notification(ScriptExecutionContext& context, WTF::UUID identifier
 
 #if ENABLE(DECLARATIVE_WEB_PUSH)
     if (!options.navigate.isEmpty()) {
-        auto navigate = context.completeURL(WTF::move(options.navigate).isolatedCopy());
+        auto navigate = context.parseURL(WTF::move(options.navigate).isolatedCopy());
         if (navigate.isValid())
             m_navigate = WTF::move(navigate);
     }
 #endif
 
     if (!options.icon.isEmpty()) {
-        auto iconURL = context.completeURL(WTF::move(options.icon).isolatedCopy());
+        auto iconURL = context.parseURL(WTF::move(options.icon).isolatedCopy());
         if (iconURL.isValid())
             m_icon = iconURL;
     }
@@ -404,7 +403,7 @@ auto Notification::permission(ScriptExecutionContext& context) -> Permission
 
 void Notification::requestPermission(Document& document, RefPtr<NotificationPermissionCallback>&& callback, Ref<DeferredPromise>&& promise)
 {
-    auto resolvePromiseAndCallback = [document = Ref { document }, callback = WTF::move(callback), promise = WTF::move(promise)](Permission permission) mutable {
+    auto resolvePromiseAndCallback = [document = protect(document), callback = WTF::move(callback), promise = WTF::move(promise)](Permission permission) mutable {
         protect(document->eventLoop())->queueTask(TaskSource::DOMManipulation, [callback = WTF::move(callback), promise = WTF::move(promise), permission]() mutable {
             if (callback)
                 callback->invoke(permission);

@@ -181,6 +181,15 @@ void MatchedDeclarationsCache::add(const RenderStyle& style, const RenderStyle& 
     });
     if (addResult.iterator->value.size() < maxEntriesPerHash)
         addResult.iterator->value.append(Entry { &matchResult, RenderStyle::clonePtr(style), RenderStyle::clonePtr(parentStyle) });
+
+    // Protect against unlimited growth.
+#if PLATFORM(WPE)
+    constexpr size_t maximumSize = 1024;
+#else
+    constexpr size_t maximumSize = 16 * 1024;
+#endif
+    if (m_entries.size() > maximumSize)
+        m_entries.remove(m_entries.random());
 }
 
 void MatchedDeclarationsCache::remove(unsigned hash)
@@ -196,10 +205,9 @@ void MatchedDeclarationsCache::invalidate()
 template<typename Callback>
 void MatchedDeclarationsCache::removeAllMatching(const Callback& matches)
 {
-    for (auto& [key, bucket] : m_entries)
-        bucket.removeAllMatching(matches);
-    m_entries.removeIf([](auto& keyValue) {
-        return !keyValue.value.size();
+    m_entries.removeIf([&](auto& keyValue) {
+        keyValue.value.removeAllMatching(matches);
+        return keyValue.value.isEmpty();
     });
 }
 

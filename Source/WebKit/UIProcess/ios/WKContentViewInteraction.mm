@@ -483,10 +483,10 @@ public:
 
     ~ImageAnalysisGestureDeferralToken()
     {
-        auto shouldPreventGestures = m_shouldPreventTextSelection ? WebKit::ShouldPreventGestures::Yes : WebKit::ShouldPreventGestures::No;
+        auto shouldPreventGestures = m_shouldPreventTextSelection;
         ensureOnMainRunLoop([weakView = m_view, shouldPreventGestures] {
             if (RetainPtr view = weakView.get())
-                [view _endImageAnalysisGestureDeferral:shouldPreventGestures];
+                [view _endImageAnalysisGestureDeferralShouldPreventGestures:shouldPreventGestures];
         });
     }
 
@@ -1364,7 +1364,7 @@ static WKDragSessionContext *ensureLocalDragSessionContext(id <UIDragSession> se
 #if ENABLE(IMAGE_ANALYSIS)
     _imageAnalysisDeferringGestureRecognizer = adoptNS([[WKDeferringGestureRecognizer alloc] initWithDeferringGestureDelegate:self]);
     [_imageAnalysisDeferringGestureRecognizer setName:@"Deferrer for image analysis"];
-    [_imageAnalysisDeferringGestureRecognizer setImmediatelyFailsAfterTouchEnd:YES];
+    [_imageAnalysisDeferringGestureRecognizer setImmediatelyFailsAfterActionEnd:YES];
     [_imageAnalysisDeferringGestureRecognizer setEnabled:WebKit::isLiveTextAvailableAndEnabled()];
 #endif
 
@@ -2229,6 +2229,9 @@ typedef NS_ENUM(NSInteger, EndEditingReason) {
         [self doAfterPositionInformationUpdate:[assistant = WeakObjCPtr<WKActionSheetAssistant>(_actionSheetAssistant.get())] (WebKit::InteractionInformationAtPosition information) {
             [assistant.get() interactionDidStartWithPositionInformation:information];
         } forRequest:positionInformationRequest];
+
+        if (_touchEventsCanPreventNativeGestures && [self _isTouchNearSelectionHandle:lastTouchEvent.locationInRootViewCoordinates])
+            _touchStartedNearSelectionHandle = YES;
     }
 
 #if ENABLE(TOUCH_EVENTS)
@@ -2237,13 +2240,17 @@ typedef NS_ENUM(NSInteger, EndEditingReason) {
 
     [self _handleTouchActionsForTouchEvent:nativeWebTouchEvent];
 
-    if (_touchEventsCanPreventNativeGestures)
+    if (_touchStartedNearSelectionHandle && lastTouchEvent.type != WebKit::WKTouchEventType::Begin) {
+        if (lastTouchEvent.type == WebKit::WKTouchEventType::Change || lastTouchEvent.type == WebKit::WKTouchEventType::End)
+            [self _doneDeferringTouchMove:NO];
+    } else if (_touchEventsCanPreventNativeGestures)
         _page->handlePreventableTouchEvent(nativeWebTouchEvent);
     else
         _page->handleUnpreventableTouchEvent(nativeWebTouchEvent);
 
     if (nativeWebTouchEvent.allTouchPointsAreReleased()) {
         _touchEventsCanPreventNativeGestures = YES;
+        _touchStartedNearSelectionHandle = NO;
 
         if (!_page->isScrollingOrZooming())
             [self _resetPanningPreventionFlags];
@@ -2464,7 +2471,17 @@ static WebCore::FloatQuad inflateQuad(const WebCore::FloatQuad& quad, float infl
 #if ENABLE(TOUCH_EVENTS)
 - (void)_touchEvent:(const WebKit::WebTouchEvent&)touchEvent preventsNativeGestures:(BOOL)preventsNativeGesture
 {
-    if (!preventsNativeGesture || ![_touchEventGestureRecognizer isDispatchingTouchEvents])
+    if (!preventsNativeGesture)
+        return;
+
+    if (touchEvent.allTouchPointsAreReleased())
+        [self _resetPanningPreventionFlags];
+    else {
+        _preventsPanningInXAxis = YES;
+        _preventsPanningInYAxis = YES;
+    }
+
+    if (![_touchEventGestureRecognizer isDispatchingTouchEvents])
         return;
 
     _longPressCanClick = NO;
@@ -2527,7 +2544,7 @@ static void appendRecognizerIfNonNull(RetainPtr<NSMutableArray>& array, const Re
 - (void)_doneDeferringTouchStart:(BOOL)preventNativeGestures
 {
     for (WKDeferringGestureRecognizer *gestureRecognizer in self._touchStartDeferringGestures) {
-        [gestureRecognizer endDeferral:preventNativeGestures ? WebKit::ShouldPreventGestures::Yes : WebKit::ShouldPreventGestures::No];
+        [gestureRecognizer endDeferralShouldPreventGestures:preventNativeGestures];
         if (_failedTouchStartDeferringGestures && !preventNativeGestures)
             _failedTouchStartDeferringGestures->add(gestureRecognizer);
     }
@@ -2535,13 +2552,13 @@ static void appendRecognizerIfNonNull(RetainPtr<NSMutableArray>& array, const Re
 
 - (void)_doneDeferringTouchMove:(BOOL)preventNativeGestures
 {
-    [_touchMoveDeferringGestureRecognizer endDeferral:preventNativeGestures ? WebKit::ShouldPreventGestures::Yes : WebKit::ShouldPreventGestures::No];
+    [_touchMoveDeferringGestureRecognizer endDeferralShouldPreventGestures:preventNativeGestures];
 }
 
 - (void)_doneDeferringTouchEnd:(BOOL)preventNativeGestures
 {
     for (WKDeferringGestureRecognizer *gesture in self._touchEndDeferringGestures)
-        [gesture endDeferral:preventNativeGestures ? WebKit::ShouldPreventGestures::Yes : WebKit::ShouldPreventGestures::No];
+        [gesture endDeferralShouldPreventGestures:preventNativeGestures];
 }
 
 - (BOOL)_isTouchStartDeferringGesture:(WKDeferringGestureRecognizer *)gesture
@@ -3205,6 +3222,11 @@ static inline bool isSamePair(UIGestureRecognizer *a, UIGestureRecognizer *b, UI
     }
 #endif
 
+#if ENABLE(MODEL_PROCESS)
+    if (gestureRecognizer == _modelInteractionPanGestureRecognizer && otherGestureRecognizer == [_webView.get() scrollView].panGestureRecognizer)
+        return _page->hasModelElement();
+#endif
+
     if ([gestureRecognizer isKindOfClass:WKDeferringGestureRecognizer.class])
         return [(WKDeferringGestureRecognizer *)gestureRecognizer shouldDeferGestureRecognizer:otherGestureRecognizer];
 
@@ -3374,6 +3396,38 @@ ALLOW_DEPRECATED_DECLARATIONS_END
     return _page->dataDetectionResults();
 }
 #endif
+
+- (BOOL)_isTouchNearSelectionHandle:(WebCore::FloatPoint)touchPoint
+{
+    if (_lastSelectionDrawingInfo.type != WebCore::SelectionType::Range)
+        return NO;
+
+    if (_suppressSelectionAssistantReasons)
+        return NO;
+
+    if (![_textInteractionWrapper areSelectionHandlesVisible])
+        return NO;
+
+    RefPtr page = _page;
+    if (!page)
+        return NO;
+
+    auto& editorState = page->editorState();
+    if (!editorState.visualData)
+        return NO;
+
+    static constexpr float handleHitTestPadding = 44;
+    auto inflatedContainsPoint = [&](WebCore::IntRect caretRect) -> bool {
+        if (caretRect.isEmpty())
+            return false;
+        WebCore::FloatRect hitArea(caretRect);
+        hitArea.inflate(handleHitTestPadding);
+        return hitArea.contains(touchPoint);
+    };
+
+    return inflatedContainsPoint(editorState.visualData->caretRectAtStart)
+        || inflatedContainsPoint(editorState.visualData->caretRectAtEnd);
+}
 
 - (BOOL)_pointIsInsideSelectionRect:(CGPoint)point outBoundingRect:(WebCore::FloatRect *)outBoundingRect
 {
@@ -3734,7 +3788,7 @@ ALLOW_DEPRECATED_DECLARATIONS_END
     if (![self ensurePositionInformationIsUpToDate:request])
         return NO;
 
-    if (gesture == WKBEGestureTypeLoupe && _positionInformation.selectability == WebKit::InteractionInformationAtPosition::Selectability::UnselectableDueToUserSelectNoneOrQuirk)
+    if ((gesture == WKBEGestureTypeLoupe || gesture == WKBEGestureTypeOneFingerDoubleTap) && _positionInformation.selectability == WebKit::InteractionInformationAtPosition::Selectability::UnselectableDueToUserSelectNoneOrQuirk)
         return NO;
 
     if (_positionInformation.preventTextInteraction)
@@ -3898,7 +3952,7 @@ ALLOW_DEPRECATED_DECLARATIONS_END
     if (shouldRequestMagnificationInformation)
         RELEASE_LOG(ViewGestures, "Single tap identified. Request details on potential zoom. (%p, pageProxyID=%llu)", self, _page->identifier().toUInt64());
 
-    protect(_page)->potentialTapAtPosition(std::nullopt, position, shouldRequestMagnificationInformation, [self nextTapIdentifier], WebKit::WebMouseEventInputSource::UserDriven);
+    protect(_page)->potentialTapAtPosition(std::nullopt, position, shouldRequestMagnificationInformation, [self nextTapIdentifier], WebKit::WebEventInputSource::UserDriven);
     _potentialTapInProgress = YES;
     _isTapHighlightIDValid = YES;
     _isExpectingFastSingleTapCommit = !_doubleTapGestureRecognizer.get().enabled;
@@ -6287,7 +6341,7 @@ static void logTextInteraction(const char* methodName, UIGestureRecognizer *loup
     [_webView.get() _resetFocusPreservationCountAndReleaseActiveFocusState];
     [self stopRelinquishingFirstResponderToFocusedElement];
     [self endEditingAndUpdateFocusAppearanceWithReason:EndEditingReasonAccessoryDone];
-    protect(_page)->setIsShowingInputViewForFocusedElement(false);
+    protect(_page)->setIsShowingInputViewForFocusedElement(_focusedElementInformation.frameID(), false);
 }
 
 - (void)updateFocusedElementValue:(NSString *)value
@@ -8500,11 +8554,11 @@ static RetainPtr<NSObject <WKFormPeripheral>> createInputPeripheralWithView(WebK
         _editingEndedByUser = NO;
 
     if (!shouldShowInputView || information.elementType == WebKit::InputType::None) {
-        page->setIsShowingInputViewForFocusedElement(false);
+        page->setIsShowingInputViewForFocusedElement(information.frameID(), false);
         return;
     }
 
-    page->setIsShowingInputViewForFocusedElement(true);
+    page->setIsShowingInputViewForFocusedElement(information.frameID(), true);
 
     // FIXME: We should remove this check when we manage to send ElementDidFocus from the WebProcess
     // only when it is truly time to show the keyboard.
@@ -8750,7 +8804,7 @@ static RetainPtr<NSObject <WKFormPeripheral>> createInputPeripheralWithView(WebK
         [_webView.get() _scheduleVisibleContentRectUpdate];
 
         [_webView.get() didEndFormControlInteraction];
-        protect(_page)->setIsShowingInputViewForFocusedElement(false);
+        protect(_page)->setIsShowingInputViewForFocusedElement(_focusedElementInformation.frameID(), false);
     }
 
     _page->setWaitingForPostLayoutEditorStateUpdateAfterFocusingElement(false);
@@ -9514,8 +9568,16 @@ static bool canUseQuickboardControllerFor(UITextContentType type)
             _shouldRestoreSelection = NO;
         }
     } else {
-        if (_lastSiblingBeforeSelectionHighlight != [self _siblingBeforeSelectionHighlight])
-            [_textInteractionWrapper prepareToMoveSelectionContainer:self._selectionContainerViewInternal];
+        RetainPtr container = [self _selectionContainerViewInternal];
+        RetainPtr selectionHighlightContainer = [[_textInteractionWrapper selectionHighlightView] superview];
+        BOOL siblingChanged = _lastSiblingBeforeSelectionHighlight != [self _siblingBeforeSelectionHighlight];
+        BOOL parentChanged = editorState.isEditableOrRanged() && selectionHighlightContainer != container;
+        if (!siblingChanged && parentChanged)
+            RELEASE_LOG(TextInteraction, "Selection highlight view was reparented");
+
+        if (siblingChanged || parentChanged)
+            [_textInteractionWrapper prepareToMoveSelectionContainer:container.get()];
+
         [self _updateSelectionViewsIfNeeded];
     }
 
@@ -10472,16 +10534,16 @@ static WebCore::DataOwnerType coreDataOwnerType(_UIDataOwner platformType)
 
 #pragma mark - WKDeferringGestureRecognizerDelegate
 
-- (WebKit::ShouldDeferGestures)deferringGestureRecognizer:(WKDeferringGestureRecognizer *)deferringGestureRecognizer willBeginTouchesWithEvent:(UIEvent *)event
+- (BOOL)deferringGestureRecognizer:(WKDeferringGestureRecognizer *)deferringGestureRecognizer shouldDeferGesturesForEventThatWillBeginAction:(UIEvent *)event
 {
     protect(self.gestureRecognizerConsistencyEnforcer)->beginTracking(deferringGestureRecognizer);
 
 #if ENABLE(IMAGE_ANALYSIS_ENHANCEMENTS)
     if ([_imageAnalysisInteraction interactableItemExistsAtPoint:[deferringGestureRecognizer locationInView:self]])
-        return WebKit::ShouldDeferGestures::No;
+        return NO;
 #endif
 
-    return [self gestureRecognizer:deferringGestureRecognizer isInterruptingMomentumScrollingWithEvent:event] ? WebKit::ShouldDeferGestures::No : WebKit::ShouldDeferGestures::Yes;
+    return ![self gestureRecognizer:deferringGestureRecognizer isInterruptingMomentumScrollingWithEvent:event];
 }
 
 - (void)deferringGestureRecognizer:(WKDeferringGestureRecognizer *)deferringGestureRecognizer didTransitionToState:(UIGestureRecognizerState)state
@@ -10490,7 +10552,7 @@ static WebCore::DataOwnerType coreDataOwnerType(_UIDataOwner platformType)
         protect(self.gestureRecognizerConsistencyEnforcer)->endTracking(deferringGestureRecognizer);
 }
 
-- (void)deferringGestureRecognizer:(WKDeferringGestureRecognizer *)deferringGestureRecognizer didEndTouchesWithEvent:(UIEvent *)event
+- (void)deferringGestureRecognizer:(WKDeferringGestureRecognizer *)deferringGestureRecognizer didEndActionWithEvent:(UIEvent *)event
 {
     protect(protect(self).get().gestureRecognizerConsistencyEnforcer).get().endTracking(deferringGestureRecognizer);
 
@@ -10551,6 +10613,9 @@ static WebCore::DataOwnerType coreDataOwnerType(_UIDataOwner platformType)
         return NO;
 
     if (gestureRecognizer == _touchEventGestureRecognizer)
+        return NO;
+
+    if (_touchStartedNearSelectionHandle)
         return NO;
 
 #if HAVE(UIKIT_WITH_MOUSE_SUPPORT)
@@ -10674,7 +10739,10 @@ static BOOL shouldEnableDragInteractionForPolicy(_WKDragInteractionPolicy policy
 #if HAVE(UIKIT_WITH_MOUSE_SUPPORT)
     if (!self.shouldUseAsyncInteractions) {
         [_dragInteraction _setLiftDelay:self.dragLiftDelay];
+ALLOW_DEPRECATED_DECLARATIONS_BEGIN
+        // FIXME: rdar://174059449 ('_setAllowsPointerDragBeforeLiftDelay:' is deprecated)
         [_dragInteraction _setAllowsPointerDragBeforeLiftDelay:NO];
+ALLOW_DEPRECATED_DECLARATIONS_END
     }
 #endif
 
@@ -12658,9 +12726,9 @@ static RetainPtr<NSItemProvider> createItemProvider(const WebKit::WebPageProxy& 
 
 #if ENABLE(IMAGE_ANALYSIS)
 
-- (void)_endImageAnalysisGestureDeferral:(WebKit::ShouldPreventGestures)shouldPreventGestures
+- (void)_endImageAnalysisGestureDeferralShouldPreventGestures:(BOOL)shouldPreventGestures
 {
-    [_imageAnalysisDeferringGestureRecognizer endDeferral:shouldPreventGestures];
+    [_imageAnalysisDeferringGestureRecognizer endDeferralShouldPreventGestures:shouldPreventGestures];
 }
 
 - (void)_doAfterPendingImageAnalysis:(void(^)(WebKit::ProceedWithTextSelectionInImage))block
@@ -13441,7 +13509,7 @@ static BOOL shouldUseMachineReadableCodeMenuFromImageAnalysisResult(CocoaImageAn
 
 - (void)imageAnalysisGestureDidFail:(WKImageAnalysisGestureRecognizer *)gestureRecognizer
 {
-    [self _endImageAnalysisGestureDeferral:WebKit::ShouldPreventGestures::No];
+    [self _endImageAnalysisGestureDeferralShouldPreventGestures:NO];
 }
 
 - (void)captureTextFromCameraForWebView:(id)sender
@@ -14398,7 +14466,7 @@ static inline WKTextAnimationType toWKTextAnimationType(WebCore::TextAnimationTy
 
 - (UIView *)_selectionContainerViewInternal
 {
-    if (_cachedSelectionContainerView)
+    if ([protect(_cachedSelectionContainerView) window])
         return _cachedSelectionContainerView;
 
     _cachedSelectionContainerView = [&] -> UIView * {
@@ -14410,7 +14478,7 @@ static inline WKTextAnimationType toWKTextAnimationType(WebCore::TextAnimationTy
             return self;
 
         RetainPtr enclosingView = [self _viewForLayerID:page->editorState().visualData->enclosingLayerID];
-        if (!enclosingView)
+        if (![enclosingView window])
             return self;
 
         for (UIView *selectedView in self.allViewsIntersectingSelectionRange) {
@@ -14430,7 +14498,7 @@ static inline WKTextAnimationType toWKTextAnimationType(WebCore::TextAnimationTy
     if (!drawingArea)
         return nil;
 
-    WeakPtr layerTreeNode = drawingArea->remoteLayerTreeHost().nodeForID(layerID);
+    RefPtr layerTreeNode = drawingArea->remoteLayerTreeHost().nodeForID(layerID);
     if (!layerTreeNode)
         return nil;
 

@@ -50,8 +50,6 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 #include "WasmVirtualAddress.h"
 #include <cstring>
 #include <wtf/DataLog.h>
-#include <wtf/HexNumber.h>
-#include <wtf/StdLibExtras.h>
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/text/StringBuilder.h>
 #include <wtf/text/WTFString.h>
@@ -210,29 +208,6 @@ bool QueryHandler::handleChunkedLibrariesResponse(size_t offset, size_t maxSize,
     return true;
 }
 
-String QueryHandler::buildWasmCallStackResponse()
-{
-    auto* state = m_debugServer.execution().debuggeeStateSafe();
-    if (!state->atBreakpointOrTrap()) {
-        dataLogLnIf(Options::verboseWasmDebugger(), "[Debugger] buildWasmCallStackResponse: not stopped at breakpoint or trap, returning empty");
-        return String();
-    }
-
-    auto& stopData = *state->stopData;
-    RELEASE_ASSERT(stopData.callFrame);
-    dataLogLnIf(Options::verboseWasmDebugger(), "[Debugger] buildWasmCallStackResponse: walking call stack from CallFrame ", RawPointer(stopData.callFrame));
-
-    Vector<FrameInfo> frames = collectCallStack(stopData.address, stopData.callFrame, stopData.instance->vm());
-
-    dataLogLnIf(Options::verboseWasmDebugger(), "[Debugger] buildWasmCallStackResponse: finished walking, ", frames.size(), " frames");
-
-    StringBuilder result;
-    for (const auto& frame : frames)
-        result.append(toNativeEndianHex(frame.address));
-    dataLogLnIf(Options::verboseWasmDebugger(), "[Debugger] buildWasmCallStackResponse: response length: ", result.length());
-    return result.toString();
-}
-
 void QueryHandler::handleStartNoAckMode()
 {
     // Format: QStartNoAckMode
@@ -311,6 +286,11 @@ void QueryHandler::handleLibrariesRead(StringView packet)
     if (handleChunkedLibrariesResponse(offset, maxSize, response)) {
         dataLogLnIf(Options::verboseWasmDebugger(), "[Debugger] Sending library list chunk: offset=", offset, ", maxSize=", maxSize);
         m_debugServer.sendReply(response);
+        // Only mark modules notified and signal debugger-ready on the final chunk ('l' prefix).
+        if (response[0] == 'l') {
+            m_debugServer.m_isDebuggerReady.store(true, std::memory_order_release);
+            m_debugServer.moduleManager().notifyLibraryRequeryComplete();
+        }
     } else {
         dataLogLnIf(Options::verboseWasmDebugger(), "[Debugger] Failed to generate library list chunk");
         m_debugServer.sendErrorReply(ProtocolError::MemoryError);
@@ -377,19 +357,19 @@ void QueryHandler::handleWasmLocal(StringView packet)
 
     dataLogLnIf(Options::verboseWasmDebugger(), "[Debugger] qWasmLocal frame=", frameIndex, ", variable=", localIndex);
 
-    auto* state = m_debugServer.execution().debuggeeStateSafe();
-    if (!state->atBreakpointOrTrap()) {
+    auto* state = m_debugServer.execution().debuggeeStateForTest();
+    if (state->isStoppedAtSystemCall() || state->isStoppedAtPrologue()) {
         m_debugServer.sendErrorReply(ProtocolError::UnknownCommand);
         return;
     }
 
     auto& stopData = *state->stopData;
-    IPInt::IPIntLocal* locals = nullptr;
+    CallFrame* localCallFrame = nullptr;
     RefPtr<IPIntCallee> localCallee;
     JSWebAssemblyInstance* instance = nullptr;
 
     if (!frameIndex) {
-        locals = stopData.locals;
+        localCallFrame = stopData.callFrame;
         localCallee = stopData.callee;
         instance = stopData.instance;
     } else {
@@ -399,7 +379,7 @@ void QueryHandler::handleWasmLocal(StringView packet)
             return;
         }
         const auto& frameInfo = frames[frameIndex];
-        locals = localsFromFrame(frameInfo.wasmCallFrame, frameInfo.wasmCallee.get());
+        localCallFrame = frameInfo.wasmCallFrame;
         localCallee = frameInfo.wasmCallee;
         instance = frameInfo.wasmCallFrame->wasmInstance();
     }
@@ -413,7 +393,8 @@ void QueryHandler::handleWasmLocal(StringView packet)
         return;
     }
 
-    IPInt::IPIntLocal& local = locals[localIndex];
+    IPInt::FrameAccess frame(localCallFrame, localCallee.get());
+    IPInt::IPIntLocal& local = *frame.localSlot(localIndex);
     Type localType = localTypes[localIndex];
     logWasmLocalValue(localIndex, local, localType);
 
@@ -459,8 +440,8 @@ void QueryHandler::handleWasmGlobal(StringView packet)
 
     dataLogLnIf(Options::verboseWasmDebugger(), "[Debugger] qWasmGlobal frame=", frameIndex, ", global=", globalIndex);
 
-    auto* state = m_debugServer.execution().debuggeeStateSafe();
-    if (!state->atBreakpointOrTrap()) {
+    auto* state = m_debugServer.execution().debuggeeStateForTest();
+    if (state->isStoppedAtSystemCall()) {
         m_debugServer.sendErrorReply(ProtocolError::UnknownCommand);
         return;
     }

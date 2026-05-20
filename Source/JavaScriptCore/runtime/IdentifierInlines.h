@@ -25,8 +25,8 @@
 
 #pragma once
 
-#include <JavaScriptCore/CallFrame.h>
 #include <JavaScriptCore/Identifier.h>
+#include <JavaScriptCore/JSString.h>
 #include <JavaScriptCore/Symbol.h>
 #include <JavaScriptCore/VM.h>
 
@@ -89,7 +89,7 @@ inline Identifier::Identifier(VM& vm, StringImpl* rep)
 inline Ref<AtomStringImpl> Identifier::add(VM& vm, ASCIILiteral literal)
 {
     if (literal.length() == 1)
-        return vm.smallStrings.singleCharacterStringRep(literal.characterAt(0));
+        return vm.smallStrings.singleCharacterStringRep(literal.codeUnitAt(0));
     return AtomStringImpl::add(literal);
 }
 

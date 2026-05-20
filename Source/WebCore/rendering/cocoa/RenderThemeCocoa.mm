@@ -49,11 +49,13 @@
 #import "LocalizedDateCache.h"
 #import "NodeRenderStyle.h"
 #import "Page.h"
+#import "PlatformRenderTheme.h"
 #import "RenderBoxInlines.h"
 #import "RenderBoxModelObjectInlines.h"
 #import "RenderButton.h"
 #import "RenderMenulist.h"
 #import "RenderMeter.h"
+#import "RenderObjectInlines.h"
 #import "RenderProgress.h"
 #import "RenderSlider.h"
 #import "RenderStyle+SettersInlines.h"
@@ -866,6 +868,7 @@ void RenderThemeCocoa::purgeCaches()
     m_mediaControlsLocalizedStringsScript.clearImplIfNotShared();
     m_mediaControlsScript.clearImplIfNotShared();
     m_mediaControlsStyleSheet.clearImplIfNotShared();
+    m_youTubeCaptionQuirkScript.clearImplIfNotShared();
 #endif // ENABLE(VIDEO)
 
     RenderTheme::purgeCaches();
@@ -954,14 +957,13 @@ static const String& glassMaterialMediaControlsStyleSheet()
         "        --primary-glyph-color: white;"
         "        --secondary-glyph-color: white;"
         "    }"
-        "    .media-controls.inline.mac:not(.audio, .narrowviewer) {"
-        "        background-color: rgba(0, 0, 0, 0.4);"
-        "    }"
-        "    .media-controls.inline.mac:not(.audio):is(:empty, .faded) {"
-        "        background-color: transparent;"
-        "    }"
         "    .media-controls.mac:not(.audio) .background-tint > .blur {"
         "        display: none;"
+        "    }"
+        "    .media-controls.inline.mac:not(.audio, .narrowviewer) .background-tint > .blur {"
+        "        display: revert;"
+        "        background-color: rgba(0, 0, 0, 0.3);"
+        "        -webkit-backdrop-filter: unset;"
         "    }"
         "    .media-controls.mac.inline.audio .background-tint > .blur {"
         "        background-color: rgba(0, 0, 0, 0.4);"
@@ -997,11 +999,13 @@ static const String& macOSInlineMediaControlsStyleSheet()
         "    position: absolute;"
         "    top: var(--inline-controls-inside-margin);"
         "    right: calc(var(--inline-controls-inside-margin) * 1);"
-        "    width: 180px;"
+        "    width: 196px;"
         "    height: 46px;"
         "    display: flex;"
         "    align-items: center;"
         "    justify-content: center;"
+        "    padding-inline: 8px;"
+        "    box-sizing: border-box;"
         "    border-radius: var(--inline-controls-border-radius);"
         "    transform: translateY(calc(var(--inline-controls-inside-margin) + 2));"
         "}"
@@ -1334,6 +1338,14 @@ String RenderThemeCocoa::mediaControlsFormattedStringForDuration(const double du
     }
     return [m_durationFormatter stringFromTimeInterval:durationInSeconds];
     END_BLOCK_OBJC_EXCEPTIONS
+}
+
+String RenderThemeCocoa::youTubeQuirkScript()
+{
+    if (!m_youTubeCaptionQuirkScript)
+        m_youTubeCaptionQuirkScript = StringImpl::createWithoutCopying(YouTubeCaptionQuirkJavaScript);
+
+    return m_youTubeCaptionQuirkScript;
 }
 
 #endif // ENABLE(VIDEO)
@@ -3466,7 +3478,9 @@ bool RenderThemeCocoa::paintMenuListButtonDecorationsForVectorBasedControls(cons
     const auto logicalRect = isHorizontalWritingMode ? rect : rect.transposedRect();
 
     FloatPoint glyphOrigin;
-    glyphOrigin.setY(logicalRect.center().y() - glyphSize.height() / 2.0f);
+    auto glyphInlineSize = isHorizontalWritingMode ? glyphSize.width() : glyphSize.height();
+    auto glyphBlockSize = isHorizontalWritingMode ? glyphSize.height() : glyphSize.width();
+    glyphOrigin.setY(logicalRect.center().y() - glyphBlockSize / 2.0f);
 
     auto glyphPaddingEnd = logicalRect.width();
     auto usedZoom = style->usedZoomForLength();
@@ -3481,7 +3495,7 @@ bool RenderThemeCocoa::paintMenuListButtonDecorationsForVectorBasedControls(cons
     }
 
     if (!style->writingMode().isInlineFlipped())
-        glyphOrigin.setX(logicalRect.maxX() - glyphSize.width() - Style::evaluate<float>(box.style().usedBorderWidthEnd(), Style::ZoomNeeded { }) - glyphPaddingEnd);
+        glyphOrigin.setX(logicalRect.maxX() - glyphInlineSize - Style::evaluate<float>(box.style().usedBorderWidthEnd(), Style::ZoomNeeded { }) - glyphPaddingEnd);
     else
         glyphOrigin.setX(logicalRect.x() + Style::evaluate<float>(box.style().usedBorderWidthEnd(), Style::ZoomNeeded { }) + glyphPaddingEnd);
 
@@ -3583,7 +3597,6 @@ bool RenderThemeCocoa::paintMeterForVectorBasedControls(const RenderElement& ren
         return true;
     }
 #endif
-
 
     return true;
 }
@@ -4261,7 +4274,6 @@ bool RenderThemeCocoa::paintSearchFieldDecorationsForVectorBasedControls(const R
     return false;
 }
 
-
 bool RenderThemeCocoa::adjustSearchFieldCancelButtonStyleForVectorBasedControls(RenderStyle& style, const Element* element) const
 {
 #if PLATFORM(MAC)
@@ -4753,17 +4765,6 @@ FloatSize RenderThemeCocoa::inflateRectForInteractionRegion(const RenderElement&
         const auto cssBorderWidth = box.style().usedZoom();
         rect.inflate(cssBorderWidth);
         return { cssBorderWidth, cssBorderWidth };
-    }
-
-    // These values were chosen to match UIKit.
-    auto appearance = box.style().usedAppearance();
-    if (appearance == StyleAppearance::SliderThumbHorizontal || appearance == StyleAppearance::SliderThumbVertical) {
-        static constexpr float thumbMinDimension = 48;
-        static constexpr float thumbHitAreaExpansion = 12.5;
-        if (rect.width() < thumbMinDimension || rect.height() < thumbMinDimension) {
-            rect.inflate(thumbHitAreaExpansion);
-            return { thumbHitAreaExpansion, thumbHitAreaExpansion };
-        }
     }
 
     return { 0, 0 };

@@ -26,6 +26,8 @@
 #include "config.h"
 #include "CustomPaintImage.h"
 
+#include "ContextDestructionObserverInlines.h"
+
 #include "CSSComputedStyleDeclaration.h"
 #include "CSSImageValue.h"
 #include "CSSPrimitiveValue.h"
@@ -42,14 +44,15 @@
 #include "JSCSSPaintCallback.h"
 #include "JSDOMExceptionHandling.h"
 #include "MainThreadStylePropertyMapReadOnly.h"
-#include "NodeInlines.h"
 #include "PaintRenderingContext2D.h"
 #include "RenderElement.h"
 #include "RenderElementInlines.h"
 #include "RenderObjectStyle.h"
 #include "RenderStyle+GettersInlines.h"
 #include "StyleExtractor.h"
+#include <JavaScriptCore/ArgList.h>
 #include <JavaScriptCore/ConstructData.h>
+#include <JavaScriptCore/JSCJSValueInlines.h>
 
 namespace WebCore {
 

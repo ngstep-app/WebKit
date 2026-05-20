@@ -154,11 +154,11 @@ class GLibPort(Port):
         # actual sound card.
         environment['WEBKIT_GST_MAX_NUMBER_OF_AUDIO_OUTPUT_CHANNELS'] = '2'
 
-        # Disable SIMD optimization in GStreamer's ORC. Some bots (WPE release) crash in ORC's optimizations.
-        environment['ORC_CODE'] = 'backup'
+        # LibRice logging, example: RICE_LOG=trace.
+        self._copy_values_from_environ_with_prefix(environment, 'RICE_')
 
-        # Workaround for bots not using latest SDK version.
-        environment['RICE_LOG'] = 'none'
+        # For GDB debuginfod support.
+        self._copy_values_from_environ_with_prefix(environment, 'DEBUGINFOD_')
 
         if self.get_option("leaks"):
             # Turn off GLib memory optimisations https://wiki.gnome.org/Valgrind.
@@ -239,7 +239,7 @@ class GLibPort(Port):
 
     def environment_for_api_tests(self):
         environment = super(GLibPort, self).environment_for_api_tests()
-        environment['TEST_WEBKIT_API_WEBKIT2_RESOURCES_PATH'] = self.path_from_webkit_base('Tools', 'TestWebKitAPI', 'Tests', 'WebKit')
+        environment['TEST_WEBKIT_API_WEBKIT2_RESOURCES_PATH'] = self.path_from_webkit_base('Tools', 'TestWebKitAPI', 'Resources')
         environment['TEST_WEBKIT_API_WEBKIT2_INJECTED_BUNDLE_PATH'] = self._build_path('lib')
         return environment
 

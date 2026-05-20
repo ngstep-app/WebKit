@@ -37,7 +37,6 @@
 #include <JavaScriptCore/YarrPattern.h>
 #include <wtf/Atomics.h>
 #include <wtf/BitSet.h>
-#include <wtf/FixedVector.h>
 #include <wtf/StackCheck.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/UniqueRef.h>
@@ -59,7 +58,6 @@ class YarrCodeBlock;
 enum class JITFailureReason : uint8_t {
     DecodeSurrogatePair,
     BackReference,
-    ForwardReference,
     Lookbehind,
     VariableCountedParenthesisWithNonZeroMinimum,
     ParenthesizedSubpattern,

@@ -1790,6 +1790,41 @@ spirv::IdRef SPIRVBuilder::getCompositeConstant(spirv::IdRef typeId, const spirv
     return iter->second;
 }
 
+bool SPIRVBuilder::isCompositeConstantId(spirv::IdRef id) const
+{
+    // Linear scan is fine: this query is only invoked from the rvalue-with-
+    // runtime-index path in OutputSPIRV's accessChainLoad, which is itself
+    // rare relative to most SPIR-V emission, and the map is bounded by the
+    // number of distinct OpConstantComposite values in the shader.
+    for (const auto &entry : mCompositeConstants)
+    {
+        if (entry.second == id)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+spirv::IdRef SPIRVBuilder::getOrDeclarePrivateConstantVar(spirv::IdRef typeId,
+                                                          spirv::IdRef constantId,
+                                                          const SpirvDecorations &decorations,
+                                                          const char *name)
+{
+    auto iter = mPrivateConstantVars.find(constantId);
+    if (iter != mPrivateConstantVars.end())
+    {
+        return iter->second;
+    }
+
+    spirv::IdRef initializer = constantId;
+    const spirv::IdRef varId =
+        declareVariable(typeId, spv::StorageClassPrivate, decorations, &initializer, name, nullptr);
+
+    mPrivateConstantVars.insert({constantId, varId});
+    return varId;
+}
+
 void SPIRVBuilder::startNewFunction(spirv::IdRef functionId, const TFunction *func)
 {
     ASSERT(mSpirvCurrentFunctionBlocks.empty());
@@ -2659,6 +2694,9 @@ void SPIRVBuilder::writeExtensions(spirv::Blob *blob)
             case SPIRVExtensions::FragmentShadingRate:
                 spirv::WriteExtension(blob, "SPV_KHR_fragment_shading_rate");
                 break;
+            case SPIRVExtensions::DemoteToHelperInvocation:
+                spirv::WriteExtension(blob, "SPV_EXT_demote_to_helper_invocation");
+                break;
             default:
                 UNREACHABLE();
         }
@@ -2679,6 +2717,9 @@ void SPIRVBuilder::writeSourceExtensions(spirv::Blob *blob)
                 break;
             case SPIRVExtensions::FragmentShadingRate:
                 spirv::WriteSourceExtension(blob, "GL_EXT_fragment_shading_rate");
+                break;
+            case SPIRVExtensions::DemoteToHelperInvocation:
+                spirv::WriteSourceExtension(blob, "GL_EXT_demote_to_helper_invocation");
                 break;
             default:
                 UNREACHABLE();

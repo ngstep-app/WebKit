@@ -356,12 +356,16 @@ enum Opcode : uint8_t {
     // WarmAny. It will not have an output constraint.
     Check,
 
-    // Special Wasm opcode that takes a Int32, a special pinned gpr and an offset. This node exists
-    // to allow us to CSE WasmBoundsChecks if both use the same pointer and one dominates the other.
-    // Without some such node B3 would not have enough information about the inner workings of wasm
-    // to be able to perform such optimizations.
+    // Special Wasm opcode that takes an Int32 or an Int64 in the memory64 case, a special pinned gpr and an
+    // offset. This node exists to allow us to CSE WasmBoundsChecks if both use the same pointer and one
+    // dominates the other. Without some such node B3 would not have enough information about the inner
+    // workings of wasm to be able to perform such optimizations.
     WasmBoundsCheck,
 
+    WasmArrayGet,
+    WasmArraySet,
+    WasmArrayNew,
+    WasmArrayLength,
     WasmStructGet,
     WasmStructSet,
     WasmStructNew,
@@ -458,6 +462,11 @@ enum Opcode : uint8_t {
     VectorRelaxedMAdd,
     VectorRelaxedNMAdd,
     VectorRelaxedLaneSelect,
+    VectorRelaxedMin,
+    VectorRelaxedMax,
+    VectorRelaxedQ15Mulr,
+    VectorRelaxedDotI8x16I7x16,
+    VectorRelaxedDotI8x16I7x16Add,
 
     // Currently only some architectures support this.
     // FIXME: Expand this to identical instructions for the other architectures as a macro.

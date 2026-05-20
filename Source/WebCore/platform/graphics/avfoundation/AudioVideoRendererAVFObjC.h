@@ -30,10 +30,13 @@
 #include <WebCore/ProcessIdentity.h>
 #include <WebCore/TrackInfo.h>
 #include <WebCore/WebAVSampleBufferListener.h>
+#include <wtf/Deque.h>
 #include <wtf/Forward.h>
 #include <wtf/Function.h>
 #include <wtf/HashMap.h>
 #include <wtf/LoggerHelper.h>
+#include <wtf/MonotonicTime.h>
+#include <wtf/RetainPtr.h>
 #include <wtf/StdUnorderedMap.h>
 #include <wtf/ThreadSafeWeakPtr.h>
 
@@ -67,11 +70,11 @@ public:
     ~AudioVideoRendererAVFObjC();
     WTF_ABSTRACT_THREAD_SAFE_REF_COUNTED_AND_CAN_MAKE_WEAK_PTR_IMPL;
 
-    void setPreferences(VideoRendererPreferences) final;
+    WEBCORE_EXPORT void setPreferences(VideoRendererPreferences) final;
     void setHasProtectedVideoContent(bool) final;
 
     // TracksRendererInterface
-    std::optional<TrackIdentifier> addTrack(TrackType) final;
+    WEBCORE_EXPORT std::optional<TrackIdentifier> addTrack(TrackType) final;
     void removeTrack(TrackIdentifier) final;
 
     void enqueueSample(TrackIdentifier, Ref<MediaSample>&&, std::optional<MediaTime>) final;
@@ -101,10 +104,11 @@ public:
     void setRate(double) final;
     double effectiveRate() const final;
     void stall() final;
-    void prepareToSeek() final;
-    Ref<MediaTimePromise> seekTo(const MediaTime&) final;
+    Ref<MediaTimePromise> prepareToSeek(const MediaTime&) final;
+    Ref<GenericPromise> finishSeek(const MediaTime&) final;
     void notifyEffectiveRateChanged(Function<void(double)>&&) final;
     bool seeking() const final;
+    void setScreenReserved(bool) final;
 
     // AudioInterface
     void setVolume(float) final;
@@ -120,11 +124,11 @@ public:
     void setIsVisible(bool);
     void setPresentationSize(const IntSize&) final;
     void setShouldMaintainAspectRatio(bool) final;
-    void renderingCanBeAcceleratedChanged(bool) final;
+    WEBCORE_EXPORT void renderingCanBeAcceleratedChanged(bool) final;
     void contentBoxRectChanged(const LayoutRect&) final;
     void notifyFirstFrameAvailable(Function<void()>&&) final;
     void notifyWhenHasAvailableVideoFrame(Function<void(const MediaTime&, double)>&&) final;
-    void notifyWhenRequiresFlushToResume(Function<void()>&&) final;
+    WEBCORE_EXPORT void notifyWhenRequiresFlushToResume(Function<void()>&&) final;
     void notifyRenderingModeChanged(Function<void()>&&) final;
     void expectMinimumUpcomingPresentationTime(const MediaTime&) final;
     void notifySizeChanged(Function<void(const MediaTime&, FloatSize)>&&) final;
@@ -213,6 +217,12 @@ private:
 #endif
 
     void setSynchronizerRate(float, std::optional<MonotonicTime>);
+    // Returns the rate we last passed to [m_synchronizer setRate:]. Cached
+    // because [m_synchronizer rate] is heavy (dispatch_sync), and querying
+    // it can interact poorly with AVF's internal serialization of rate
+    // changes. The cached value reflects the rate we set, not the actual
+    // timebase rate.
+    float synchronizerRate() const { return m_lastSetSyncRate; }
     bool updateLastPixelBuffer();
     void maybePurgeLastPixelBuffer();
     void setNeedsPlaceholderImage(bool);
@@ -247,14 +257,13 @@ private:
     WTFLogChannel& logChannel() const final;
 
     enum SeekState {
-        Preparing,
-        RequiresFlush,
         Seeking,
         WaitingForAvailableFame,
         SeekCompleted,
     };
     struct AudioTrackProperties {
         bool hasAudibleSample { false };
+        bool readyToRequestAudioData { true };
         std::unique_ptr<RequestPromise::AutoRejectProducer> requestPromise;
         Function<void(TrackIdentifier, const MediaTime&)> callbackForReenqueuing;
     };
@@ -283,6 +292,10 @@ private:
 
     bool m_isPlaying { false };
     double m_rate { 1 };
+    // Cached value of the rate last passed to [m_synchronizer setRate:].
+    // Avoid querying [m_synchronizer rate] (heavy dispatch_sync) — read this
+    // via synchronizerRate() instead.
+    float m_lastSetSyncRate { 0 };
     RetainPtr<CVPixelBufferRef> m_lastPixelBuffer;
     bool m_needsPlaceholderImage { false };
 
@@ -297,7 +310,7 @@ private:
     // Seek Logic
     MediaTime m_lastSeekTime;
     SeekState m_seekState { SeekCompleted };
-    std::optional<MediaTimePromise::Producer> m_seekPromise;
+    std::optional<GenericPromise::AutoRejectProducer> m_seekPromise;
     RetainPtr<id> m_timeJumpedObserver;
     bool m_isSynchronizerSeeking { false };
     bool m_hasAvailableVideoFrame { false };
@@ -306,7 +319,7 @@ private:
     HashMap<TrackIdentifier, AudioTrackProperties> m_audioTracksMap;
     std::optional<RequestPromise::AutoRejectProducer> m_requestVideoPromise;
     bool m_readyToRequestVideoData { true };
-    bool m_readyToRequestAudioData { true };
+    bool m_hasEverSubmittedVideoSample { false };
 
     HashMap<TrackIdentifier, TrackType> m_trackTypes;
     HashMap<TrackIdentifier, RetainPtr<AVSampleBufferAudioRenderer>> m_audioRenderers;
@@ -333,9 +346,7 @@ private:
     VideoRendererPreferences m_preferences;
     bool m_hasProtectedVideoContent { false };
     struct RendererConfiguration {
-        bool canUseDecompressionSession { false };
-        bool isProtected { false };
-        bool hasVideoTrack { false };
+        bool isRenderingCompressedVideo { false };
         bool operator==(const RendererConfiguration&) const = default;
     };
     RendererConfiguration m_previousRendererConfiguration;
@@ -374,6 +385,7 @@ private:
     ThreadSafeWeakPtr<CDMSessionAVContentKeySession> m_session;
 #endif
 #endif
+    bool m_keyframeNeeded { true };
 };
 
 } // namespace WebCore

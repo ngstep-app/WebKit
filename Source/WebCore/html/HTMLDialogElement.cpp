@@ -36,12 +36,12 @@
 #include "HTMLElement.h"
 #include "HTMLNames.h"
 #include "Logging.h"
-#include "NodeInlines.h"
 #include "PopoverData.h"
 #include "PseudoClassChangeInvalidation.h"
 #include "RenderBlock.h"
 #include "RenderElement.h"
 #include "ScopedEventQueue.h"
+#include "Settings.h"
 #include "ToggleEvent.h"
 #include "ToggleEventTask.h"
 #include "TypedElementDescendantIteratorInlines.h"
@@ -246,10 +246,23 @@ void HTMLDialogElement::requestClose(const String& returnValue, Element* source)
     if (!isOpen())
         return;
 
+    if (!isConnected())
+        return;
+
+    if (!protect(this->document())->isFullyActive())
+        return;
+
+    if (m_isRequestingToClose)
+        return;
+
+    m_isRequestingToClose = true;
+
     Ref cancelEvent = Event::create(eventNames().cancelEvent, Event::CanBubble::No, Event::IsCancelable::Yes);
     dispatchEvent(cancelEvent);
     if (!cancelEvent->defaultPrevented())
         close(returnValue, source);
+
+    m_isRequestingToClose = false;
 }
 
 bool HTMLDialogElement::isValidCommandType(const CommandType command)
@@ -389,13 +402,28 @@ void HTMLDialogElement::setupSteps()
     ASSERT(isConnected());
     Ref document = this->document();
     ASSERT(!document->openDialogsList().contains(this));
+#if ENABLE(IOS_TOUCH_EVENTS)
+    bool neededEventHandling = document->needsPointerEventHandlingForPopoverOrDialog();
+#endif
     document->openDialogsList().add(*this);
+#if ENABLE(IOS_TOUCH_EVENTS)
+    if (!neededEventHandling) {
+        document->invalidateRenderingDependentRegions();
+        document->invalidateEventListenerRegions();
+    }
+#endif
 }
 
 void HTMLDialogElement::cleanupSteps()
 {
     Ref document = this->document();
     document->openDialogsList().remove(*this);
+#if ENABLE(IOS_TOUCH_EVENTS)
+    if (!document->needsPointerEventHandlingForPopoverOrDialog()) {
+        document->invalidateRenderingDependentRegions();
+        document->invalidateEventListenerRegions();
+    }
+#endif
 }
 
 void HTMLDialogElement::setIsModal(bool newValue)

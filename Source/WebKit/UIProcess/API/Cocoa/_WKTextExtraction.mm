@@ -27,6 +27,7 @@
 #import "_WKTextExtractionInternal.h"
 
 #import "WKJSHandleInternal.h"
+#import "WKSecurityOriginInternal.h"
 #import "WKWebViewInternal.h"
 #import <WebKit/WKError.h>
 #import <wtf/HashSet.h>
@@ -150,15 +151,17 @@
 @end
 
 @implementation _WKTextExtractionResult {
+    RetainPtr<WKSecurityOrigin> _origin;
     RetainPtr<NSString> _textContent;
     RetainPtr<NSDictionary<NSString *, NSURL *>> _shortenedURLs;
-    HashMap<String, Vector<WebKit::FrameAndNodeIdentifiers>> _textToContainerMap;
+    HashMap<String, Vector<WebKit::ExtractedNodeInfo>> _textToContainerMap;
     __weak WKWebView *_webView;
 }
 
-- (instancetype)initWithWebView:(WKWebView *)webView textContent:(NSString *)textContent filteredOutAnyText:(BOOL)filteredOutAnyText shortenedURLs:(NSDictionary<NSString *, NSURL *> *)shortenedURLs textToContainerMap:(HashMap<String, Vector<WebKit::FrameAndNodeIdentifiers>>&&)textToContainerMap
+- (instancetype)initWithWebView:(WKWebView *)webView origin:(WKSecurityOrigin *)origin textContent:(NSString *)textContent filteredOutAnyText:(BOOL)filteredOutAnyText shortenedURLs:(NSDictionary<NSString *, NSURL *> *)shortenedURLs textToContainerMap:(HashMap<String, Vector<WebKit::ExtractedNodeInfo>>&&)textToContainerMap
 {
     if (self = [super init]) {
+        _origin = origin;
         _textContent = textContent;
         _filteredOutAnyText = filteredOutAnyText;
         _shortenedURLs = shortenedURLs;
@@ -168,7 +171,7 @@
     return self;
 }
 
-- (Expected<std::optional<WebKit::FrameAndNodeIdentifiers>, String>)resolveContainerForSearchText:(NSString *)searchText
+- (Expected<std::optional<WebKit::ExtractedNodeInfo>, String>)resolveContainerForSearchText:(NSString *)searchText
 {
     if (!searchText.length)
         return { std::nullopt };
@@ -181,10 +184,29 @@
     if (containers.isEmpty())
         return { std::nullopt };
 
-    if (containers.size() > 1)
-        return makeUnexpected(makeString("Multiple matches for '"_s, String { searchText }, "'; use a uid to disambiguate"_s));
+    if (containers.size() == 1)
+        return { containers.first() };
 
-    return { containers.first() };
+    std::optional<WebKit::ExtractedNodeInfo> interactiveContainer;
+    for (auto& container : containers) {
+        if (container.interactivity != WebKit::ExtractedNodeInfo::IsInteractive::Yes)
+            continue;
+
+        if (interactiveContainer)
+            return makeUnexpected(makeString("Multiple interactive matches for '"_s, String { searchText }, "'; use a uid to disambiguate"_s));
+
+        interactiveContainer = container;
+    }
+
+    if (interactiveContainer)
+        return { *interactiveContainer };
+
+    return makeUnexpected(makeString("Multiple matches for '"_s, String { searchText }, "'; use a uid to disambiguate"_s));
+}
+
+- (WKSecurityOrigin *)origin
+{
+    return _origin.get();
 }
 
 - (NSString *)textContent
@@ -295,9 +317,11 @@
 
 @implementation _WKTextExtractionInteractionResult {
     RetainPtr<NSError> _error;
+    RetainPtr<NSString> _summary;
+    CGRect _interactedElementBounds;
 }
 
-- (instancetype)initWithErrorDescription:(NSString *)errorDescription
+- (instancetype)initWithErrorDescription:(NSString *)errorDescription summary:(NSString *)summary interactedElementBounds:(CGRect)interactedElementBounds
 {
     if (!(self = [super init]))
         return nil;
@@ -305,12 +329,25 @@
     if (errorDescription)
         _error = [NSError errorWithDomain:WKErrorDomain code:WKErrorUnknown userInfo:@{ NSDebugDescriptionErrorKey: errorDescription }];
 
+    _summary = adoptNS([summary copy]);
+    _interactedElementBounds = interactedElementBounds;
+
     return self;
 }
 
 - (NSError *)error
 {
     return _error.get();
+}
+
+- (NSString *)summary
+{
+    return _summary.get();
+}
+
+- (CGRect)interactedElementBounds
+{
+    return _interactedElementBounds;
 }
 
 @end

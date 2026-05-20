@@ -26,6 +26,7 @@
 #include "config.h"
 #include "CallLinkInfo.h"
 
+#include "BaselineJITRegisters.h"
 #include "CCallHelpers.h"
 #include "CallFrameShuffleData.h"
 #include "DFGJITCode.h"
@@ -208,7 +209,7 @@ void CallLinkInfo::visitWeak(VM& vm)
 
     if (haveLastSeenCallee() && !vm.heap.isMarked(lastSeenCallee())) {
         if (lastSeenCallee()->type() == JSFunctionType)
-            handleSpecificCallee(jsCast<JSFunction*>(lastSeenCallee()));
+            handleSpecificCallee(uncheckedDowncast<JSFunction>(lastSeenCallee()));
         else
             m_clearedByGC = true;
         m_lastSeenCallee.clear();
@@ -245,7 +246,7 @@ void DataOnlyCallLinkInfo::initialize(VM& vm, CodeBlock* owner, CallType callTyp
 
 std::tuple<CodeBlock*, BytecodeIndex> CallLinkInfo::retrieveCaller(JSCell* owner)
 {
-    auto* codeBlock = jsDynamicCast<CodeBlock*>(owner);
+    auto* codeBlock = dynamicDowncast<CodeBlock>(owner);
     if (!codeBlock)
         return { };
     CodeOrigin codeOrigin = this->codeOrigin();
@@ -292,7 +293,7 @@ JSGlobalObject* CallLinkInfo::globalObjectForSlowPath(JSCell* owner)
     if (codeBlock)
         return codeBlock->globalObject();
 #if ENABLE(WEBASSEMBLY)
-    auto* module = jsDynamicCast<JSWebAssemblyModule*>(owner);
+    auto* module = dynamicDowncast<JSWebAssemblyModule>(owner);
     if (module)
         return module->realm();
 #endif
@@ -554,7 +555,7 @@ CodeBlock* DirectCallLinkInfo::retrieveCodeBlock(FunctionExecutable* functionExe
     if (!codeBlock)
         return nullptr;
 
-    CodeBlock* ownerCodeBlock = jsDynamicCast<CodeBlock*>(owner());
+    CodeBlock* ownerCodeBlock = dynamicDowncast<CodeBlock>(owner());
     if (!ownerCodeBlock)
         return nullptr;
 
@@ -587,7 +588,7 @@ void DirectCallLinkInfo::repatchSpeculatively()
         return;
     }
 
-    FunctionExecutable* functionExecutable = jsDynamicCast<FunctionExecutable*>(m_executable);
+    FunctionExecutable* functionExecutable = dynamicDowncast<FunctionExecutable>(m_executable);
     if (!functionExecutable) {
         initialize();
         return;
@@ -611,7 +612,7 @@ void DirectCallLinkInfo::repatchSpeculatively()
 void DirectCallLinkInfo::validateSpeculativeRepatchOnMainThread(VM&)
 {
     constexpr bool verbose = false;
-    FunctionExecutable* functionExecutable = jsDynamicCast<FunctionExecutable*>(m_executable);
+    FunctionExecutable* functionExecutable = dynamicDowncast<FunctionExecutable>(m_executable);
     if (!functionExecutable)
         return;
 

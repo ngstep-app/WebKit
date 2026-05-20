@@ -29,7 +29,6 @@
 #include "AnimationEffect.h"
 #include "AnimationPlaybackEvent.h"
 #include "AnimationTimeline.h"
-#include "ContainerNodeInlines.h"
 #include "CSSAnimationEvent.h"
 #include "CSSSerializationContext.h"
 #include "CSSStyleProperties.h"
@@ -39,6 +38,7 @@
 #include "CSSValuePool.h"
 #include "Chrome.h"
 #include "ChromeClient.h"
+#include "ContainerNodeInlines.h"
 #include "ContextDestructionObserverInlines.h"
 #include "DOMPromiseProxy.h"
 #include "DocumentPage.h"
@@ -55,13 +55,16 @@
 #include "Logging.h"
 #include "RenderElement.h"
 #include "ScrollTimeline.h"
+#include "StyleBuilderState.h"
 #include "StyleExtractor.h"
 #include "StyleOriginatedAnimation.h"
 #include "StylePropertyShorthand.h"
 #include "StyleResolver.h"
 #include "StyledElement.h"
+#include "ViewTimeline.h"
 #include "WebAnimationTypes.h"
 #include "WebAnimationUtilities.h"
+#include <JavaScriptCore/HeapCellInlines.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/text/TextStream.h>
@@ -1571,8 +1574,10 @@ void WebAnimation::tick()
 
     if (!isEffectInvalidationSuspended() && m_effect) {
         m_effect->animationDidTick();
-        if (wasPending && !pending())
-            m_effect->animationBecameReady();
+        if (RefPtr keyframeEffect = this->keyframeEffect()) {
+            if (wasPending && !pending())
+                keyframeEffect->animationBecameReady();
+        }
     }
 }
 
@@ -2037,10 +2042,18 @@ void WebAnimation::setRangeEnd(Style::SingleAnimationRangeEnd&& rangeEnd)
 const Style::SingleAnimationRange& WebAnimation::range()
 {
     if (RefPtr keyframeEffect = this->keyframeEffect()) {
+        auto conversionData = CSSToLengthConversionData::tryCreateForNonStyleBuildingResolution(keyframeEffect->target());
+
+        auto computedEdge = [&]<typename To>(const CSSValue& specifiedEdge, To&& defaultValue) {
+            if (!conversionData)
+                return Style::deprecatedToStyleFromCSSValue<To>(specifiedEdge).value_or(defaultValue);
+            return Style::toStyleFromCSSValue<To>(*conversionData, specifiedEdge);
+        };
+
         if (m_specifiedRangeStart)
-            m_timelineRange.start = Style::deprecatedToStyleFromCSSValue<Style::SingleAnimationRangeStart>(keyframeEffect->target(), *m_specifiedRangeStart).value_or(Style::SingleAnimationRangeStart { CSS::Keyword::Normal { } });
+            m_timelineRange.start = computedEdge(*m_specifiedRangeStart, Style::SingleAnimationRangeStart { CSS::Keyword::Normal { } });
         if (m_specifiedRangeEnd)
-            m_timelineRange.end = Style::deprecatedToStyleFromCSSValue<Style::SingleAnimationRangeEnd>(keyframeEffect->target(), *m_specifiedRangeEnd).value_or(Style::SingleAnimationRangeEnd { CSS::Keyword::Normal { } });
+            m_timelineRange.end = computedEdge(*m_specifiedRangeEnd, Style::SingleAnimationRangeEnd { CSS::Keyword::Normal { } });
     }
 
     return m_timelineRange;

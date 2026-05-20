@@ -45,7 +45,6 @@
 #include "EventDispatcher.h"
 #include "EventHandler.h"
 #include "EventNames.h"
-#include "EventTargetInlines.h"
 #include "FrameInlines.h"
 #include "HTMLAreaElement.h"
 #include "HTMLBodyElement.h"
@@ -108,6 +107,8 @@
 #if ENABLE(CONTENT_CHANGE_OBSERVER)
 #include "ContentChangeObserver.h"
 #endif
+
+template class mpark::variant<WTF::Ref<WebCore::Node>, WTF::String>;
 
 namespace WebCore {
 
@@ -268,9 +269,7 @@ void Node::dumpStatistics()
 
             // Tag stats
             Element& element = uncheckedDowncast<Element>(node);
-            HashMap<String, size_t>::AddResult result = perTagCount.add(element.tagName(), 1);
-            if (!result.isNewEntry)
-                result.iterator->value++;
+            perTagCount.add(element.tagName(), 0).iterator->value++;
 
             if (const ElementData* elementData = element.elementData()) {
                 unsigned length = elementData->length();
@@ -639,6 +638,17 @@ ExceptionOr<NodeVector> Node::convertNodesOrStringsIntoNodeVector(FixedVector<No
 
     if (nodeVector.size() == 1)
         return nodeVector; // step 3, if nodes contains one node, then set node to nodes[0].
+
+    // If the same node appears multiple times, keep only the last occurrence
+    // to match the spec behavior (as if a temporary DocumentFragment was used).
+    // https://dom.spec.whatwg.org/#converting-nodes-into-a-node
+    {
+        HashSet<Ref<Node>> seen;
+        for (size_t i = nodeVector.size(); i > 0; --i) {
+            if (!seen.add(nodeVector[i - 1]).isNewEntry)
+                nodeVector.removeAt(i - 1);
+        }
+    }
 
     for (auto& node : nodeVector) {
         auto result = node->remove();
@@ -1474,6 +1484,16 @@ Node& Node::shadowIncludingRoot() const
     return root;
 }
 
+SUPPRESS_NODELETE WebCoreOpaqueRoot Node::opaqueRoot() const
+{
+    if (isConnected()) {
+        Locker locker { TreeScope::treeScopeMutationLock() };
+        return WebCoreOpaqueRoot { &treeScope().documentScope() };
+    }
+    // FIXME: Possible race?
+    return traverseToOpaqueRoot();
+}
+
 Node& Node::getRootNode(const GetRootNodeOptions& options) const
 {
     return options.composed ? shadowIncludingRoot() : rootNode();
@@ -1882,7 +1902,7 @@ FloatPoint Node::convertToPage(const FloatPoint& p) const
 {
     // If there is a renderer, just ask it to do the conversion
     if (renderer())
-        return renderer()->localToAbsolute(p, UseTransforms);
+        return renderer()->localToAbsolute(p, MapCoordinatesMode::UseTransforms);
 
     // Otherwise go up the tree looking for a renderer
     if (RefPtr parent = parentElement())
@@ -1896,7 +1916,7 @@ FloatPoint Node::convertFromPage(const FloatPoint& p) const
 {
     // If there is a renderer, just ask it to do the conversion
     if (renderer())
-        return renderer()->absoluteToLocal(p, UseTransforms);
+        return renderer()->absoluteToLocal(p, MapCoordinatesMode::UseTransforms);
 
     // Otherwise go up the tree looking for a renderer
     if (RefPtr parent = parentElement())
@@ -2408,6 +2428,8 @@ static inline bool tryAddEventListener(Node* targetNode, const AtomString& event
     Ref document = targetNode->document();
     document->didAddEventListenersOfType(eventType, options.capture ? Document::IsCapture::Yes : Document::IsCapture::No);
 
+    const auto useTouchEventRegions = document->shouldUseTouchEventRegions();
+
     auto& eventNames = WebCore::eventNames();
     auto typeInfo = eventNames.typeInfoForEvent(eventType);
     if (typeInfo.isInCategory(EventCategory::Wheel)) {
@@ -2416,13 +2438,12 @@ static inline bool tryAddEventListener(Node* targetNode, const AtomString& event
     } else if (isTouchRelatedEventType(typeInfo, *targetNode)) {
         document->didAddTouchEventHandler(*targetNode);
 #if ENABLE(TOUCH_EVENT_REGIONS)
-        document->invalidateEventListenerRegions();
+        if (useTouchEventRegions)
+            document->invalidateEventListenerRegions();
 #endif
-    } else if (typeInfo.isInCategory(EventCategory::Gesture)) {
-#if ENABLE(TOUCH_EVENT_REGIONS)
+    } else if (typeInfo.isInCategory(EventCategory::Gesture) && useTouchEventRegions) {
         document->didAddTouchEventHandler(*targetNode);
         document->invalidateEventListenerRegions();
-#endif
     }
     else if (typeInfo.isInCategory(EventCategory::MouseClickRelated))
         document->didAddOrRemoveMouseEventHandler(*targetNode);
@@ -2462,36 +2483,39 @@ bool Node::addEventListener(const AtomString& eventType, Ref<EventListener>&& li
     return tryAddEventListener(this, eventType, WTF::move(listener), options);
 }
 
-static inline bool didRemoveEventListenerOfType(Node& targetNode, const AtomString& eventType, Document::IsCapture isCapture)
+static void didRemoveEventListenersOfType(Node& targetNode, const AtomString& eventType, uint16_t capturingCount, uint16_t bubblingCount, EventHandlerRemoval removal)
 {
     Ref document = targetNode.document();
-    document->didRemoveEventListenersOfType(eventType, isCapture);
+    if (capturingCount)
+        document->didRemoveEventListenersOfType(eventType, Document::IsCapture::Yes, capturingCount);
+    if (bubblingCount)
+        document->didRemoveEventListenersOfType(eventType, Document::IsCapture::No, bubblingCount);
+
+    const auto useTouchEventRegions = document->shouldUseTouchEventRegions();
 
     // FIXME: Notify Document that the listener has vanished. We need to keep track of a number of
     // listeners for each type, not just a bool - see https://bugs.webkit.org/show_bug.cgi?id=33861
     auto& eventNames = WebCore::eventNames();
     auto typeInfo = eventNames.typeInfoForEvent(eventType);
     if (typeInfo.isInCategory(EventCategory::Wheel)) {
-        document->didRemoveWheelEventHandler(targetNode);
+        document->didRemoveWheelEventHandler(targetNode, removal);
         document->invalidateEventListenerRegions();
     } else if (isTouchRelatedEventType(typeInfo, targetNode)) {
-        document->didRemoveTouchEventHandler(targetNode);
+        document->didRemoveTouchEventHandler(targetNode, removal);
 #if ENABLE(TOUCH_EVENT_REGIONS)
-        document->invalidateEventListenerRegions();
+        if (useTouchEventRegions)
+            document->invalidateEventListenerRegions();
 #endif
-    } else if (typeInfo.isInCategory(EventCategory::Gesture)) {
-#if ENABLE(TOUCH_EVENT_REGIONS)
-        document->didRemoveTouchEventHandler(targetNode);
+    } else if (typeInfo.isInCategory(EventCategory::Gesture) && useTouchEventRegions) {
+        document->didRemoveTouchEventHandler(targetNode, removal);
         document->invalidateEventListenerRegions();
-#endif
-    }
-    else if (typeInfo.isInCategory(EventCategory::MouseClickRelated))
+    } else if (typeInfo.isInCategory(EventCategory::MouseClickRelated))
         document->didAddOrRemoveMouseEventHandler(targetNode);
 
 #if PLATFORM(IOS_FAMILY)
     if (&targetNode == document.ptr() && typeInfo.type() == EventType::scroll) {
         if (RefPtr window = document->window())
-            window->decrementScrollEventListenersCount();
+            window->decrementScrollEventListenersCount(capturingCount + bubblingCount);
     }
 
 #if ENABLE(TOUCH_EVENTS)
@@ -2507,27 +2531,24 @@ static inline bool didRemoveEventListenerOfType(Node& targetNode, const AtomStri
 
     if (CheckedPtr cache = document->existingAXObjectCache())
         cache->onEventListenerRemoved(targetNode, eventType);
-
-    return true;
 }
 
 bool Node::removeEventListener(const AtomString& eventType, EventListener& listener, const EventListenerOptions& options)
 {
     if (!EventTarget::removeEventListener(eventType, listener, options))
         return false;
-    didRemoveEventListenerOfType(*this, eventType, options.capture ? Document::IsCapture::Yes : Document::IsCapture::No);
+    uint16_t capturingCount = options.capture ? 1 : 0;
+    uint16_t bubblingCount = options.capture ? 0 : 1;
+    didRemoveEventListenersOfType(*this, eventType, capturingCount, bubblingCount, EventHandlerRemoval::One);
     return true;
 }
 
 void Node::removeAllEventListeners()
 {
-    EventTarget::removeAllEventListeners();
     enumerateEventListenerTypes([&](const AtomString& type, uint16_t capturingCount, uint16_t bubblingCount) {
-        for (uint16_t i = 0; i < capturingCount; ++i)
-            didRemoveEventListenerOfType(*this, type, Document::IsCapture::Yes);
-        for (uint16_t i = 0; i < bubblingCount; ++i)
-            didRemoveEventListenerOfType(*this, type, Document::IsCapture::No);
+        didRemoveEventListenersOfType(*this, type, capturingCount, bubblingCount, EventHandlerRemoval::All);
     });
+    EventTarget::removeAllEventListeners();
 }
 
 Vector<Ref<MutationObserverRegistration>>* Node::mutationObserverRegistry()
@@ -2583,14 +2604,13 @@ void Node::registerMutationObserver(MutationObserver& observer, MutationObserver
     RefPtr<MutationObserverRegistration> registration;
     auto& registry = ensureRareData().mutationObserverData().registry;
 
-    for (auto& candidateRegistration : registry) {
-        if (&candidateRegistration->observer() == &observer) {
-            registration = candidateRegistration.ptr();
-            registration->resetObservation(options, attributeFilter);
-        }
-    }
-
-    if (!registration) {
+    auto index = registry.findIf([&observer](auto& candidateRegistration) {
+        return &candidateRegistration->observer() == &observer;
+    });
+    if (index != notFound) {
+        registration = registry[index].copyRef();
+        registration->resetObservation(options, attributeFilter);
+    } else {
         registry.append(MutationObserverRegistration::create(observer, *this, options, attributeFilter));
         registration = registry.last().ptr();
     }
@@ -3002,6 +3022,11 @@ template<> ContainerNode* parent<ComposedTree>(const Node& node)
     return node.parentInComposedTree();
 }
 
+template<> ContainerNode* parent<ComposedTreeIncludingPseudoElements>(const Node& node)
+{
+    return node.parentElementInComposedTree();
+}
+
 template<TreeType treeType> size_t NODELETE depth(const Node& node)
 {
     size_t depth = 0;
@@ -3055,16 +3080,26 @@ template<TreeType treeType> Node* commonInclusiveAncestor(const Node& a, const N
 template Node* commonInclusiveAncestor<Tree>(const Node&, const Node&);
 template Node* commonInclusiveAncestor<ComposedTree>(const Node&, const Node&);
 template Node* commonInclusiveAncestor<ShadowIncludingTree>(const Node&, const Node&);
+template Node* commonInclusiveAncestor<ComposedTreeIncludingPseudoElements>(const Node&, const Node&);
 
-static bool NODELETE isSiblingSubsequent(const Node& siblingA, const Node& siblingB)
+template<TreeType treeType> bool NODELETE isSiblingSubsequent(const Node& siblingA, const Node& siblingB)
 {
-    ASSERT(siblingA.parentNode());
-    ASSERT(siblingA.parentNode() == siblingB.parentNode());
     ASSERT(&siblingA != &siblingB);
+    ASSERT(parent<treeType>(siblingA));
+    ASSERT(parent<treeType>(siblingA) == parent<treeType>(siblingB));
+
+    if (siblingA.isBeforePseudoElement() || siblingB.isAfterPseudoElement())
+        return true;
+    if (siblingA.isAfterPseudoElement() || siblingB.isBeforePseudoElement())
+        return false;
+
+    ASSERT(!siblingA.isPseudoElement() && !siblingB.isPseudoElement());
+
     for (auto sibling = &siblingA; sibling; sibling = sibling->nextSibling()) {
         if (sibling == &siblingB)
             return true;
     }
+
     return false;
 }
 
@@ -3089,12 +3124,13 @@ template<TreeType treeType> std::partial_ordering treeOrder(const Node& a, const
         ASSERT_NOT_REACHED();
         return std::partial_ordering::unordered;
     }
-    return isSiblingSubsequent(*result.distinctAncestorA, *result.distinctAncestorB) ? std::partial_ordering::less : std::partial_ordering::greater;
+    return isSiblingSubsequent<treeType>(*result.distinctAncestorA, *result.distinctAncestorB) ? std::partial_ordering::less : std::partial_ordering::greater;
 }
 
 template std::partial_ordering treeOrder<Tree>(const Node&, const Node&);
 template std::partial_ordering treeOrder<ShadowIncludingTree>(const Node&, const Node&);
 template std::partial_ordering treeOrder<ComposedTree>(const Node&, const Node&);
+template std::partial_ordering treeOrder<ComposedTreeIncludingPseudoElements>(const Node&, const Node&);
 
 std::partial_ordering treeOrderForTesting(TreeType type, const Node& a, const Node& b)
 {
@@ -3105,6 +3141,8 @@ std::partial_ordering treeOrderForTesting(TreeType type, const Node& a, const No
         return treeOrder<ShadowIncludingTree>(a, b);
     case ComposedTree:
         return treeOrder<ComposedTree>(a, b);
+    case ComposedTreeIncludingPseudoElements:
+        return treeOrder<ComposedTreeIncludingPseudoElements>(a, b);
     }
     ASSERT_NOT_REACHED();
     return std::partial_ordering::unordered;

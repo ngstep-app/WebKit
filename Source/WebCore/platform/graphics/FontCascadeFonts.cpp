@@ -33,6 +33,7 @@
 #include "FontCache.h"
 #include "FontCascade.h"
 #include "GlyphPage.h"
+#include "TextShapingResultAndDisplayList.h"
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
@@ -75,6 +76,9 @@ inline FontCascadeFonts::GlyphPageCacheEntry::GlyphPageCacheEntry(RefPtr<GlyphPa
 {
 }
 
+FontCascadeFonts::GlyphPageCacheEntry::GlyphPageCacheEntry() = default;
+FontCascadeFonts::GlyphPageCacheEntry::~GlyphPageCacheEntry() = default;
+
 GlyphData FontCascadeFonts::GlyphPageCacheEntry::glyphDataForCharacter(char32_t character)
 {
     ASSERT(!(m_singleFont && m_mixedFont));
@@ -109,7 +113,7 @@ FontCascadeFonts::FontCascadeFonts()
 {
 #if ASSERT_ENABLED
     if (!isMainThread())
-        m_thread = Thread::currentSingleton();
+        m_creationThreadID = currentThreadID();
 #endif
 }
 
@@ -130,7 +134,7 @@ void FontCascadeFonts::determinePitch(const FontCascadeDescription& description,
     if (numRanges == 1)
         m_pitch = primaryRanges.fontForFirstRange().pitch();
     else
-        m_pitch = VariablePitch;
+        m_pitch = PitchType::Variable;
 }
 
 void FontCascadeFonts::determineCanTakeFixedPitchFastContentMeasuring(const FontCascadeDescription& description, FontSelector* fontSelector)
@@ -164,15 +168,15 @@ static FontRanges realizeNextFallback(const FontCascadeDescription& description,
 
     CheckedRef fontCache = FontCache::forCurrentThread();
     while (index < description.effectiveFamilyCount()) {
-        auto visitor = WTF::makeVisitor([&, fontSelector = RefPtr { fontSelector }](const AtomString& family) -> FontRanges {
-            if (family.isNull())
+        auto visitor = WTF::makeVisitor([&, fontSelector = RefPtr { fontSelector }](const FontFamily& fontFamily) -> FontRanges {
+            if (fontFamily.name.isNull())
                 return FontRanges();
             if (fontSelector) {
-                auto ranges = fontSelector->fontRangesForFamily(description, family);
+                auto ranges = fontSelector->fontRangesForFamily(description, fontFamily);
                 if (!ranges.isNull())
                     return ranges;
             }
-            if (auto font = fontCache->fontForFamily(description, family))
+            if (auto font = fontCache->fontForFamily(description, fontFamily.name))
                 return FontRanges(WTF::move(font));
             return FontRanges();
         }, [&](const FontFamilyPlatformSpecification& fontFamilySpecification) -> FontRanges {
@@ -207,7 +211,7 @@ const FontRanges& FontCascadeFonts::realizeFallbackRangesAt(const FontCascadeDes
     if (!index) {
         fontRanges = realizeNextFallback(description, m_lastRealizedFallbackIndex, fontSelector);
         if (fontRanges.isNull() && fontSelector)
-            fontRanges = fontSelector->fontRangesForFamily(description, *familyNamesData->at(FamilyNamesIndex::StandardFamily));
+            fontRanges = fontSelector->fontRangesForFamily(description, FontFamily { *familyNamesData->at(FamilyNamesIndex::StandardFamily), FontFamilyKind::Generic });
         if (fontRanges.isNull())
             fontRanges = FontRanges(protect(FontCache::forCurrentThread())->lastResortFallbackFont(description));
         return fontRanges;
@@ -532,7 +536,7 @@ static RefPtr<GlyphPage> glyphPageFromFontRanges(unsigned pageNumber, const Font
 
 GlyphData FontCascadeFonts::glyphDataForCharacter(char32_t c, const FontCascadeDescription& description, FontSelector* fontSelector, FontVariant variant, ResolvedEmojiPolicy resolvedEmojiPolicy)
 {
-    ASSERT(m_thread ? m_thread->ptr() == &Thread::currentSingleton() : isMainThread());
+    ASSERT(m_creationThreadID ? *m_creationThreadID == currentThreadID() : isMainThread());
     ASSERT(variant != FontVariant::Auto);
 
     if (variant != FontVariant::Normal)
@@ -571,9 +575,11 @@ void FontCascadeFonts::pruneSystemFallbacks()
     m_shapedTextCache.clear();
 }
 
-const TextShapingResult* FontCascadeFonts::getOrCreateCachedShapedText(const TextRun& run, const FontCascade& fontCascade, unsigned from, std::optional<unsigned> to, ForTextEmphasis forTextEmphasis)
+TextShapingResultAndDisplayList* FontCascadeFonts::getOrCreateCachedShapedText(const TextRun& run, const FontCascade& fontCascade, unsigned from, std::optional<unsigned> to, ForTextEmphasis forTextEmphasis)
 {
     auto isCacheable = [&] {
+        if (!isMainThread())
+            return false;
         unsigned destination = to.value_or(run.length());
         if (from || destination != run.length() || forTextEmphasis == ForTextEmphasis::Yes)
             return false;
@@ -590,7 +596,7 @@ const TextShapingResult* FontCascadeFonts::getOrCreateCachedShapedText(const Tex
         return nullptr;
 
     // FIXME: TextMeasurementCache callers use the pattern of "adding" an empty entry as a way to perform a search with the same constraints that ::add enforces (no letter-spacing, no word-spacing, etc). We should properly encapsulate these requirements in both the ::add method and a dedicated ::find method.
-    CachedTextShapingResult* cacheEntry = m_shapedTextCache.add(run, nullptr, TextShapingContext { fontCascade });
+    auto* cacheEntry = m_shapedTextCache.add(run, nullptr, TextShapingContext { fontCascade });
 
     if (!cacheEntry)
         return nullptr;
@@ -599,14 +605,13 @@ const TextShapingResult* FontCascadeFonts::getOrCreateCachedShapedText(const Tex
         return cacheEntry->get();
 
     auto codePath = fontCascade.codePath(run);
-    TextShapingResult result;
-    if (fontCascade.shouldUseComplexTextController(codePath))
-        result = fontCascade.layoutComplexText(run, 0, run.length(), ForTextEmphasis::No);
-    else
-        result = fontCascade.layoutSimpleText(run, 0, run.length(), ForTextEmphasis::No);
+    auto result =
+        (fontCascade.shouldUseComplexTextController(codePath))
+        ? fontCascade.layoutComplexText(run, 0, run.length(), ForTextEmphasis::No)
+        : fontCascade.layoutSimpleText(run, 0, run.length(), ForTextEmphasis::No);
     result.glyphBuffer.flatten();
 
-    *cacheEntry = WTF::makeUnique<TextShapingResult>(WTF::move(result));
+    *cacheEntry = WTF::makeUnique<TextShapingResultAndDisplayList>(WTF::move(result));
 
     return cacheEntry->get();
 }

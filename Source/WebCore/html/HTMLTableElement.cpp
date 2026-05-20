@@ -38,9 +38,9 @@
 #include "HTMLTableRowsCollection.h"
 #include "HTMLTableSectionElement.h"
 #include "MutableStyleProperties.h"
-#include "NodeInlines.h"
 #include "NodeName.h"
 #include "NodeRareData.h"
+#include "RenderStyle+GettersInlines.h"
 #include "RenderTable.h"
 #include <wtf/NeverDestroyed.h>
 #include <wtf/Ref.h>
@@ -330,7 +330,7 @@ void HTMLTableElement::collectPresentationalHintsForAttribute(const QualifiedNam
         break;
     case AttributeNames::backgroundAttr:
         if (auto url = value.string().trim(isASCIIWhitespace); !url.isEmpty())
-            style.setProperty(CSSProperty(CSSPropertyBackgroundImage, CSSImageValue::create(protect(document())->completeURL(url))));
+            style.setProperty(CSSProperty(CSSPropertyBackgroundImage, CSSImageValue::create(protect(document())->encodingParseURL(url))));
         break;
     case AttributeNames::valignAttr:
         if (!value.isEmpty())
@@ -510,24 +510,24 @@ Ref<MutableStyleProperties> HTMLTableElement::createSharedCellStyle() const
         style->setProperty(CSSPropertyBorderRightWidth, CSSValueThin);
         style->setProperty(CSSPropertyBorderLeftStyle, CSSValueSolid);
         style->setProperty(CSSPropertyBorderRightStyle, CSSValueSolid);
-        style->setProperty(CSSPropertyBorderColor, CSSPrimitiveValue::create(CSSValueInherit));
+        style->setProperty(CSSPropertyBorderColor, CSSKeywordValue::create(CSSValueInherit));
         break;
     case CellBorders::SolidRowsOnly:
         style->setProperty(CSSPropertyBorderTopWidth, CSSValueThin);
         style->setProperty(CSSPropertyBorderBottomWidth, CSSValueThin);
         style->setProperty(CSSPropertyBorderTopStyle, CSSValueSolid);
         style->setProperty(CSSPropertyBorderBottomStyle, CSSValueSolid);
-        style->setProperty(CSSPropertyBorderColor, CSSPrimitiveValue::create(CSSValueInherit));
+        style->setProperty(CSSPropertyBorderColor, CSSKeywordValue::create(CSSValueInherit));
         break;
     case CellBorders::Solid:
         style->setProperty(CSSPropertyBorderWidth, CSSPrimitiveValue::create(1, CSSUnitType::CSS_PX));
-        style->setProperty(CSSPropertyBorderStyle, CSSPrimitiveValue::create(CSSValueSolid));
-        style->setProperty(CSSPropertyBorderColor, CSSPrimitiveValue::create(CSSValueInherit));
+        style->setProperty(CSSPropertyBorderStyle, CSSKeywordValue::create(CSSValueSolid));
+        style->setProperty(CSSPropertyBorderColor, CSSKeywordValue::create(CSSValueInherit));
         break;
     case CellBorders::Inset:
         style->setProperty(CSSPropertyBorderWidth, CSSPrimitiveValue::create(1, CSSUnitType::CSS_PX));
-        style->setProperty(CSSPropertyBorderStyle, CSSPrimitiveValue::create(CSSValueInset));
-        style->setProperty(CSSPropertyBorderColor, CSSPrimitiveValue::create(CSSValueInherit));
+        style->setProperty(CSSPropertyBorderStyle, CSSKeywordValue::create(CSSValueInset));
+        style->setProperty(CSSPropertyBorderColor, CSSKeywordValue::create(CSSValueInherit));
         break;
     case CellBorders::None:
         // If 'rules=none' then allow any borders set at cell level to take effect. 
@@ -605,7 +605,7 @@ void HTMLTableElement::addSubresourceAttributeURLs(ListHashSet<URL>& urls) const
 {
     HTMLElement::addSubresourceAttributeURLs(urls);
 
-    addSubresourceURL(urls, protect(document())->completeURL(attributeWithoutSynchronization(backgroundAttr)));
+    addSubresourceURL(urls, protect(document())->encodingParseURL(attributeWithoutSynchronization(backgroundAttr)));
 }
 
 }

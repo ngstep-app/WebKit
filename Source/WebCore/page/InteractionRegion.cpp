@@ -72,10 +72,11 @@
 #include "TextIterator.h"
 #include <wtf/NeverDestroyed.h>
 #include <wtf/text/MakeString.h>
+#include "FrameDestructionObserverInlines.h"
 
 #if ENABLE(FORM_CONTROL_REFRESH)
 #include "PathCG.h"
-#include "RenderTheme.h"
+#include "RenderThemeCocoa.h"
 #endif
 
 namespace WebCore {
@@ -369,11 +370,9 @@ static RefPtr<Image> findIconImage(const RenderObject& renderer)
 static std::optional<std::pair<Ref<SVGSVGElement>, Ref<SVGGraphicsElement>>> findSVGClipElements(const RenderObject& renderer)
 {
     if (const auto& renderShape = dynamicDowncast<LegacyRenderSVGShape>(renderer)) {
-        Ref shapeElement = renderShape->graphicsElement();
-        if (auto* owner = shapeElement->ownerSVGElement()) {
-            Ref svgSVGElement = *owner;
-            return std::make_pair(svgSVGElement, shapeElement);
-        }
+        auto& shapeElement = renderShape->graphicsElement();
+        if (auto* owner = shapeElement.ownerSVGElement())
+            return std::make_pair(Ref { *owner }, Ref { shapeElement });
     }
 
     return std::nullopt;

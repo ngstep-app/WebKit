@@ -163,7 +163,7 @@ WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(UserGestureInitiatedMicrotaskDispatcher);
 
 RefPtr<JSC::MicrotaskDispatcher> UserGestureToken::createMicrotaskDispatcher(JSC::VM&, JSC::JSGlobalObject* globalObject)
 {
-    auto* domGlobalObject = JSC::jsCast<JSDOMGlobalObject*>(globalObject);
+    auto* domGlobalObject = downcast<JSDOMGlobalObject>(globalObject);
     RefPtr context = domGlobalObject->scriptExecutionContext();
     if (!context) [[unlikely]]
         return nullptr;
@@ -272,7 +272,7 @@ bool UserGestureIndicator::processingUserGestureForMedia()
         return false;
 
     RefPtr token = currentToken(commonVM());
-    return token ? token->processingUserGestureForMedia() : false;
+    return token && token->processingUserGestureForMedia();
 }
 
 std::optional<WTF::UUID> UserGestureIndicator::authorizationToken() const

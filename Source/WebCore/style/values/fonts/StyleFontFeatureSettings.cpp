@@ -27,6 +27,7 @@
 #include "StyleFontFeatureSettings.h"
 
 #include "CSSFontFeatureValue.h"
+#include "CSSKeywordValue.h"
 #include "CSSPropertyParserConsumer+Font.h"
 #include "StyleBuilderChecking.h"
 #include "StyleFontOpentypeTag.h"
@@ -41,8 +42,8 @@ namespace Style {
 
 auto CSSValueConversion<FontFeatureSettings>::operator()(BuilderState& state, const CSSValue& value) -> FontFeatureSettings
 {
-    if (auto* primitiveValue = dynamicDowncast<CSSPrimitiveValue>(value)) {
-        switch (auto valueID = primitiveValue->valueID(); valueID) {
+    if (auto* keywordValue = dynamicDowncast<CSSKeywordValue>(value)) {
+        switch (auto valueID = keywordValue->valueID(); valueID) {
         case CSSValueNormal:
             return CSS::Keyword::Normal { };
         default:
@@ -61,7 +62,7 @@ auto CSSValueConversion<FontFeatureSettings>::operator()(BuilderState& state, co
     for (Ref setting : *list) {
         platformSettings.insert({
             setting->tag(),
-            toStyleFromCSSValue<FontFeatureSettings::Value>(state, setting->value()).value
+            toStyle(setting->value(), state).value
         });
     }
 
@@ -77,7 +78,7 @@ Ref<CSSValue> CSSValueCreation<FontFeatureSettings>::operator()(CSSValuePool& po
     for (auto& setting : value.platform()) {
         list.append(CSSFontFeatureValue::create(
             setting.tag(),
-            createCSSValue(pool, style, FontFeatureSettings::Value { setting.value() })
+            toCSS(FontFeatureSettings::Value { setting.value() }, style)
         ));
     }
     return CSSValueList::createCommaSeparated(WTF::move(list));

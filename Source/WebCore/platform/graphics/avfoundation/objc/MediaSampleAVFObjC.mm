@@ -126,19 +126,6 @@ static bool doesCMSampleBufferHaveSyncInfo(CMSampleBufferRef sample)
     return PAL::CMSampleBufferGetSampleAttachmentsArray(sample, false);
 }
 
-static bool isCMSampleBufferRandomAccess(CMSampleBufferRef sample)
-{
-    RetainPtr attachments = PAL::CMSampleBufferGetSampleAttachmentsArray(sample, false);
-    if (!attachments)
-        return true;
-
-    if (CFArrayGetCount(attachments.get()) < 1)
-        return true;
-
-    RetainPtr firstAttachment = checked_cf_cast<CFDictionaryRef>(CFArrayGetValueAtIndex(attachments.get(), 0));
-    return isCMSampleBufferAttachmentRandomAccess(firstAttachment.get());
-}
-
 static bool isCMSampleBufferAttachmentNonDisplaying(CFDictionaryRef attachmentDict)
 {
     return CFDictionaryContainsKey(attachmentDict, PAL::kCMSampleAttachmentKey_DoNotDisplay);
@@ -311,6 +298,41 @@ std::pair<RefPtr<MediaSample>, RefPtr<MediaSample>> MediaSampleAVFObjC::divide(c
     RetainPtr<CMSampleBufferRef> sampleAfter = adoptCF(rawSampleAfter);
 
     return { MediaSampleAVFObjC::create(sampleBefore.get(), m_id), MediaSampleAVFObjC::create(sampleAfter.get(), m_id) };
+}
+
+Ref<MediaSample> MediaSampleAVFObjC::createCopyWithAdjustedStartTime(const MediaTime& offset) const
+{
+    MediaTime clampedOffset = std::max(MediaTime::zeroTime(), std::min(offset, duration()));
+
+    CMItemCount itemCount = 0;
+    if (noErr != PAL::CMSampleBufferGetSampleTimingInfoArray(m_sample.get(), 0, nullptr, &itemCount))
+        return const_cast<MediaSampleAVFObjC&>(*this);
+
+    Vector<CMSampleTimingInfo> timingInfoArray;
+    timingInfoArray.grow(itemCount);
+    if (noErr != PAL::CMSampleBufferGetSampleTimingInfoArray(m_sample.get(), itemCount, timingInfoArray.mutableSpan().data(), nullptr))
+        return const_cast<MediaSampleAVFObjC&>(*this);
+
+    CMTime cmOffset = PAL::toCMTime(clampedOffset);
+
+    for (auto& timing : timingInfoArray) {
+        if (!CMTIME_IS_INVALID(timing.presentationTimeStamp))
+            timing.presentationTimeStamp = PAL::CMTimeAdd(timing.presentationTimeStamp, cmOffset);
+        if (!CMTIME_IS_INVALID(timing.decodeTimeStamp))
+            timing.decodeTimeStamp = PAL::CMTimeAdd(timing.decodeTimeStamp, cmOffset);
+        if (!CMTIME_IS_INVALID(timing.duration)) {
+            CMTime newDuration = PAL::CMTimeSubtract(timing.duration, cmOffset);
+            if (PAL::CMTimeCompare(newDuration, PAL::kCMTimeZero) < 0)
+                newDuration = PAL::kCMTimeZero;
+            timing.duration = newDuration;
+        }
+    }
+
+    CMSampleBufferRef newSampleBuffer = nullptr;
+    if (noErr != PAL::CMSampleBufferCreateCopyWithNewTiming(kCFAllocatorDefault, m_sample.get(), itemCount, timingInfoArray.span().data(), &newSampleBuffer) || !newSampleBuffer)
+        return const_cast<MediaSampleAVFObjC&>(*this);
+
+    return MediaSampleAVFObjC::create(adoptCF(newSampleBuffer).get(), m_id);
 }
 
 Ref<MediaSample> MediaSampleAVFObjC::createNonDisplayingCopy() const

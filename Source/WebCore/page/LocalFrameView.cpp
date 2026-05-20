@@ -51,7 +51,6 @@
 #include "Editor.h"
 #include "EventHandler.h"
 #include "EventLoop.h"
-#include "EventTargetInlines.h"
 #include "EventNames.h"
 #include "FindRevealAlgorithms.h"
 #include "FixedContainerEdges.h"
@@ -65,6 +64,7 @@
 #include "FrameSelection.h"
 #include "FrameTree.h"
 #include "GraphicsContext.h"
+#include "GraphicsLayer.h"
 #include "HTMLBodyElement.h"
 #include "HTMLEmbedElement.h"
 #include "HTMLFrameElement.h"
@@ -84,7 +84,6 @@
 #include "LocalFrameLoaderClient.h"
 #include "Logging.h"
 #include "MemoryCache.h"
-#include "NodeInlines.h"
 #include "NodeRenderStyle.h"
 #include "NullGraphicsContext.h"
 #include "Page.h"
@@ -92,6 +91,7 @@
 #include "PageInspectorController.h"
 #include "PageOverlayController.h"
 #include "PerformanceLoggingClient.h"
+#include "PlatformRenderTheme.h"
 #include "ProgressTracker.h"
 #include "Quirks.h"
 #include "RenderAncestorIterator.h"
@@ -462,6 +462,16 @@ void LocalFrameView::setFrameRect(const IntRect& newRect)
 
     if (RefPtr document = m_frame->document())
         document->didChangeViewSize();
+
+#if ENABLE(ACCESSIBILITY_LOCAL_FRAME)
+    // When an iframe's position changes in its parent (e.g. containing div moved),
+    // schedule a debounced update of all frame geometries so accessibility screen
+    // coordinates stay current for the moved frame and any descendants.
+    if (!m_frame->isMainFrame() && AXObjectCache::accessibilityEnabled()) {
+        if (RefPtr page = m_frame->page())
+            page->chrome().client().scheduleAccessibilityFrameGeometryUpdate();
+    }
+#endif
 
     viewportContentsChanged();
 }
@@ -932,11 +942,6 @@ bool LocalFrameView::isScrollSnapInProgress() const
     return false;
 }
 
-void LocalFrameView::updateScrollingCoordinatorScrollSnapProperties() const
-{
-    renderView()->compositor().updateScrollSnapPropertiesWithFrameView(*this);
-}
-
 bool LocalFrameView::flushCompositingStateForThisFrame(const LocalFrame& rootFrameForFlush)
 {
     CheckedPtr renderView = this->renderView();
@@ -970,7 +975,7 @@ GraphicsLayer* LocalFrameView::graphicsLayerForPlatformWidget(PlatformWidget pla
 {
     // To find the Widget that corresponds with platformWidget we have to do a linear
     // search of our child widgets.
-    RefPtr<const Widget> foundWidget = nullptr;
+    const Widget* foundWidget = nullptr;
     for (auto& widget : children()) {
         if (widget->platformWidget() != platformWidget)
             continue;
@@ -1120,8 +1125,12 @@ void LocalFrameView::obscuredContentInsetsDidChange(const FloatBoxExtent& newObs
             tiledBacking->setObscuredContentInsets(newObscuredContentInsets);
     }
 
-    if (RefPtr page = m_frame->page())
+    if (RefPtr page = m_frame->page()) {
         page->chrome().client().setNeedsFixedContainerEdgesUpdate();
+#if ENABLE(ACCESSIBILITY_LOCAL_FRAME)
+        page->chrome().client().scheduleAccessibilityFrameGeometryUpdate();
+#endif
+    }
 }
 
 void LocalFrameView::topContentDirectionDidChange()
@@ -1204,25 +1213,18 @@ void LocalFrameView::forceLayoutParentViewIfNeeded()
     if (!ownerRenderer)
         return;
 
-    CheckedPtr contentBox = embeddedContentBox();
-    if (!contentBox)
+    CheckedPtr svgRoot = embeddedSVGRoot();
+    if (!svgRoot)
         return;
 
-    if (auto* svgRoot = dynamicDowncast<LegacyRenderSVGRoot>(contentBox.get())) {
-        if (svgRoot->everHadLayout() && !svgRoot->needsLayout())
-            return;
-    }
-
-    if (auto* svgRoot = dynamicDowncast<RenderSVGRoot>(contentBox.get())) {
-        if (svgRoot->everHadLayout() && !svgRoot->needsLayout())
-            return;
-    }
+    if (svgRoot->everHadLayout() && !svgRoot->needsLayout())
+        return;
 
     LOG(Layout, "LocalFrameView %p forceLayoutParentViewIfNeeded scheduling layout on parent LocalFrameView %p", this, &ownerRenderer->view().frameView());
 
     // If the embedded SVG document appears the first time, the ownerRenderer has already finished
     // layout without knowing about the existence of the embedded SVG document, because RenderReplaced
-    // embeddedContentBox() returns nullptr, as long as the embedded document isn't loaded yet. Before
+    // embeddedSVGRoot() returns nullptr, as long as the embedded document isn't loaded yet. Before
     // bothering to lay out the SVG document, mark the ownerRenderer needing layout and ask its
     // LocalFrameView for a layout. After that the RenderEmbeddedObject (ownerRenderer) carries the
     // correct size, which LegacyRenderSVGRoot::computeReplacedLogicalWidth/Height rely on, when laying
@@ -1511,22 +1513,19 @@ bool LocalFrameView::shouldDeferScrollUpdateAfterContentSizeChange()
     return (layoutContext().layoutPhase() < LocalFrameViewLayoutContext::LayoutPhase::InPostLayout) && (layoutContext().layoutPhase() != LocalFrameViewLayoutContext::LayoutPhase::OutsideLayout);
 }
 
-RenderBox* LocalFrameView::embeddedContentBox() const
+RenderReplaced* LocalFrameView::embeddedSVGRoot() const
 {
     CheckedPtr renderView = this->renderView();
     if (!renderView)
         return nullptr;
 
-    RenderObject* firstChild = renderView->firstChild();
+    auto* firstChild = renderView->firstChild();
 
-    // Curently only embedded SVG documents participate in the size-negotiation logic.
+    // Currently only embedded SVG documents participate in the size-negotiation logic.
     if (auto* svgRoot = dynamicDowncast<LegacyRenderSVGRoot>(firstChild))
         return svgRoot;
 
-    if (auto* svgRoot = dynamicDowncast<RenderSVGRoot>(firstChild))
-        return svgRoot;
-
-    return nullptr;
+    return dynamicDowncast<RenderSVGRoot>(firstChild);
 }
 
 void LocalFrameView::addEmbeddedObjectToUpdate(RenderEmbeddedObject& embeddedObject)
@@ -2141,17 +2140,26 @@ std::optional<LayoutRect> LocalFrameView::visibleRectOfChild(const Frame& child)
     return rects.transform([] (const auto& repaintRects) { return repaintRects.clippedOverflowRect; });
 }
 
-bool LocalFrameView::ownerElementOfChildFrameUsesDarkAppearance(const Frame& child) const
+OptionSet<FrameOwnerElementAppearance> LocalFrameView::appearanceOfOwnerElementOfChildFrame(const Frame& child) const
 {
     RefPtr childOwnerRenderer = child.ownerRenderer();
     if (!childOwnerRenderer)
-        return false;
+        return { };
 
     // Ensure |child| is a child of this frame.
     ASSERT(child.tree().parent()->frameID() == m_frame->frameID());
     ASSERT(childOwnerRenderer->frame().frameID() == m_frame->frameID());
 
-    return childOwnerRenderer->useDarkAppearance();
+    OptionSet<FrameOwnerElementAppearance> result;
+    if (childOwnerRenderer->useDarkAppearance())
+        result |= FrameOwnerElementAppearance::IsDark;
+#if ENABLE(DARK_MODE_CSS)
+    // FIXME: does <meta name="color-scheme"> counts as explicitly set too?
+    if (childOwnerRenderer->style().hasExplicitlySetColorScheme())
+        result |= FrameOwnerElementAppearance::ExplicitlySet;
+#endif
+
+    return result;
 }
 
 LayoutRect LocalFrameView::rectForFixedPositionLayout() const
@@ -2661,7 +2669,16 @@ FloatRect LocalFrameView::insetClipLayerRect(const FloatPoint& scrollPosition, c
 
     auto adjustedSize = sizeForVisibleContent;
     if (obscuredContentInset.top())
-        adjustedSize.setHeight(std::max(0.f, sizeForVisibleContent.height() - position.y()));
+        adjustedSize.setHeight(std::max(0.f, adjustedSize.height() - position.y()));
+
+    if (obscuredContentInset.bottom())
+        adjustedSize.setHeight(std::max(0.f, adjustedSize.height() - obscuredContentInset.bottom()));
+
+    if (obscuredContentInset.left())
+        adjustedSize.setWidth(std::max(0.f, adjustedSize.width() - position.x()));
+
+    if (obscuredContentInset.right())
+        adjustedSize.setWidth(std::max(0.f, adjustedSize.width() - obscuredContentInset.right()));
 
     return { position, adjustedSize };
 }
@@ -3273,7 +3290,7 @@ void LocalFrameView::setScrollOffsetWithOptions(const ScrollOffset& scrollOffset
     if (page && page->isMonitoringWheelEvents())
         scrollAnimator().setWheelEventTestMonitor(page->wheelEventTestMonitor());
 
-    ScrollOffset snappedOffset = ceiledIntPoint(scrollAnimator().scrollOffsetAdjustedForSnapping(scrollOffset, options.snapPointSelectionMethod));
+    auto snappedOffset = ceiledIntPoint(scrollAnimator().scrollOffsetAdjustedForSnapping(scrollOffset, options.snapPointSelectionMethod));
     auto snappedPosition = scrollPositionFromOffset(snappedOffset);
 
     if (options.animated == ScrollIsAnimated::Yes)
@@ -3482,6 +3499,10 @@ bool LocalFrameView::scrollRectToVisible(const LayoutRect& absoluteRect, const R
     EnumSet<BoxAxis> isFixed(insideFixed ? EnumSet<BoxAxis> { BoxAxis::Horizontal, BoxAxis::Vertical } : EnumSet<BoxAxis> { });
 
     for (; layer; layer = layer->enclosingContainingBlockLayer(CrossFrameBoundaries::No)) {
+        // Per the CSSOM View spec, scrollIntoView should scroll the element's ancestor scroll
+        // containers, but not the element itself if it happens to be a scroller.
+        if (options.skipScrollingTargetElement == SkipScrollingTargetElement::Yes && &layer->renderer() == &renderer)
+            continue;
         if (layer->shouldTryToScrollForScrollIntoView(adjustedOptions)) {
             adjustScrollRectToVisibleOptionsForHiddenOverflow(adjustedOptions, layer->renderer().style());
             adjustedRect = layer->ensureLayerScrollableArea()->scrollRectToVisible(adjustedRect, adjustedOptions);
@@ -3775,7 +3796,6 @@ void LocalFrameView::updateScriptedAnimationsAndTimersThrottlingState(const IntR
         scriptedAnimationController->removeThrottlingReason(ThrottlingReason::OutsideViewport);
 }
 
-
 void LocalFrameView::resumeVisibleImageAnimationsIncludingSubframes()
 {
     applyRecursivelyWithVisibleRect([] (LocalFrameView& frameView, const IntRect& visibleRect) {
@@ -3998,6 +4018,11 @@ bool LocalFrameView::renderedCharactersExceed(unsigned threshold)
 void LocalFrameView::availableContentSizeChanged(AvailableSizeChangeReason reason)
 {
     if (RefPtr document = m_frame->document()) {
+        if (document->quirks().shouldDeferIntersectionObserversDuringResize()) {
+            if (RefPtr page = m_frame->page())
+                page->recordResizeForIntersectionObserverQuirk();
+        }
+
         // FIXME: Merge this logic with m_setNeedsLayoutWasDeferred and find a more appropriate
         // way of handling potential recursive layouts when the viewport is resized to accomodate
         // the content but the content always overflows the viewport. See webkit.org/b/165781.
@@ -6718,16 +6743,6 @@ void LocalFrameView::firePaintRelatedMilestonesIfNeeded()
         localMainFrame->loader().didReachLayoutMilestone(milestonesAchieved);
 }
 
-void LocalFrameView::setVisualUpdatesAllowedByClient(bool visualUpdatesAllowed)
-{
-    if (m_visualUpdatesAllowedByClient == visualUpdatesAllowed)
-        return;
-
-    m_visualUpdatesAllowedByClient = visualUpdatesAllowed;
-
-    m_frame->document()->setVisualUpdatesAllowedByClient(visualUpdatesAllowed);
-}
-    
 void LocalFrameView::setScrollPinningBehavior(ScrollPinningBehavior pinning)
 {
     m_scrollPinningBehavior = pinning;
@@ -6880,6 +6895,9 @@ void LocalFrameView::setOverrideSizeForCSSDefaultViewportUnits(OverrideViewportS
 
 FloatSize LocalFrameView::sizeForCSSDefaultViewportUnits() const
 {
+    if (m_shouldUseDynamicViewportUnitsAsDefault)
+        return sizeForCSSDynamicViewportUnits();
+
     return calculateSizeForCSSViewportUnitsOverride(m_defaultViewportSizeOverride);
 }
 
@@ -7105,7 +7123,7 @@ Color LocalFrameView::scrollbarTrackColorStyle() const
 Style::ScrollbarGutter LocalFrameView::scrollbarGutterStyle()  const
 {
     auto* document = m_frame->document();
-    CheckedPtr scrollingObject = document && document->documentElement() ? document->documentElement()->renderer() : nullptr;
+    auto* scrollingObject = document && document->documentElement() ? document->documentElement()->renderer() : nullptr;
     if (scrollingObject)
         return scrollingObject->style().scrollbarGutter();
     return CSS::Keyword::Auto { };
@@ -7256,10 +7274,8 @@ IntSize LocalFrameView::totalScrollbarSpace() const
 
 int LocalFrameView::insetForLeftScrollbarSpace() const
 {
-    if (scrollbarGutterStyle().isStableBothEdges())
+    if (scrollbarGutterStyle().isStableBothEdges() || shouldPlaceVerticalScrollbarOnLeft())
         return scrollbarGutterWidth();
-    if (shouldPlaceVerticalScrollbarOnLeft())
-        return verticalScrollbar() ? verticalScrollbar()->occupiedWidth() : 0;
     return 0;
 }
 

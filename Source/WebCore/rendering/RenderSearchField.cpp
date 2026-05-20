@@ -39,13 +39,13 @@
 #include "LocalFrame.h"
 #include "LocalFrameView.h"
 #include "LocalizedStrings.h"
-#include "NodeInlines.h"
 #include "Page.h"
 #include "PopupMenu.h"
 #include "RenderBoxInlines.h"
 #include "RenderBoxModelObjectInlines.h"
 #include "RenderLayer.h"
 #include "RenderObjectInlines.h"
+#include "RenderStyle+SettersInlines.h"
 #include "RenderTheme.h"
 #include "RenderView.h"
 #include "SearchInputType.h"
@@ -120,7 +120,7 @@ void RenderSearchField::showPopup()
         popup->saveRecentSearches(name, recentSearches);
     }
 
-    FloatPoint absTopLeft = localToAbsolute(FloatPoint(), UseTransforms);
+    FloatPoint absTopLeft = localToAbsolute(FloatPoint(), MapCoordinatesMode::UseTransforms);
     IntRect absBounds = absoluteBoundingBoxRectIgnoringTransforms();
     absBounds.setLocation(roundedIntPoint(absTopLeft));
     protect(protect(m_searchPopup)->popupMenu())->show(absBounds, protect(view().frameView()), -1);
@@ -155,7 +155,7 @@ std::span<const RecentSearch> RenderSearchField::recentSearches()
     if (!m_searchPopup)
         m_searchPopup = page().chrome().createSearchPopupMenu(downcast<SearchInputType>(*inputElement().inputType()));
 
-    auto& recentSearches = downcast<SearchInputType>(*inputElement().inputType()).recentSearches();
+    auto& recentSearches = downcast<SearchInputType>(*inputElement().inputType().unsafeGet()).recentSearches();
 
     const AtomString& name = autosaveName();
     protect(m_searchPopup)->loadRecentSearches(name, recentSearches);

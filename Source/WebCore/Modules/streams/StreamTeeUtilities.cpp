@@ -29,16 +29,19 @@
 
 #include "ContextDestructionObserverInlines.h"
 #include "EventLoop.h"
+#include "JSDOMConvertBufferSource.h"
 #include "JSDOMPromise.h"
 #include "JSDOMPromiseDeferred.h"
 #include "JSReadableStreamReadResult.h"
-#include "JSValueInWrappedObject.h"
+#include "JSValueInWrappedObjectInlines.h"
 #include "ReadableByteStreamController.h"
 #include "ReadableStream.h"
 #include "ReadableStreamBYOBReader.h"
 #include "ReadableStreamBYOBRequest.h"
 #include "ReadableStreamDefaultReader.h"
 #include "ScriptExecutionContextInlines.h"
+#include <JavaScriptCore/JSGlobalObjectInlines.h>
+#include <JavaScriptCore/MarkedVector.h>
 #include <wtf/RefCountedAndCanMakeWeakPtr.h>
 
 namespace WebCore {
@@ -153,7 +156,7 @@ public:
 
     JSDOMGlobalObject* globalObject()
     {
-        return m_context ? JSC::jsCast<JSDOMGlobalObject*>(protect(m_context)->globalObject()) : nullptr;
+        return m_context ? downcast<JSDOMGlobalObject>(protect(m_context)->globalObject()) : nullptr;
     }
 
     void queueMicrotaskWithValue(JSC::JSValue value, Function<void(JSC::JSValue)>&& task)
@@ -162,7 +165,7 @@ public:
         if (!context)
             return;
 
-        auto& globalObject = *JSC::jsCast<JSDOMGlobalObject*>(context->globalObject());
+        auto& globalObject = *downcast<JSDOMGlobalObject>(context->globalObject());
         protect(context->eventLoop())->queueMicrotask(globalObject.vm(), [task = WTF::move(task), value = JSC::Strong<JSC::Unknown> { globalObject.vm(), value }] {
             task(value.get());
         });

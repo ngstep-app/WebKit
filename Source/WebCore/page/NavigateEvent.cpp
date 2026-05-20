@@ -31,14 +31,16 @@
 #include "CommonVM.h"
 #include "DocumentView.h"
 #include "Element.h"
-#include "FrameDestructionObserverInlines.h"
 #include "ExceptionCode.h"
+#include "FrameDestructionObserverInlines.h"
 #include "HTMLBodyElement.h"
 #include "HistoryController.h"
+#include "JSValueInWrappedObjectInlines.h"
 #include "LocalFrameInlines.h"
 #include "LocalFrameView.h"
 #include "Navigation.h"
 #include "NavigationNavigationType.h"
+#include "ScriptWrappableInlines.h"
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
@@ -60,7 +62,7 @@ NavigateEvent::NavigateEvent(JSC::JSGlobalObject& globalObject, const AtomString
     , m_abortController(abortController)
 {
     Locker<JSC::JSLock> locker(commonVM().apiLock());
-    m_info.setWeakly(globalObject, init.info);
+    m_info.set(globalObject, wrapper(), init.info);
 }
 
 NavigateEvent::NavigateEvent(RefPtr<DOMWrapperWorld>&& world, const AtomString& type, Init&& init, EventIsTrusted isTrusted, AbortController* abortController)
@@ -105,6 +107,11 @@ ExceptionOr<void> NavigateEvent::sharedChecks(Document& document)
         return Exception { ExceptionCode::InvalidStateError, "Event was already canceled"_s };
 
     return { };
+}
+
+JSC::JSValue NavigateEvent::info()
+{
+    return m_info.getValue();
 }
 
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-navigateevent-intercept

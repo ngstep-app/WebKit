@@ -8,6 +8,11 @@ set(TestWebKitAPI_DISABLED_WARNINGS
 
 macro(WEBKIT_TEST _target)
     WEBKIT_EXECUTABLE(${_target})
+    if (${_target} STREQUAL "TestWTF")
+        WEBKIT_ADD_PREFIX_HEADER(TestWTF Helpers/TestWebKitAPIPrefix.h PREFIX_NO_CODEGEN PREFIX_LANGUAGES CXX OBJCXX)
+    else ()
+        WEBKIT_REUSE_PREFIX_HEADER(${_target} TestWTF Helpers/TestWebKitAPIPrefix.h PREFIX_LANGUAGES CXX OBJCXX)
+    endif ()
     add_test(${_target} ${TESTWEBKITAPI_RUNTIME_OUTPUT_DIRECTORY}/${_target})
     set_tests_properties(${_target} PROPERTIES TIMEOUT 60)
     set_target_properties(${_target} PROPERTIES
@@ -21,11 +26,12 @@ endmacro()
 
 # TestWTF definitions
 set(TestWTF_SOURCES
-    Counters.cpp
-    TestsController.cpp
-    Utilities.cpp
+    Helpers/Counters.cpp
+    Runner/TestsController.cpp
+    Helpers/Utilities.cpp
 
     Tests/WTF/AtomString.cpp
+    Tests/WTF/AutomaticThread.cpp
     Tests/WTF/Base64.cpp
     Tests/WTF/BitSet.cpp
     Tests/WTF/BitVector.cpp
@@ -88,12 +94,15 @@ set(TestWTF_SOURCES
     Tests/WTF/NeverDestroyed.cpp
     Tests/WTF/OptionCountedSet.cpp
     Tests/WTF/OptionSet.cpp
+    Tests/WTF/OrderedHashMap.cpp
+    Tests/WTF/OrderedHashSet.cpp
     Tests/WTF/Packed.cpp
     Tests/WTF/PackedRef.cpp
     Tests/WTF/PackedRefPtr.cpp
     Tests/WTF/ParkingLot.cpp
     Tests/WTF/PreciseSum.cpp
     Tests/WTF/PriorityQueue.cpp
+    Tests/WTF/RapidHash.cpp
     Tests/WTF/RedBlackTree.cpp
     Tests/WTF/Ref.cpp
     Tests/WTF/RefCountedFixedVector.cpp
@@ -119,7 +128,6 @@ set(TestWTF_SOURCES
     Tests/WTF/StringConcatenate.cpp
     Tests/WTF/StringHasher.cpp
     Tests/WTF/SuperFastHash.cpp
-    Tests/WTF/WYHash.cpp
     Tests/WTF/StringImpl.cpp
     Tests/WTF/StringParsingBuffer.cpp
     Tests/WTF/StringSearch.cpp
@@ -164,7 +172,7 @@ WEBKIT_EXECUTABLE_DECLARE(TestWTF)
 # TestJavaScriptCore definitions
 if (ENABLE_JAVASCRIPTCORE)
     set(TestJavaScriptCore_SOURCES
-        TestsController.cpp
+        Runner/TestsController.cpp
 
         Tests/JavaScriptCore/DisallowVMEntry.cpp
         Tests/JavaScriptCore/InspectorConsoleMessage.cpp
@@ -192,10 +200,10 @@ endif ()
 # TestWebCore definitions
 if (ENABLE_WEBCORE)
     set(TestWebCore_SOURCES
-        GraphicsTestUtilities.cpp
-        TestsController.cpp
-        Utilities.cpp
-        WebCoreTestUtilities.cpp
+        Helpers/GraphicsTestUtilities.cpp
+        Runner/TestsController.cpp
+        Helpers/Utilities.cpp
+        Helpers/WebCoreTestUtilities.cpp
 
         Tests/WebCore/AffineTransform.cpp
         Tests/WebCore/AudioSampleFormat.cpp
@@ -204,6 +212,7 @@ if (ENABLE_WEBCORE)
         Tests/WebCore/ColorTests.cpp
         Tests/WebCore/ComplexTextController.cpp
         Tests/WebCore/ContextMenuAction.cpp
+        Tests/WebCore/CookieJar.cpp
         Tests/WebCore/Decimal.cpp
         Tests/WebCore/FileMonitor.cpp
         Tests/WebCore/FloatPointTests.cpp
@@ -278,7 +287,7 @@ endif ()
 # TestWebKitLegacy definitions
 if (ENABLE_WEBKIT_LEGACY)
     set(TestWebKitLegacy_SOURCES
-        TestsController.cpp
+        Runner/TestsController.cpp
     )
 
     set(TestWebKitLegacy_LIBRARIES
@@ -307,59 +316,59 @@ endif ()
 # TestWebKit definitions
 if (ENABLE_WEBKIT)
     set(TestWebKit_SOURCES
-        Utilities.cpp
+        Helpers/Utilities.cpp
 
-        Tests/WebKit/AboutBlankLoad.cpp
-        Tests/WebKit/CanHandleRequest.cpp
-        Tests/WebKit/DOMWindowExtensionBasic.cpp
-        Tests/WebKit/DOMWindowExtensionNoCache.cpp
-        Tests/WebKit/DidNotHandleKeyDown.cpp
-        Tests/WebKit/DocumentStartUserScriptAlertCrash.cpp
-        Tests/WebKit/DownloadDecideDestinationCrash.cpp
-        Tests/WebKit/EvaluateJavaScript.cpp
-        Tests/WebKit/FailedLoad.cpp
-        Tests/WebKit/Find.cpp
-        Tests/WebKit/FirstMeaningfulPaintMilestone.cpp
-        Tests/WebKit/ForceRepaint.cpp
-        Tests/WebKit/FrameMIMETypeHTML.cpp
-        Tests/WebKit/FrameMIMETypePNG.cpp
-        Tests/WebKit/Geolocation.cpp
-        Tests/WebKit/GetInjectedBundleInitializationUserDataCallback.cpp
-        Tests/WebKit/HitTestResultNodeHandle.cpp
-        Tests/WebKit/InjectedBundleBasic.cpp
-        Tests/WebKit/InjectedBundleFrameHitTest.cpp
-        Tests/WebKit/InjectedBundleInitializationUserDataCallbackWins.cpp
-        Tests/WebKit/LoadAlternateHTMLStringWithNonDirectoryURL.cpp
-        Tests/WebKit/LoadCanceledNoServerRedirectCallback.cpp
-        Tests/WebKit/LoadPageOnCrash.cpp
-        Tests/WebKit/MouseMoveAfterCrash.cpp
-        Tests/WebKit/NewFirstVisuallyNonEmptyLayout.cpp
-        Tests/WebKit/NewFirstVisuallyNonEmptyLayoutFails.cpp
-        Tests/WebKit/NewFirstVisuallyNonEmptyLayoutForImages.cpp
-        Tests/WebKit/NewFirstVisuallyNonEmptyLayoutFrames.cpp
-        Tests/WebKit/PageLoadBasic.cpp
-        Tests/WebKit/PageLoadDidChangeLocationWithinPageForFrame.cpp
-        Tests/WebKit/PageLoadEmptyURL.cpp
-        Tests/WebKit/PageLoadState.cpp
-        Tests/WebKit/ParentFrame.cpp
-        Tests/WebKit/PendingAPIRequestURL.cpp
-        Tests/WebKit/PreventEmptyUserAgent.cpp
-        Tests/WebKit/PrivateBrowsingPushStateNoHistoryCallback.cpp
-        Tests/WebKit/ProvisionalURLAfterWillSendRequestCallback.cpp
-        Tests/WebKit/ReloadPageAfterCrash.cpp
-        Tests/WebKit/ResizeWindowAfterCrash.cpp
-        Tests/WebKit/RestoreSessionStateContainingFormData.cpp
-        Tests/WebKit/TextFieldDidBeginAndEndEditing.cpp
-        Tests/WebKit/UserMedia.cpp
-        Tests/WebKit/UserMessage.cpp
-        Tests/WebKit/WKPageCopySessionStateWithFiltering.cpp
-        Tests/WebKit/WKPageGetScaleFactorNotZero.cpp
-        Tests/WebKit/WKPreferences.cpp
-        Tests/WebKit/WKRetainPtr.cpp
-        Tests/WebKit/WKString.cpp
-        Tests/WebKit/WKStringJSString.cpp
-        Tests/WebKit/WKURL.cpp
-        Tests/WebKit/WillSendSubmitEvent.cpp
+        Tests/WebKit/WKPage/AboutBlankLoad.cpp
+        Tests/WebKit/WKPage/CanHandleRequest.cpp
+        Tests/WebKit/WKPage/DOMWindowExtensionBasic.cpp
+        Tests/WebKit/WKPage/DOMWindowExtensionNoCache.cpp
+        Tests/WebKit/WKPage/DidNotHandleKeyDown.cpp
+        Tests/WebKit/WKPage/DocumentStartUserScriptAlertCrash.cpp
+        Tests/WebKit/WKPage/DownloadDecideDestinationCrash.cpp
+        Tests/WebKit/WKPage/EvaluateJavaScript.cpp
+        Tests/WebKit/WKPage/FailedLoad.cpp
+        Tests/WebKit/WKPage/Find.cpp
+        Tests/WebKit/WKPage/FirstMeaningfulPaintMilestone.cpp
+        Tests/WebKit/WKPage/ForceRepaint.cpp
+        Tests/WebKit/WKPage/FrameMIMETypeHTML.cpp
+        Tests/WebKit/WKPage/FrameMIMETypePNG.cpp
+        Tests/WebKit/WKPage/Geolocation.cpp
+        Tests/WebKit/WKPage/GetInjectedBundleInitializationUserDataCallback.cpp
+        Tests/WebKit/WKPage/HitTestResultNodeHandle.cpp
+        Tests/WebKit/WKPage/InjectedBundleBasic.cpp
+        Tests/WebKit/WKPage/InjectedBundleFrameHitTest.cpp
+        Tests/WebKit/WKPage/InjectedBundleInitializationUserDataCallbackWins.cpp
+        Tests/WebKit/WKPage/LoadAlternateHTMLStringWithNonDirectoryURL.cpp
+        Tests/WebKit/WKPage/LoadCanceledNoServerRedirectCallback.cpp
+        Tests/WebKit/WKPage/LoadPageOnCrash.cpp
+        Tests/WebKit/WKPage/MouseMoveAfterCrash.cpp
+        Tests/WebKit/WKPage/NewFirstVisuallyNonEmptyLayout.cpp
+        Tests/WebKit/WKPage/NewFirstVisuallyNonEmptyLayoutFails.cpp
+        Tests/WebKit/WKPage/NewFirstVisuallyNonEmptyLayoutForImages.cpp
+        Tests/WebKit/WKPage/NewFirstVisuallyNonEmptyLayoutFrames.cpp
+        Tests/WebKit/WKPage/PageLoadBasic.cpp
+        Tests/WebKit/WKPage/PageLoadDidChangeLocationWithinPageForFrame.cpp
+        Tests/WebKit/WKPage/PageLoadEmptyURL.cpp
+        Tests/WebKit/WKPage/PageLoadState.cpp
+        Tests/WebKit/WKPage/ParentFrame.cpp
+        Tests/WebKit/WKPage/PendingAPIRequestURL.cpp
+        Tests/WebKit/WKPage/PreventEmptyUserAgent.cpp
+        Tests/WebKit/WKPage/PrivateBrowsingPushStateNoHistoryCallback.cpp
+        Tests/WebKit/WKPage/ProvisionalURLAfterWillSendRequestCallback.cpp
+        Tests/WebKit/WKPage/ReloadPageAfterCrash.cpp
+        Tests/WebKit/WKPage/ResizeWindowAfterCrash.cpp
+        Tests/WebKit/WKPage/RestoreSessionStateContainingFormData.cpp
+        Tests/WebKit/WKPage/TextFieldDidBeginAndEndEditing.cpp
+        Tests/WebKit/WKPage/UserMedia.cpp
+        Tests/WebKit/WKPage/UserMessage.cpp
+        Tests/WebKit/WKPage/WKPageCopySessionStateWithFiltering.cpp
+        Tests/WebKit/WKPage/WKPageGetScaleFactorNotZero.cpp
+        Tests/WebKit/WKPage/WKPreferences.cpp
+        Tests/WebKit/WKPage/WKRetainPtr.cpp
+        Tests/WebKit/WKPage/WKString.cpp
+        Tests/WebKit/WKPage/WKStringJSString.cpp
+        Tests/WebKit/WKPage/WKURL.cpp
+        Tests/WebKit/WKPage/WillSendSubmitEvent.cpp
     )
 
     set(TestWebKit_PRIVATE_INCLUDE_DIRECTORIES
@@ -384,9 +393,9 @@ if (ENABLE_WEBKIT)
     )
 
     add_library(TestWebKitAPIBase STATIC
-        JavaScriptTest.cpp
-        PlatformUtilities.cpp
-        TestsController.cpp
+        Helpers/JavaScriptTest.cpp
+        Helpers/PlatformUtilities.cpp
+        Runner/TestsController.cpp
     )
     target_compile_definitions(TestWebKitAPIBase PRIVATE BUILDING_TestWebKit)
     target_include_directories(TestWebKitAPIBase PRIVATE ${TestWebKit_PRIVATE_INCLUDE_DIRECTORIES})
@@ -397,47 +406,58 @@ if (ENABLE_WEBKIT)
     endif ()
 
     set(TestWebKitAPIInjectedBundle_SOURCES
-        InjectedBundleController.cpp
-        InjectedBundleMain.cpp
-        PlatformUtilities.cpp
-        Utilities.cpp
+        InjectedBundle/InjectedBundleController.cpp
+        InjectedBundle/InjectedBundleMain.cpp
+        Helpers/PlatformUtilities.cpp
+        Helpers/Utilities.cpp
 
-        Tests/WebKit/CanHandleRequest_Bundle.cpp
-        Tests/WebKit/DidAssociateFormControls_Bundle.cpp
-        Tests/WebKit/DOMWindowExtensionBasic_Bundle.cpp
-        Tests/WebKit/DOMWindowExtensionNoCache_Bundle.cpp
-        Tests/WebKit/DocumentStartUserScriptAlertCrash_Bundle.cpp
-        Tests/WebKit/GetInjectedBundleInitializationUserDataCallback_Bundle.cpp
-        Tests/WebKit/HitTestResultNodeHandle_Bundle.cpp
-        Tests/WebKit/InjectedBundleBasic_Bundle.cpp
-        Tests/WebKit/InjectedBundleFrameHitTest_Bundle.cpp
-        Tests/WebKit/InjectedBundleInitializationUserDataCallbackWins_Bundle.cpp
-        Tests/WebKit/LoadCanceledNoServerRedirectCallback_Bundle.cpp
-        Tests/WebKit/MouseMoveAfterCrash_Bundle.cpp
-        Tests/WebKit/NewFirstVisuallyNonEmptyLayoutFails_Bundle.cpp
-        Tests/WebKit/NewFirstVisuallyNonEmptyLayoutForImages_Bundle.cpp
-        Tests/WebKit/NewFirstVisuallyNonEmptyLayoutFrames_Bundle.cpp
-        Tests/WebKit/NewFirstVisuallyNonEmptyLayout_Bundle.cpp
-        Tests/WebKit/FirstMeaningfulPaintMilestone_Bundle.cpp
-        Tests/WebKit/ParentFrame_Bundle.cpp
-        Tests/WebKit/ProvisionalURLAfterWillSendRequestCallback_Bundle.cpp
-        Tests/WebKit/ResponsivenessTimerDoesntFireEarly_Bundle.cpp
-        Tests/WebKit/TextFieldDidBeginAndEndEditing_Bundle.cpp
-        Tests/WebKit/UserMessage_Bundle.cpp
-        Tests/WebKit/WillLoad_Bundle.cpp
-        Tests/WebKit/WillSendSubmitEvent_Bundle.cpp
+        Tests/WebKit/WKPage/CanHandleRequest_Bundle.cpp
+        Tests/WebKit/WKPage/DidAssociateFormControls_Bundle.cpp
+        Tests/WebKit/WKPage/DOMWindowExtensionBasic_Bundle.cpp
+        Tests/WebKit/WKPage/DOMWindowExtensionNoCache_Bundle.cpp
+        Tests/WebKit/WKPage/DocumentStartUserScriptAlertCrash_Bundle.cpp
+        Tests/WebKit/WKPage/GetInjectedBundleInitializationUserDataCallback_Bundle.cpp
+        Tests/WebKit/WKPage/HitTestResultNodeHandle_Bundle.cpp
+        Tests/WebKit/WKPage/InjectedBundleBasic_Bundle.cpp
+        Tests/WebKit/WKPage/InjectedBundleFrameHitTest_Bundle.cpp
+        Tests/WebKit/WKPage/InjectedBundleInitializationUserDataCallbackWins_Bundle.cpp
+        Tests/WebKit/WKPage/LoadCanceledNoServerRedirectCallback_Bundle.cpp
+        Tests/WebKit/WKPage/MouseMoveAfterCrash_Bundle.cpp
+        Tests/WebKit/WKPage/NewFirstVisuallyNonEmptyLayoutFails_Bundle.cpp
+        Tests/WebKit/WKPage/NewFirstVisuallyNonEmptyLayoutForImages_Bundle.cpp
+        Tests/WebKit/WKPage/NewFirstVisuallyNonEmptyLayoutFrames_Bundle.cpp
+        Tests/WebKit/WKPage/NewFirstVisuallyNonEmptyLayout_Bundle.cpp
+        Tests/WebKit/WKPage/FirstMeaningfulPaintMilestone_Bundle.cpp
+        Tests/WebKit/WKPage/ParentFrame_Bundle.cpp
+        Tests/WebKit/WKPage/ProvisionalURLAfterWillSendRequestCallback_Bundle.cpp
+        Tests/WebKit/WKPage/ResponsivenessTimerDoesntFireEarly_Bundle.cpp
+        Tests/WebKit/WKPage/TextFieldDidBeginAndEndEditing_Bundle.cpp
+        Tests/WebKit/WKPage/UserMessage_Bundle.cpp
+        Tests/WebKit/WKPage/WillLoad_Bundle.cpp
+        Tests/WebKit/WKPage/WillSendSubmitEvent_Bundle.cpp
     )
     if (APPLE)
         list(APPEND TestWebKitAPIInjectedBundle_SOURCES
-            Tests/WebKit/DOMWindowExtensionBasic_Bundle.cpp
+            Tests/WebKit/WKPage/DOMWindowExtensionBasic_Bundle.cpp
 
-            cocoa/UtilitiesCocoa.mm
-
-            mac/InjectedBundleControllerMac.mm
-            mac/PlatformUtilitiesMac.mm
+            Helpers/cocoa/UtilitiesCocoa.mm
+            InjectedBundle/mac/InjectedBundleControllerMac.mm
         )
+        if (NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+            list(APPEND TestWebKitAPIInjectedBundle_SOURCES
+                Helpers/mac/PlatformUtilitiesMac.mm
+            )
+        endif ()
     endif ()
-    add_library(TestWebKitAPIInjectedBundle SHARED ${TestWebKitAPIInjectedBundle_SOURCES})
+    # macOS: MODULE + BUNDLE TRUE (PlatformMac) emits a CFBundle matching Xcode's MH_BUNDLE.
+    # Other ports: SHARED dylib/so.
+    if (APPLE)
+        set(TestWebKitAPIInjectedBundle_LIBRARY_TYPE MODULE)
+    else ()
+        set(TestWebKitAPIInjectedBundle_LIBRARY_TYPE SHARED)
+    endif ()
+    add_library(TestWebKitAPIInjectedBundle ${TestWebKitAPIInjectedBundle_LIBRARY_TYPE} ${TestWebKitAPIInjectedBundle_SOURCES})
+    WEBKIT_ADD_PREFIX_HEADER(TestWebKitAPIInjectedBundle Helpers/TestWebKitAPIPrefix.h PREFIX_LANGUAGES CXX)
 
     target_compile_definitions(TestWebKitAPIInjectedBundle PRIVATE BUILDING_TestWebKit)
     target_include_directories(TestWebKitAPIInjectedBundle PRIVATE ${TestWebKit_PRIVATE_INCLUDE_DIRECTORIES})
@@ -448,6 +468,89 @@ if (ENABLE_WEBKIT)
     endif ()
 
     WEBKIT_EXECUTABLE_DECLARE(TestWebKit)
+
+    if (APPLE)
+        # TestIPC definitions
+        set(TestIPC_SOURCES
+            Helpers/Utilities.cpp
+
+            Runner/TestsController.cpp
+
+            Tests/IPC/ArgumentCoderTests.cpp
+            Tests/IPC/ConnectionTests.cpp
+            Tests/IPC/EventTests.cpp
+            Tests/IPC/IPCTestUtilities.cpp
+            Tests/IPC/MessageLogEndToEndTests.cpp
+            Tests/IPC/MessageLogTests.cpp
+            Tests/IPC/MessageSenderTests.cpp
+            Tests/IPC/StreamConnectionBufferTests.cpp
+            Tests/IPC/StreamConnectionEncoderTests.cpp
+            Tests/IPC/StreamConnectionTests.cpp
+            Tests/IPC/StreamConnectionWorkQueueTests.cpp
+            Tests/IPC/ThreadSafeObjectHeapTests.cpp
+            Tests/IPC/TransferStringTests.cpp
+        )
+
+        set(TestIPC_PRIVATE_INCLUDE_DIRECTORIES
+            ${CMAKE_BINARY_DIR}
+            ${JavaScriptCore_PRIVATE_FRAMEWORK_HEADERS_DIR}
+            ${PAL_FRAMEWORK_HEADERS_DIR}
+            ${TESTWEBKITAPI_DIR}
+            ${WebCore_PRIVATE_FRAMEWORK_HEADERS_DIR}
+            ${WebKit_FRAMEWORK_HEADERS_DIR}
+            ${WEBKIT_DIR}/Platform
+            ${WEBKIT_DIR}/Platform/IPC
+            ${WEBKIT_DIR}/Shared
+            ${WEBKIT_DIR}/Shared/API/c
+            ${WebKit_DERIVED_SOURCES_DIR}
+            ${WebKit_DERIVED_SOURCES_DIR}/IPC
+        )
+
+        set(TestIPC_LIBRARIES
+            WebKit::gtest
+        )
+
+        set(TestIPC_FRAMEWORKS
+            WebKit
+        )
+
+        WEBKIT_EXECUTABLE_DECLARE(TestIPC)
+        target_compile_definitions(TestIPC PRIVATE BUILDING_TEST_IPC)
+    endif ()
+endif ()
+
+# TestWGSL definitions
+if (APPLE AND ENABLE_WEBGPU)
+    set(TestWGSL_SOURCES
+        Runner/TestsController.cpp
+
+        Tests/WGSL/ASTStringDumperTests.cpp
+        Tests/WGSL/ConstLiteralTests.cpp
+        Tests/WGSL/LexerTests.cpp
+        Tests/WGSL/MetalGenerationTests.cpp
+        Tests/WGSL/ParserTests.cpp
+        Tests/WGSL/TestWGSLAPI.cpp
+    )
+
+    set(TestWGSL_PRIVATE_INCLUDE_DIRECTORIES
+        ${CMAKE_BINARY_DIR}
+        ${TESTWEBKITAPI_DIR}
+        ${JavaScriptCore_PRIVATE_FRAMEWORK_HEADERS_DIR}
+    )
+
+    set(TestWGSL_LIBRARIES
+        WGSLCore
+        WebKit::gtest
+    )
+
+    set(TestWGSL_FRAMEWORKS
+        JavaScriptCore
+        WTF
+        bmalloc
+    )
+
+    WEBKIT_EXECUTABLE_DECLARE(TestWGSL)
+    target_compile_definitions(TestWGSL PRIVATE BUILDING_TEST_WGSL)
 endif ()
 
 # Include platform specific files
@@ -473,5 +576,16 @@ endif ()
 
 # TestWebKit target
 if (ENABLE_WEBKIT)
+    if (TestWebKit_UNIFIED_SOURCE_LIST_FILES)
+        WEBKIT_COMPUTE_SOURCES(TestWebKit)
+    endif ()
     WEBKIT_TEST(TestWebKit)
+    if (APPLE)
+        WEBKIT_TEST(TestIPC)
+    endif ()
+endif ()
+
+# TestWGSL target
+if (APPLE AND ENABLE_WEBGPU)
+    WEBKIT_TEST(TestWGSL)
 endif ()

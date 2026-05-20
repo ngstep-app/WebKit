@@ -27,8 +27,11 @@
 
 #include "CSSCounterStyleDescriptors.h"
 #include "CSSCounterStyleRegistry.h"
+#include "CSSFontSelector.h"
 #include "Document.h"
+#include "DocumentInlines.h"
 #include "FontCascade.h"
+#include "FontCascadeInlines.h"
 #include "FontCascadeDescription.h"
 #include "GraphicsContext.h"
 #include "PaintInfoInlines.h"
@@ -39,6 +42,7 @@
 #include "RenderMultiColumnFlow.h"
 #include "RenderMultiColumnSpannerPlaceholder.h"
 #include "RenderObjectInlines.h"
+#include "RenderStyle+SettersInlines.h"
 #include "RenderView.h"
 #include "StyleListStyleType.h"
 #include "StyleScope.h"
@@ -251,7 +255,7 @@ void RenderListMarker::paint(PaintInfo& paintInfo, const LayoutPoint& paintOffse
 
     if (isImage()) {
         if (RefPtr markerImage = m_image->image(this, markerRect.size(), context))
-            context.drawImage(*markerImage, markerRect);
+            context.drawImage(*markerImage, markerRect, { imageOrientation() });
         if (selectionState() != HighlightState::None) {
             LayoutRect selectionRect = localSelectionRect();
             selectionRect.moveBy(boxOrigin);
@@ -411,11 +415,11 @@ void RenderListMarker::updateContent()
                 .textDirection = TextDirection::LTR,
             };
         },
-        [&](const AtomString& identifier) {
+        [&](const Style::String& identifier) {
             m_textContent = {
-                .textWithSuffix = identifier,
-                .textWithoutSuffixLength = identifier.length(),
-                .textDirection = contentTextDirection(StringView { identifier }),
+                .textWithSuffix = identifier.value,
+                .textWithoutSuffixLength = identifier.value.length(),
+                .textDirection = contentTextDirection(StringView { identifier.value }),
             };
         },
         [&](const Style::CounterStyle&) {
@@ -439,7 +443,8 @@ void RenderListMarker::computePreferredLogicalWidths()
 
     if (isImage()) {
         LayoutSize imageSize = LayoutSize(m_image->imageSize(this, style().usedZoom()));
-        m_minPreferredLogicalWidth = m_maxPreferredLogicalWidth = writingMode().isHorizontal() ? imageSize.width() : imageSize.height();
+        m_maxPreferredLogicalWidth = writingMode().isHorizontal() ? imageSize.width() : imageSize.height();
+        m_minPreferredLogicalWidth = m_maxPreferredLogicalWidth;
         clearNeedsPreferredWidthsUpdate();
         updateInlineMargins();
         return;
@@ -492,10 +497,7 @@ void RenderListMarker::updateInlineMargins()
         if (m_textContent.isEmpty())
             return { };
 
-        if (style().listStyleType().isString())
-            return { -minPreferredLogicalWidth(), 0 };
-
-        return { -minPreferredLogicalWidth() - offset / 2, offset / 2 };
+        return { -minPreferredLogicalWidth(), 0 };
     };
 
     auto [marginStart, marginEnd] = isInside() ? marginsForInsideMarker() : marginsForOutsideMarker();
@@ -575,7 +577,7 @@ LayoutRect RenderListMarker::selectionRectForRepaint(const RenderLayerModelObjec
     return { };
 }
 
-RefPtr<CSSCounterStyle> RenderListMarker::counterStyle() const
+RefPtr<CSSRegisteredCounterStyle> RenderListMarker::counterStyle() const
 {
     auto counterStyle = style().listStyleType().tryCounterStyle();
     if (!counterStyle)

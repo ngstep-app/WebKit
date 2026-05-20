@@ -47,15 +47,34 @@ namespace WebCore {
 
 using namespace HTMLNames;
 
+AccessibilityListBoxOption::AccessibilityListBoxOption(AXID axID, RenderObject& renderer, AXObjectCache& cache)
+    : AccessibilityRenderObject(axID, renderer, cache)
+{
+}
+
 AccessibilityListBoxOption::AccessibilityListBoxOption(AXID axID, HTMLElement& element, AXObjectCache& cache)
-    : AccessibilityNodeObject(axID, &element, cache)
+    : AccessibilityRenderObject(axID, static_cast<Node&>(element), cache)
 {
 }
 
 AccessibilityListBoxOption::~AccessibilityListBoxOption() = default;
 
+AccessibilityRole AccessibilityListBoxOption::determineAccessibilityRole()
+{
+    // Base-appearance select options live inside a popover and behave as menu
+    // items (activate to select and close), not listbox options (toggle selection
+    // in an always-visible list).
+    if (RefPtr option = dynamicDowncast<HTMLOptionElement>(m_node.get())) {
+        if (RefPtr select = option->ownerSelectElement(); select && select->usesBaseAppearancePicker())
+            return AccessibilityRole::MenuItem;
+    }
+    return AccessibilityRole::ListBoxOption;
+}
+
 Ref<AccessibilityListBoxOption> AccessibilityListBoxOption::create(AXID axID, HTMLElement& element, AXObjectCache& cache)
 {
+    if (CheckedPtr renderer = element.renderer())
+        return adoptRef(*new AccessibilityListBoxOption(axID, *renderer, cache));
     return adoptRef(*new AccessibilityListBoxOption(axID, element, cache));
 }
 
@@ -91,13 +110,8 @@ LayoutRect AccessibilityListBoxOption::elementRect() const
         return { };
 
     CheckedPtr listBoxRenderer = dynamicDowncast<RenderListBox>(listBoxParentNode->renderer());
-    if (!listBoxRenderer) {
-        // For HTMLSelectElement with arbitrary renderer use the option element's bounding box.
-        if (CheckedPtr optionRenderer = m_node->renderer())
-            return optionRenderer->absoluteBoundingBoxRect();
-
-        return { };
-    }
+    if (!listBoxRenderer)
+        return AccessibilityRenderObject::elementRect();
 
     WeakPtr cache = listBoxRenderer->document().axObjectCache();
     RefPtr listbox = cache ? cache->getOrCreate(*listBoxRenderer) : nullptr;
@@ -182,7 +196,12 @@ void AccessibilityListBoxOption::setSelected(bool selected)
 
     // Convert from the entire list index to the option index.
     int optionIndex = selectElement->listToOptionIndex(listBoxOptionIndex());
-    selectElement->accessKeySetSelectedIndex(optionIndex);
+
+    if (selected && selectElement->usesBaseAppearancePicker()) {
+        selectElement->optionSelectedByUser(optionIndex, true);
+        selectElement->hidePickerPopoverElement();
+    } else
+        selectElement->accessKeySetSelectedIndex(optionIndex);
 }
 
 HTMLSelectElement* AccessibilityListBoxOption::listBoxOptionParentNode() const

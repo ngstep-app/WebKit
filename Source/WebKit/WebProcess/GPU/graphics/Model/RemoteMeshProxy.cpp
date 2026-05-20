@@ -121,32 +121,38 @@ RemoteMeshProxy::~RemoteMeshProxy()
 #endif
 }
 
-void RemoteMeshProxy::update(const WebModel::UpdateMeshDescriptor& descriptor)
+void RemoteMeshProxy::update(Vector<WebModel::UpdateMeshDescriptor>&& descriptorArray)
 {
 #if ENABLE(GPU_PROCESS_MODEL)
-    auto [minCorner, maxCorner] = computeMinAndMaxCorners(descriptor.parts, descriptor.instanceTransforms);
-    auto boundingBoxChanged = minCorner.x <= maxCorner.x && minCorner.y <= maxCorner.y && minCorner.z <= maxCorner.z;
-    boundingBoxChanged = boundingBoxChanged && (!simd_equal(m_minCorner, minCorner) || !simd_equal(m_maxCorner, maxCorner));
-    if (boundingBoxChanged) {
-        m_minCorner = simd_min(m_minCorner, minCorner);
-        m_maxCorner = simd_max(m_maxCorner, maxCorner);
+    bool anyBoundingBoxChanged = false;
+    for (auto& descriptor : descriptorArray) {
+        auto [minCorner, maxCorner] = computeMinAndMaxCorners(descriptor.parts, descriptor.instanceTransforms);
+        auto boundingBoxChanged = minCorner.x <= maxCorner.x && minCorner.y <= maxCorner.y && minCorner.z <= maxCorner.z;
+        boundingBoxChanged = boundingBoxChanged && (!simd_equal(m_minCorner, minCorner) || !simd_equal(m_maxCorner, maxCorner));
+        if (boundingBoxChanged) {
+            m_minCorner = simd_min(m_minCorner, minCorner);
+            m_maxCorner = simd_max(m_maxCorner, maxCorner);
+        }
+        anyBoundingBoxChanged = anyBoundingBoxChanged || boundingBoxChanged;
     }
 
-    auto sendResult = sendWithAsyncReply(Messages::RemoteMesh::Update(descriptor), [](auto) mutable {
+    auto sendResult = sendWithAsyncReply(Messages::RemoteMesh::Update(WTF::move(descriptorArray)), [](auto) mutable {
     });
     UNUSED_VARIABLE(sendResult);
-    if (boundingBoxChanged)
+    if (anyBoundingBoxChanged)
         computeTransform();
 
 #else
-    UNUSED_PARAM(descriptor);
+    UNUSED_PARAM(descriptorArray);
 #endif
 }
 
-void RemoteMeshProxy::render()
+void RemoteMeshProxy::render(uint32_t textureIndex, Function<void(bool)>&& completionHandler)
 {
 #if ENABLE(GPU_PROCESS_MODEL)
-    auto sendResult = send(Messages::RemoteMesh::Render());
+    auto sendResult = sendWithAsyncReply(Messages::RemoteMesh::Render(textureIndex), [completionHandler = WTF::move(completionHandler)](bool result) mutable {
+        completionHandler(result);
+    });
     UNUSED_PARAM(sendResult);
 #endif
 }
@@ -161,10 +167,10 @@ void RemoteMeshProxy::setLabelInternal(const String& label)
 #endif
 }
 
-void RemoteMeshProxy::updateTexture(const WebModel::UpdateTextureDescriptor& descriptor)
+void RemoteMeshProxy::updateTexture(Vector<WebModel::UpdateTextureDescriptor>&& descriptor)
 {
 #if ENABLE(GPU_PROCESS_MODEL)
-    auto sendResult = sendWithAsyncReply(Messages::RemoteMesh::UpdateTexture(descriptor), [](auto) mutable {
+    auto sendResult = sendWithAsyncReply(Messages::RemoteMesh::UpdateTexture(WTF::move(descriptor)), [](auto) mutable {
     });
     UNUSED_VARIABLE(sendResult);
 #else
@@ -172,10 +178,10 @@ void RemoteMeshProxy::updateTexture(const WebModel::UpdateTextureDescriptor& des
 #endif
 }
 
-void RemoteMeshProxy::updateMaterial(const WebModel::UpdateMaterialDescriptor& descriptor)
+void RemoteMeshProxy::updateMaterial(Vector<WebModel::UpdateMaterialDescriptor>&& descriptor)
 {
 #if ENABLE(GPU_PROCESS_MODEL)
-    auto sendResult = sendWithAsyncReply(Messages::RemoteMesh::UpdateMaterial(descriptor), [](auto) mutable {
+    auto sendResult = sendWithAsyncReply(Messages::RemoteMesh::UpdateMaterial(WTF::move(descriptor)), [](auto) mutable {
     });
     UNUSED_VARIABLE(sendResult);
 #else
@@ -195,8 +201,10 @@ std::pair<simd_float4, simd_float4> RemoteMeshProxy::getCenterAndExtents() const
 void RemoteMeshProxy::setEntityTransform(const WebModel::Float4x4& transform)
 {
 #if ENABLE(GPU_PROCESS_MODEL)
+    m_entityTransformSetByScript = true;
     m_transform = transform;
-    setStageMode(m_stageMode);
+    m_computedTransform = transform;
+    setEntityTransformInternal(transform);
 #else
     UNUSED_PARAM(transform);
 #endif
@@ -220,11 +228,21 @@ void RemoteMeshProxy::play(bool playing)
 #endif
 }
 
-void RemoteMeshProxy::setEnvironmentMap(const WebModel::ImageAsset& imageAsset)
+void RemoteMeshProxy::setEnvironmentMap(const WebModel::UpdateTextureDescriptor& imageAsset)
 {
 #if ENABLE(GPU_PROCESS_MODEL)
     auto sendResult = send(Messages::RemoteMesh::SetEnvironmentMap(imageAsset));
     UNUSED_PARAM(sendResult);
+#endif
+}
+
+void RemoteMeshProxy::updateContentsHeadroom(float headroom)
+{
+#if ENABLE(GPU_PROCESS_MODEL)
+    auto sendResult = send(Messages::RemoteMesh::UpdateContentsHeadroom(headroom));
+    UNUSED_PARAM(sendResult);
+#else
+    UNUSED_PARAM(headroom);
 #endif
 }
 
@@ -247,10 +265,6 @@ std::optional<WebModel::Float4x4> RemoteMeshProxy::entityTransform() const
 }
 #endif
 
-static constexpr float kCSSPixelsPerMeter = 96 / 2.54 * 100;
-// Fixed camera distance matching the ModelRenderer
-static constexpr float kCameraDistance = 0.5;
-
 void RemoteMeshProxy::setFOV(float fovY)
 {
 #if ENABLE(GPU_PROCESS_MODEL)
@@ -271,7 +285,7 @@ void RemoteMeshProxy::setBackgroundColor(const WebModel::Float3& color)
 #endif
 }
 
-bool RemoteMeshProxy::supportsTransform(const WebCore::TransformationMatrix& transformationMatrix) const
+bool RemoteMeshProxy::supportsTransform(const WebCore::TransformationMatrix& transformationMatrix)
 {
 #if ENABLE(GPU_PROCESS_MODEL)
     const WebModel::Float4x4 matrix = static_cast<simd_float4x4>(transformationMatrix);
@@ -332,16 +346,39 @@ void RemoteMeshProxy::setStageMode(WebCore::StageModeOperation stageMode)
 {
 #if ENABLE(GPU_PROCESS_MODEL)
     m_stageMode = stageMode;
+    if (m_stageMode == WebCore::StageModeOperation::Orbit)
+        m_entityTransformSetByScript = false;
     computeTransform();
 #else
     UNUSED_PARAM(stageMode);
 #endif
 }
 
+void RemoteMeshProxy::processRemovals(Vector<WebModel::TypedResourceId>&& meshRemovals, Vector<WebModel::TypedResourceId>&& materialRemovals, Vector<WebModel::TypedResourceId>&& textureRemovals, CompletionHandler<void(bool)>&& completion)
+{
+#if ENABLE(GPU_PROCESS_MODEL)
+    auto sendResult = sendWithAsyncReply(Messages::RemoteMesh::ProcessRemovals(WTF::move(meshRemovals), WTF::move(materialRemovals), WTF::move(textureRemovals)), [completion = WTF::move(completion)](bool success) mutable {
+        completion(success);
+    });
+    UNUSED_VARIABLE(sendResult);
+#else
+    UNUSED_PARAM(meshRemovals);
+    UNUSED_PARAM(materialRemovals);
+    UNUSED_PARAM(textureRemovals);
+    completion(false);
+#endif
+}
 
 #if ENABLE(GPU_PROCESS_MODEL)
 void RemoteMeshProxy::computeTransform()
 {
+    if (m_entityTransformSetByScript)
+        return;
+
+    static constexpr float kCSSPixelsPerMeter = 96 / 2.54 * 100;
+    // Fixed camera distance matching the ModelRenderer
+    static constexpr float kCameraDistance = 0.5;
+
     auto [center, extents] = getCenterAndExtents();
 
     float viewportWidth = m_viewportWidth / kCSSPixelsPerMeter;

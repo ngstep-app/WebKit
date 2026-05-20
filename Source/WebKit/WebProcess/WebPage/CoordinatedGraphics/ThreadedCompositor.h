@@ -42,6 +42,9 @@
 #include <wtf/TZoneMalloc.h>
 #include <wtf/ThreadSafeRefCounted.h>
 #include <wtf/WorkQueue.h>
+#include <wtf/text/CString.h>
+
+class SkCanvas;
 
 namespace WebCore {
 class TextureMapper;
@@ -107,6 +110,8 @@ private:
     void flushCompositingState(const OptionSet<WebCore::CompositionReason>&);
     void renderLayerTree();
     void paintToCurrentGLContext(const WebCore::TransformationMatrix&, const WebCore::IntSize&, const OptionSet<WebCore::CompositionReason>&);
+    void paintToTextureMapper(const WebCore::TransformationMatrix&, const WebCore::IntSize&, const OptionSet<WebCore::CompositionReason>&);
+    void paintToSkiaCanvas(const WebCore::TransformationMatrix&, const WebCore::IntSize&, const OptionSet<WebCore::CompositionReason>&);
     void frameComplete();
 
     void didCompositeRunLoopObserverFired();
@@ -115,9 +120,14 @@ private:
 
     void initializeFPSCounter();
     void updateFPSCounter();
+    void drawFPSCounter(SkCanvas&);
+#if ENABLE(DAMAGE_TRACKING)
+    void drawSkiaDamage(SkCanvas&, const std::optional<WebCore::Damage>&);
+#endif
 
     const Ref<WorkQueue> m_workQueue;
     CheckedPtr<LayerTreeHost> m_layerTreeHost;
+    bool m_useSkia { false };
     RefPtr<AcceleratedSurface> m_surface;
     RefPtr<CoordinatedSceneState> m_sceneState;
     std::unique_ptr<WebCore::GLContext> m_context;
@@ -130,7 +140,8 @@ private:
         Idle,
         Scheduled,
         InProgress,
-        ScheduledWhileInProgress
+        ScheduledWhileInProgress,
+        Invalidated
     };
     static ASCIILiteral stateToString(State);
 
@@ -154,16 +165,29 @@ private:
 
     struct {
         bool exposesFPS { false };
+        bool drawsFPS { false };
         Seconds calculationInterval { 1_s };
         MonotonicTime lastCalculationTimestamp;
         unsigned frameCountSinceLastCalculation { 0 };
+        int lastFPS { 0 };
         std::atomic<std::optional<float>> fps;
+
+        // On-screen overlay state, only used when drawsFPS is set.
+        int displayedFPS { -1 };
+        CString fpsString;
+        float backgroundWidth { 0 };
+        float backgroundHeight { 0 };
+        float textBaseline { 0 };
     } m_fpsCounter;
 
 #if ENABLE(DAMAGE_TRACKING)
     struct {
         std::optional<OptionSet<DamagePropagationFlags>> flags;
         std::unique_ptr<WebCore::TextureMapperDamageVisualizer> visualizer;
+
+        bool showSkiaDamage { false };
+        unsigned skiaDamageMargin { 0 };
+
         std::atomic<bool> shouldNotifyFrameDamageForTesting { false };
     } m_damage;
 #endif

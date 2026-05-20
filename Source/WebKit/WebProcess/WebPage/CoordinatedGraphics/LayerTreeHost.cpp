@@ -53,6 +53,7 @@
 #include <WebCore/Settings.h>
 #include <WebCore/SkiaPaintingEngine.h>
 #include <WebCore/ThreadedScrollingTree.h>
+#include <WebCore/WindowEventLoop.h>
 #include <wtf/SetForScope.h>
 #include <wtf/SystemTracing.h>
 #include <wtf/TZoneMallocInlines.h>
@@ -104,11 +105,12 @@ LayerTreeHost::LayerTreeHost(WebPage& webPage)
 
 LayerTreeHost::~LayerTreeHost()
 {
-    m_sceneState->invalidate();
-
     m_skiaPaintingEngine = nullptr;
 
+    // ThreadedCompositor must be invalidated before invalidating CoordinatedSceneState
+    // to invalidate pending layers in the compositor thread.
     m_compositor->invalidate();
+    m_sceneState->invalidate();
 }
 
 uint64_t LayerTreeHost::surfaceID() const

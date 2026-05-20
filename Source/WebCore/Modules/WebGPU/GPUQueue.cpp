@@ -47,6 +47,8 @@
 #include "VideoFrame.h"
 #include "WebCodecsVideoFrame.h"
 #include "WebGPUDevice.h"
+#include <JavaScriptCore/HeapCellInlines.h>
+#include <array>
 #include <wtf/CheckedArithmetic.h>
 #include <wtf/MallocSpan.h>
 
@@ -441,8 +443,8 @@ static void getImageBytesFromVideoFrame(WebGPU::Queue& backing, const RefPtr<Vid
         .width = width,
         .rowBytes = byteSpan.size() / height
     };
-    uint8_t permuteMap[4] = { 2, 1, 0, 3 };
-    vImagePermuteChannels_ARGB8888(&bgra, &bgra, permuteMap, kvImageNoFlags);
+    constexpr std::array<uint8_t, 4> permuteMap { 2, 1, 0, 3 };
+    vImagePermuteChannels_ARGB8888(&bgra, &bgra, permuteMap.data(), kvImageNoFlags);
 
     return callback(byteSpan.first(sizeInBytes), width, height);
 }
@@ -517,7 +519,7 @@ static void imageBytesForSource(WebGPU::Queue& backing, const GPUImageCopyExtern
             auto rawHeight = CGImageGetHeight(platformImage.get());
 
             // We need to account for EXIF orientation which may swap width/height.
-            auto orientation = RefPtr { imageElement->image() }->orientation().orientation();
+            auto orientation = protect(imageElement->image())->orientation().orientation();
             bool orientationSwapsDimensions = orientation == ImageOrientation::Orientation::OriginLeftTop
                 || orientation == ImageOrientation::Orientation::OriginRightTop
                 || orientation == ImageOrientation::Orientation::OriginRightBottom
@@ -579,7 +581,7 @@ static void imageBytesForSource(WebGPU::Queue& backing, const GPUImageCopyExtern
                 return callback(byteSpan.first(sizeInBytes), rawWidth, rawHeight);
 
             auto bytesPerRow = CGImageGetBytesPerRow(platformImage.get()) / (bitsPerComponent / 8);
-            Vector<uint8_t> tempBuffer(requiredSize, 255);
+            Vector<uint8_t> tempBuffer(FillWith { }, requiredSize, 255);
             auto bytesPerPixel = sizeInBytes / (rawWidth * rawHeight);
             bool flipY = sourceDescriptor.flipY;
             needsYFlip = false;

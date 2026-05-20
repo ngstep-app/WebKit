@@ -71,9 +71,17 @@ public:
             if (&a.nonInheritedData() == &b.nonInheritedData())
                 return false;
 
-            if (a.nonInheritedData().miscData.ptr() != b.nonInheritedData().miscData.ptr()
-                && a.nonInheritedData().miscData->boxShadow != b.nonInheritedData().miscData->boxShadow)
-                return true;
+            if (a.nonInheritedData().miscData.ptr() != b.nonInheritedData().miscData.ptr()) {
+                if (a.nonInheritedData().miscData->boxShadow != b.nonInheritedData().miscData->boxShadow)
+                    return true;
+
+                if (a.nonInheritedData().miscData->filter.ptr() != b.nonInheritedData().miscData->filter.ptr()) {
+                    auto aOutsets = a.nonInheritedData().miscData->filter->filter.calculateOutsets(a.usedZoomForLength());
+                    auto bOutsets = b.nonInheritedData().miscData->filter->filter.calculateOutsets(b.usedZoomForLength());
+                    if (aOutsets != bOutsets)
+                        return true;
+                }
+            }
 
             if (a.nonInheritedData().backgroundData.ptr() != b.nonInheritedData().backgroundData.ptr()) {
                 auto aHasOutlineInVisualOverflow = a.hasOutlineInVisualOverflow();
@@ -276,7 +284,8 @@ public:
 
         if (a.usedContain().contains(ContainValue::Size) != b.usedContain().contains(ContainValue::Size)
             || a.usedContain().contains(ContainValue::InlineSize) != b.usedContain().contains(ContainValue::InlineSize)
-            || a.usedContain().contains(ContainValue::Layout) != b.usedContain().contains(ContainValue::Layout))
+            || a.usedContain().contains(ContainValue::Layout) != b.usedContain().contains(ContainValue::Layout)
+            || a.usedContain().contains(ContainValue::Paint) != b.usedContain().contains(ContainValue::Paint))
             return true;
 
         // content-visibility:hidden turns on contain:size which requires relayout.

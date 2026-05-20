@@ -214,7 +214,8 @@ void IntlDurationFormat::initializeDurationFormat(JSGlobalObject* globalObject, 
     }
 
     m_numberingSystem = resolved.extensions[static_cast<unsigned>(RelevantExtensionKey::Nu)];
-    m_dataLocaleWithExtensions = makeString(resolved.dataLocale, "-u-nu-"_s, m_numberingSystem).utf8();
+    m_dataLocale = resolved.dataLocale;
+    m_dataLocaleWithExtensions = m_numberingSystem.isNull() ? m_dataLocale.utf8() : makeString(m_dataLocale, "-u-nu-"_s, m_numberingSystem).utf8();
 
     m_style = intlOption<Style>(globalObject, options, vm.propertyNames->style, { { "long"_s, Style::Long }, { "short"_s, Style::Short }, { "narrow"_s, Style::Narrow }, { "digital"_s, Style::Digital } }, "style must be either \"long\", \"short\", \"narrow\", or \"digital\""_s, Style::Short);
     RETURN_IF_EXCEPTION(scope, void());
@@ -269,6 +270,13 @@ void IntlDurationFormat::initializeDurationFormat(JSGlobalObject* globalObject, 
     }
 }
 
+const String& IntlDurationFormat::numberingSystem() const
+{
+    if (m_numberingSystem.isNull())
+        m_numberingSystem = defaultNumberingSystemForLocale(m_dataLocale);
+    return m_numberingSystem;
+}
+
 static String retrieveSeparator(const CString& locale, const String& numberingSystem)
 {
     ASCIILiteral fallbackTimeSeparator = ":"_s;
@@ -320,7 +328,8 @@ enum class DurationSignType : uint8_t {
 // https://tc39.es/proposal-intl-duration-format/#sec-durationsign
 static DurationSignType NODELETE getDurationSign(ISO8601::Duration duration)
 {
-    for (auto value : duration) {
+    for (size_t i = 0; i < numberOfTemporalUnits; ++i) {
+        auto value = duration[i];
         if (value < 0)
             return DurationSignType::Negative;
         if (value > 0)
@@ -842,7 +851,7 @@ JSObject* IntlDurationFormat::resolvedOptions(JSGlobalObject* globalObject) cons
     VM& vm = globalObject->vm();
     JSObject* options = constructEmptyObject(globalObject);
     options->putDirect(vm, vm.propertyNames->locale, jsString(vm, m_locale));
-    options->putDirect(vm, vm.propertyNames->numberingSystem, jsString(vm, m_numberingSystem));
+    options->putDirect(vm, vm.propertyNames->numberingSystem, jsString(vm, numberingSystem()));
     options->putDirect(vm, vm.propertyNames->style, jsNontrivialString(vm, styleString(m_style)));
 
     for (unsigned index = 0; index < numberOfTemporalUnits; ++index) {

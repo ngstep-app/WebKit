@@ -36,11 +36,13 @@
 #include "GraphicsContext.h"
 #include "HTMLNames.h"
 #include "HTMLSelectElement.h"
+#include "InlineIteratorBoxInlines.h"
 #include "InlineIteratorInlineBox.h"
 #include "InlineIteratorLineBox.h"
 #include "LegacyRenderSVGModelObject.h"
 #include "PaintInfo.h"
 #include "PathUtilities.h"
+#include "PlatformRenderTheme.h"
 #include "RenderBlockFlow.h"
 #include "RenderChildIterator.h"
 #include "RenderElementStyleInlines.h"
@@ -104,7 +106,7 @@ void OutlinePainter::paintOutline(const RenderElement& renderer, const LayoutRec
     auto closedEdges = RectEdges<bool> { true };
 
     auto outlineEdgeWidths = RectEdges<LayoutUnit> { outlineWidth };
-    auto outlineShape = BorderShape::shapeForOutsetRect(styleToUse.get(), paintRect, outerRect, outlineEdgeWidths, closedEdges);
+    auto outlineShape = BorderShape::shapeForOffsetRect(styleToUse.get(), paintRect, outerRect, outlineEdgeWidths, closedEdges);
 
     auto bleedAvoidance = BleedAvoidance::ShrinkBackground;
     auto appliedClipAlready = false;
@@ -286,15 +288,44 @@ void OutlinePainter::paintFocusRing(const RenderElement& renderer, const Vector<
     auto styleOptions = renderer.styleColorOptions();
     styleOptions.add(StyleColorOptions::UseSystemAppearance);
     auto focusRingColor = usePlatformFocusRingColorForOutlineStyleAuto() ? RenderTheme::singleton().focusRingColor(styleOptions) : style->visitedDependentOutlineColorApplyingColorFilter();
-    if (useShrinkWrappedFocusRingForOutlineStyleAuto() && style->border().hasBorderRadius()) {
-        auto path = pathWithShrinkWrappedRects(pixelSnappedFocusRingRects, style->border().radii, outlineOffset, style->writingMode(), zoom, deviceScaleFactor);
-        if (path.isEmpty()) {
-            for (auto rect : pixelSnappedFocusRingRects)
-                path.addRect(rect);
-        }
-        drawFocusRing(m_paintInfo.context(), path, style.get(), focusRingColor);
-    } else
+
+    if (!useShrinkWrappedFocusRingForOutlineStyleAuto() || !style->border().hasBorderRadius()) {
         drawFocusRing(m_paintInfo.context(), pixelSnappedFocusRingRects, style.get(), focusRingColor);
+        return;
+    }
+
+    // When all focus ring rects are contained within the first rect (the
+    // element's own rect for block elements with children), use BorderShape
+    // for correct radii computation. pathWithShrinkWrappedRects resolves radii
+    // against the already-inflated rect then further adjusts them via
+    // adjustedRadiiForHuggingCurve, producing incorrect rounding.
+    auto canUseBorderShape = [&] {
+        if (focusRingRects.isEmpty())
+            return false;
+        for (size_t i = 1; i < focusRingRects.size(); ++i) {
+            if (!focusRingRects[0].contains(focusRingRects[i]))
+                return false;
+        }
+        return true;
+    }();
+
+    if (canUseBorderShape) {
+        auto borderRect = focusRingRects[0];
+        auto outlineRect = borderRect;
+        outlineRect.inflate(LayoutUnit(outlineOffset));
+        auto outlineShape = BorderShape::shapeForOffsetRect(style.get(), borderRect, outlineRect, RectEdges<LayoutUnit> { }, RectEdges<bool> { true });
+        auto path = outlineShape.pathForOuterShape(deviceScaleFactor);
+        drawFocusRing(m_paintInfo.context(), path, style.get(), focusRingColor);
+        return;
+    }
+
+    // Multi-rect (inline spanning lines): shrink-wrap path.
+    auto path = pathWithShrinkWrappedRects(pixelSnappedFocusRingRects, style->border().radii, outlineOffset, style->writingMode(), zoom, deviceScaleFactor);
+    if (path.isEmpty()) {
+        for (auto rect : pixelSnappedFocusRingRects)
+            path.addRect(rect);
+    }
+    drawFocusRing(m_paintInfo.context(), path, style.get(), focusRingColor);
 }
 
 Vector<LayoutRect> OutlinePainter::collectFocusRingRects(const RenderElement& renderer, const LayoutPoint& additionalOffset, const RenderLayerModelObject* paintContainer)
@@ -389,6 +420,11 @@ bool OutlinePainter::collectFocusRingRectsForBlock(const RenderBlock& renderer, 
     if (renderer.width() && renderer.height())
         rects.append(LayoutRect(additionalOffset, renderer.size()));
 
+    // Table rows share coordinate space with cells; don't recurse into cells
+    // as their bounds may extend beyond the row (e.g. rowspan).
+    if (renderer.isRenderTableRow())
+        return true;
+
     if (!renderer.hasNonVisibleOverflow() && !renderer.hasControlClip()) {
         if (renderer.childrenInline() && is<RenderBlockFlow>(renderer))
             collectFocusRingRectsForInlineChildren(downcast<RenderBlockFlow>(renderer), rects, additionalOffset, paintContainer);
@@ -402,7 +438,7 @@ bool OutlinePainter::collectFocusRingRectsForBlock(const RenderBlock& renderer, 
 
 void OutlinePainter::collectFocusRingRectsForChildBox(const RenderBox& box, Vector<LayoutRect>& rects, const LayoutPoint& additionalOffset, const RenderLayerModelObject* paintContainer)
 {
-    if (box.isRenderListMarker() || box.isOutOfFlowPositioned())
+    if (box.style().pseudoElementType() || box.isOutOfFlowPositioned())
         return;
 
     FloatPoint pos;
@@ -694,7 +730,7 @@ void OutlinePainter::addPDFURLAnnotationForLink(const RenderElement& renderer, c
             return;
         }
     }
-    m_paintInfo.context().setURLForRect(protect(element->document())->completeURL(href), urlRect);
+    m_paintInfo.context().setURLForRect(protect(element->document())->encodingParseURL(href), urlRect);
 }
 
 } // namespace WebCore

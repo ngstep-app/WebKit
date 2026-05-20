@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2007-2025 Apple Inc. All rights reserved.
+ * Copyright (C) 2007-2026 Apple Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -28,6 +28,7 @@
 
 #include "BackForwardController.h"
 #include "Document.h"
+#include "DocumentPage.h"
 #include "DocumentQuirks.h"
 #include "DocumentView.h"
 #include "DocumentWindow.h"
@@ -35,15 +36,15 @@
 #include "HistoryController.h"
 #include "HistoryItem.h"
 #include "LocalFrame.h"
+#include "LocalFrameInlines.h"
 #include "LocalFrameLoaderClient.h"
+#include "JSValueInWrappedObjectInlines.h"
 #include "Logging.h"
 #include "Navigation.h"
 #include "NavigationScheduler.h"
-#include "OriginAccessPatterns.h"
 #include "Page.h"
 #include "ScriptController.h"
 #include "ScriptWrappableInlines.h"
-#include "SecurityOrigin.h"
 #include "Settings.h"
 #include <wtf/CheckedArithmetic.h>
 #include <wtf/MainThread.h>
@@ -170,7 +171,7 @@ ExceptionOr<void> History::forward(Document& document)
 ExceptionOr<void> History::go(int distance)
 {
     RefPtr frame = this->frame();
-    LOG(History, "History %p go(%d) frame %p (main frame %d)", this, distance, frame.get(), frame ? frame->isMainFrame() : false);
+    LOG(History, "History %p go(%d) frame %p (main frame %d)", this, distance, frame.get(), frame && frame->isMainFrame());
 
     if (!isDocumentFullyActive(frame.get()))
         return documentNotFullyActive();
@@ -182,7 +183,7 @@ ExceptionOr<void> History::go(int distance)
 ExceptionOr<void> History::go(Document& document, int distance)
 {
     RefPtr frame = this->frame();
-    LOG(History, "History %p go(%d) in document %p frame %p (main frame %d)", this, distance, &document, frame.get(), frame ? frame->isMainFrame() : false);
+    LOG(History, "History %p go(%d) in document %p frame %p (main frame %d)", this, distance, &document, frame.get(), frame && frame->isMainFrame());
 
     if (!isDocumentFullyActive(frame.get()))
         return documentNotFullyActive();
@@ -275,7 +276,7 @@ ExceptionOr<void> History::stateObjectAdded(RefPtr<SerializedScriptValue>&& data
     };
 
     if (!urlString.isEmpty()) {
-        fullURL = document->completeURL(urlString);
+        fullURL = document->encodingParseURL(urlString);
         if (!fullURL.isValid())
             return createBlockedURLSecurityErrorWithMessageSuffix("URL is invalid"_s);
 
@@ -283,23 +284,18 @@ ExceptionOr<void> History::stateObjectAdded(RefPtr<SerializedScriptValue>&& data
         if (!protocolHostAndPortAreEqual(fullURL, documentURL) || fullURL.user() != documentURL.user() || fullURL.password() != documentURL.password())
             return createBlockedURLSecurityErrorWithMessageSuffix("Protocols, domains, ports, usernames, and passwords must match."_s);
 
-        if (fullURL.protocolIsFile()
+        // https://html.spec.whatwg.org/#can-have-its-url-rewritten
+        if (!fullURL.protocolIsInHTTPFamily()) {
+            if (fullURL.protocolIsFile()) {
+                bool hasPathRestriction = !document->quirks().shouldDisablePushStateFilePathRestrictions();
 #if PLATFORM(COCOA)
-            && linkedOnOrAfterSDKWithBehavior(SDKAlignedBehavior::PushStateFilePathRestriction)
+                hasPathRestriction = hasPathRestriction && linkedOnOrAfterSDKWithBehavior(SDKAlignedBehavior::PushStateFilePathRestriction);
 #endif
-            && !document->quirks().shouldDisablePushStateFilePathRestrictions()
-            && fullURL.fileSystemPath() != documentURL.fileSystemPath()) {
-            return createBlockedURLSecurityErrorWithMessageSuffix("Only differences in query and fragment are allowed for file: URLs."_s);
+                if (hasPathRestriction && fullURL.fileSystemPath() != documentURL.fileSystemPath())
+                    return createBlockedURLSecurityErrorWithMessageSuffix("Only differences in query and fragment are allowed for file: URLs."_s);
+            } else if (fullURL.path() != documentURL.path() || fullURL.query() != documentURL.query())
+                return createBlockedURLSecurityErrorWithMessageSuffix("Only differences in fragment are allowed for this URL scheme."_s);
         }
-
-        Ref documentSecurityOrigin = document->securityOrigin();
-        // We allow sandboxed documents, 'data:'/'file:' URLs, etc. to use 'pushState'/'replaceState' to modify the URL query and fragments.
-        // See https://bugs.webkit.org/show_bug.cgi?id=183028 for the compatibility concerns.
-        bool allowSandboxException = (documentSecurityOrigin->isLocal() || documentSecurityOrigin->isOpaque())
-            && documentURL.viewWithoutQueryOrFragmentIdentifier() == fullURL.viewWithoutQueryOrFragmentIdentifier();
-
-        if (!allowSandboxException && !documentSecurityOrigin->canRequest(fullURL, OriginAccessPatternsForWebProcess::singleton()) && (fullURL.path() != documentURL.path() || fullURL.query() != documentURL.query()))
-            return createBlockedURLSecurityErrorWithMessageSuffix("Paths and fragments must match for a sandboxed document."_s);
     }
 
     if (auto result = updateAndCheckStateObjectQuota(fullURL, data.get(), historyBehavior); result.hasException())

@@ -8,6 +8,10 @@
 //   size_t overflow scenario.
 //
 
+#ifdef UNSAFE_BUFFERS_BUILD
+#    pragma allow_unsafe_buffers
+#endif
+
 #include "test_utils/ANGLETest.h"
 #include "test_utils/gl_raii.h"
 
@@ -54,6 +58,9 @@ TEST_P(BufferPoolTest, AllocationOffsetNoTruncation)
 {
     ANGLE_SKIP_TEST_IF(!IsMetalRendererAvailable());
 
+    // http://anglebug.com/500280351
+    ANGLE_SKIP_TEST_IF(IsIOS());
+
     ContextMtl *contextMtl = getContextMtl();
     ASSERT_NE(contextMtl, nullptr);
 
@@ -69,50 +76,43 @@ TEST_P(BufferPoolTest, AllocationOffsetNoTruncation)
     bufferPool.initialize(contextMtl, kLargeSize, kAlignment, 10);
 
     // Perform first allocation
-    uint8_t *ptr1       = nullptr;
-    mtl::BufferRef buf1 = nullptr;
-    size_t offset1      = 0;
-    bool newBuffer1     = false;
+    angle::Span<uint8_t> mappedData1;
+    mtl::BufferSlice buf1;
 
-    ASSERT_EQ(bufferPool.allocate(contextMtl, kLargeSize, &ptr1, &buf1, &offset1, &newBuffer1),
+    ASSERT_EQ(bufferPool.allocate(contextMtl, kLargeSize, &mappedData1, &buf1),
               angle::Result::Continue);
-    EXPECT_TRUE(newBuffer1);
-    EXPECT_EQ(offset1, 0u);
-    EXPECT_NE(ptr1, nullptr);
-    EXPECT_NE(buf1, nullptr);
+    EXPECT_EQ(buf1.offset(), 0u);
+    EXPECT_FALSE(mappedData1.empty());
+    EXPECT_NE(buf1.buffer(), nullptr);
 
     // Fill first allocation with a known pattern (0xAA)
     // We only fill the first 4KB to avoid spending too much time on this test
     constexpr size_t kPatternSize = 4096;
-    memset(ptr1, 0xAA, kPatternSize);
+    memset(mappedData1.data(), 0xAA, kPatternSize);
 
     // Commit the first allocation to ensure it's written to the buffer
     ASSERT_EQ(bufferPool.commit(contextMtl), angle::Result::Continue);
 
     // Perform second allocation
-    uint8_t *ptr2       = nullptr;
-    mtl::BufferRef buf2 = nullptr;
-    size_t offset2      = 0;
-    bool newBuffer2     = false;
+    angle::Span<uint8_t> mappedData2;
+    mtl::BufferSlice buf2;
 
-    ASSERT_EQ(bufferPool.allocate(contextMtl, kSmallSize, &ptr2, &buf2, &offset2, &newBuffer2),
+    ASSERT_EQ(bufferPool.allocate(contextMtl, kSmallSize, &mappedData2, &buf2),
               angle::Result::Continue);
 
     // With the fix (size_t), a new buffer should be allocated since the calculated offset
     // exceeds the buffer size. Otherwise (no fix), the offset would truncate and
     // potentially reuse the same buffer incorrectly, causing memory corruption.
-    EXPECT_TRUE(newBuffer2);
-
     // The offset should be 0 in the new buffer (not a truncated large value)
-    EXPECT_EQ(offset2, 0u);
-    EXPECT_NE(ptr2, nullptr);
-    EXPECT_NE(buf2, nullptr);
+    EXPECT_EQ(buf2.offset(), 0u);
+    EXPECT_FALSE(mappedData2.empty());
+    EXPECT_NE(buf2.buffer(), nullptr);
 
     // Buffers should be different
-    EXPECT_NE(buf1.get(), buf2.get());
+    EXPECT_NE(buf1.buffer().get(), buf2.buffer().get());
 
     // Fill second allocation with a different pattern (0xBB)
-    memset(ptr2, 0xBB, kSmallSize);
+    memset(mappedData2.data(), 0xBB, kSmallSize);
 
     // Commit the second allocation
     ASSERT_EQ(bufferPool.commit(contextMtl), angle::Result::Continue);
@@ -121,8 +121,8 @@ TEST_P(BufferPoolTest, AllocationOffsetNoTruncation)
     // With the uint32_t bug, ptr2 would have overwritten ptr1's data at offset 0
     // because the offset wrapped around to 0 or a small value.
     // Map the first buffer again to verify its contents
-    uint8_t *verifyPtr1 = buf1->mapWithOpt(contextMtl, true, false);
-    ASSERT_NE(verifyPtr1, nullptr);
+    angle::Span<const uint8_t> verifyPtr1 = buf1.buffer()->mapReadOnly(contextMtl);
+    ASSERT_FALSE(verifyPtr1.empty());
 
     // Check that the first pattern (0xAA) is still intact
     // If the bug exists, this would have been overwritten with 0xBB
@@ -133,7 +133,7 @@ TEST_P(BufferPoolTest, AllocationOffsetNoTruncation)
             << " - uint32_t truncation bug likely caused second allocation to overlap!";
     }
 
-    buf1->unmap(contextMtl);
+    buf1.buffer()->unmap(contextMtl);
     bufferPool.destroy(contextMtl);
 }
 

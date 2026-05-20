@@ -11,10 +11,18 @@
 #include "test_utils/CompilerTest.h"
 #include "test_utils/angle_test_configs.h"
 
+#include <sstream>
+
 using namespace angle;
 
 namespace
 {
+// Limits set in sh::InitBuiltInResources().  These are implementation limits that the tests need to
+// be aware of.
+constexpr uint32_t kMaxExpressionComplexity = 256;
+constexpr uint32_t kMaxCallStackDepth       = 256;
+constexpr uint32_t kMaxFunctionParameters   = 255;
+
 class GLSLValidationTest : public CompilerTest
 {
   protected:
@@ -247,6 +255,71 @@ TEST_P(GLSLValidationTest, CompareStructsContainingSamplers)
 
     validateError(GL_FRAGMENT_SHADER, kFS,
                   "'==' : undefined operation for structs containing samplers");
+}
+
+// https://crbug.com/499176133
+TEST_P(GLSLValidationTest, LongIdentifierAtLimit_1024)
+{
+    std::string longName = "_u";
+    longName.append(1024 - 2, 'a');
+    std::string shader = R"(
+void main() {
+  precision mediump float;
+  float )" + longName + R"( = 1.0;
+})";
+
+    std::string result =
+        std::string("'") + longName +
+        std::string("' : identifiers beginning with `_u` must be < 1022 characters");
+
+    validateError(GL_FRAGMENT_SHADER, shader.c_str(), result.c_str());
+}
+// https://crbug.com/499176133
+TEST_P(GLSLValidationTest, LongIdentifierAtLimit_1023)
+{
+    std::string longName = "_u";
+    longName.append(1023 - 2, 'a');
+    std::string shader = R"(
+void main() {
+  precision mediump float;
+  float )" + longName + R"( = 1.0;
+})";
+
+    std::string result =
+        std::string("'") + longName +
+        std::string("' : identifiers beginning with `_u` must be < 1022 characters");
+
+    validateError(GL_FRAGMENT_SHADER, shader.c_str(), result.c_str());
+}
+// https://crbug.com/499176133
+TEST_P(GLSLValidationTest, LongIdentifierAtLimit_1022)
+{
+    std::string longName = "_u";
+    longName.append(1022 - 2, 'a');
+    std::string shader = R"(
+void main() {
+  precision mediump float;
+  float )" + longName + R"( = 1.0;
+})";
+
+    std::string result =
+        std::string("'") + longName +
+        std::string("' : identifiers beginning with `_u` must be < 1022 characters");
+
+    validateError(GL_FRAGMENT_SHADER, shader.c_str(), result.c_str());
+}
+// https://crbug.com/499176133
+TEST_P(GLSLValidationTest, LongIdentifierAtLimit_1021)
+{
+    std::string longName = "_u";
+    longName.append(1021 - 2, 'a');
+    std::string shader = R"(
+void main() {
+  precision mediump float;
+  float )" + longName + R"( = 1.0;
+})";
+
+    validateSuccess(GL_FRAGMENT_SHADER, shader.c_str());
 }
 
 // Samplers are not allowed as l-values (ESSL 3.00 section 4.1.7), our interpretation is that this
@@ -961,6 +1034,23 @@ TEST_P(GLSLValidationTest, SamplerInConstructorArguments)
                   "'constructor' : cannot convert a variable with type sampler2D");
 }
 
+// Test that a struct with sampler can't be constructed
+TEST_P(GLSLValidationTest, ConstructorWithSampler)
+{
+    constexpr char kFS[] = R"(precision mediump float;
+        struct S {
+            sampler2D inStruct;
+        };
+        uniform sampler2D s;
+        void main()
+        {
+            gl_FragColor = texture2D(S(s).inStruct, vec2(0));
+        })";
+
+    validateError(GL_FRAGMENT_SHADER, kFS,
+                  "'constructor' : cannot convert a variable with type sampler2D");
+}
+
 // Test that void can't be used in constructor argument list
 TEST_P(GLSLValidationTest, VoidInConstructorArguments)
 {
@@ -1138,6 +1228,58 @@ TEST_P(WebGL2GLSLValidationTest, AssignUniformToGlobalESSL1)
 
     validateWarning(GL_FRAGMENT_SHADER, kFS,
                     "'=' : global variable initializers should be constant expressions");
+}
+
+// Shaders with uniform blocks named "shared" or "packed" should fail to compile in WebGL mode.
+TEST_P(WebGL2GLSLValidationTest, RejectSharedAndPackedUniformBlockNames)
+{
+    // Test "shared" in vertex shader
+    {
+        constexpr char kVS[] =
+            R"(#version 300 es
+            uniform shared { // Invalid name
+                vec4 val;
+            };
+            void main() { gl_Position = val; })";
+        validateError(GL_VERTEX_SHADER, kVS, "'shared' : Illegal use of reserved word");
+    }
+
+    // Test "shared" in fragment shader
+    {
+        constexpr char kFS[] =
+            R"(#version 300 es
+            precision mediump float;
+            uniform shared { // Invalid name
+                vec4 val;
+            };
+            out vec4 out_FragColor;
+            void main() { out_FragColor = val; })";
+        validateError(GL_FRAGMENT_SHADER, kFS, "'shared' : Illegal use of reserved word");
+    }
+
+    // Test "packed" in vertex shader
+    {
+        constexpr char kVS[] =
+            R"(#version 300 es
+            uniform packed { // Invalid name
+                vec4 val;
+            };
+            void main() { gl_Position = val; })";
+        validateError(GL_VERTEX_SHADER, kVS, "'packed' : Illegal use of reserved word");
+    }
+
+    // Test "packed" in fragment shader
+    {
+        constexpr char kFS[] =
+            R"(#version 300 es
+            precision mediump float;
+            uniform packed { // Invalid name
+                vec4 val;
+            };
+            out vec4 out_FragColor;
+            void main() { out_FragColor = val; })";
+        validateError(GL_FRAGMENT_SHADER, kFS, "'packed' : Illegal use of reserved word");
+    }
 }
 
 // Test that deferring global variable init works with an empty main().
@@ -1674,6 +1816,81 @@ TEST_P(GLSLValidationTest_ES31, WorkGroupSizeNegativeHexadecimal)
     validateError(GL_COMPUTE_SHADER, kCS, "'-20' : out of range: local_size_x must be positive");
 }
 
+// Verify that a compile error is generated when the total size of shared memory exceeds
+// GL_MAX_COMPUTE_SHARED_MEMORY_SIZE.
+TEST_P(GLSLValidationTest_ES31, ExceedComputeSharedMemorySize)
+{
+    GLint maxComputeSharedMemorySize;
+    glGetIntegerv(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE, &maxComputeSharedMemorySize);
+
+    // Using exactly GL_MAX_COMPUTE_SHARED_MEMORY_SIZE memory is ok
+    {
+        std::ostringstream cs;
+        cs << R"(#version 310 es
+layout (local_size_x = 1) in;
+layout (r32ui, binding = 0) writeonly uniform highp uimage2D img;
+shared uint temp[)"
+           << (maxComputeSharedMemorySize / sizeof(uint32_t)) << R"(];
+void main()
+{
+    temp[gl_LocalInvocationID.x] = 0u;
+    groupMemoryBarrier();
+    barrier();
+    imageStore(img, ivec2(0), uvec4(temp[gl_LocalInvocationID.x + 1u]));
+})";
+        validateSuccess(GL_COMPUTE_SHADER, cs.str().c_str());
+    }
+
+    // Using any more than GL_MAX_COMPUTE_SHARED_MEMORY_SIZE memory is not ok
+    {
+        std::ostringstream cs;
+        cs << R"(#version 310 es
+layout (local_size_x = 1) in;
+layout (r32ui, binding = 0) writeonly uniform highp uimage2D img;
+shared uint temp[)"
+           << (maxComputeSharedMemorySize / sizeof(uint32_t) + 1) << R"(];
+void main()
+{
+    temp[gl_LocalInvocationID.x] = 0u;
+    groupMemoryBarrier();
+    barrier();
+    imageStore(img, ivec2(0), uvec4(temp[gl_LocalInvocationID.x + 1u]));
+})";
+
+        validateError(GL_COMPUTE_SHADER, cs.str().c_str(),
+                      "Shared memory size exceeds GL_MAX_COMPUTE_SHARED_MEMORY_SIZE");
+    }
+
+    // Using more than GL_MAX_COMPUTE_SHARED_MEMORY_SIZE split between multiple |shared| variables
+    // is not ok.
+    // This validation is not correctly implemented in the AST path.
+    if (getEGLWindow()->isFeatureEnabled(Feature::UseIr))
+    {
+        const GLint maxSharedUintCount     = maxComputeSharedMemorySize / sizeof(uint32_t);
+        const GLint halfMaxSharedUintCount = maxSharedUintCount / 2;
+
+        std::ostringstream cs;
+        cs << R"(#version 310 es
+layout (local_size_x = 1) in;
+layout (r32ui, binding = 0) writeonly uniform highp uimage2D img;
+shared uint temp1[)"
+           << halfMaxSharedUintCount << R"(];
+shared uint temp2[)"
+           << (maxSharedUintCount - halfMaxSharedUintCount) << R"(];
+shared uint temp3;
+void main()
+{
+    temp1[gl_LocalInvocationID.x] = temp2[gl_LocalInvocationID.x] = temp3 = 0u;
+    groupMemoryBarrier();
+    barrier();
+    imageStore(img, ivec2(0), uvec4(temp1[gl_LocalInvocationID.x + 1u] + temp2[gl_LocalInvocationID.x + 1u] + temp3));
+})";
+
+        validateError(GL_COMPUTE_SHADER, cs.str().c_str(),
+                      "Shared memory size exceeds GL_MAX_COMPUTE_SHARED_MEMORY_SIZE");
+    }
+}
+
 // Multiple work group layout qualifiers with differing values.
 // GLSL ES 3.10 Revision 4, 4.4.1.1 Compute Shader Inputs
 TEST_P(GLSLValidationTest_ES31, DifferingLayoutQualifiers)
@@ -2067,6 +2284,160 @@ TEST_P(GLSLValidationTest, BVecMultiplyAssign)
     validateError(GL_FRAGMENT_SHADER, kFS,
                   "'assign' : cannot convert from '4-component vector of bool' to '4-component "
                   "vector of bool'");
+}
+
+// Test that gl_VertexID cannot be written to.
+TEST_P(GLSLValidationTest_ES3, VertexIDNoWrite)
+{
+    constexpr char kVS[] = R"(#version 300 es
+void main(){gl_VertexID=0;})";
+    validateError(GL_VERTEX_SHADER, kVS,
+                  "l-value required (can't modify gl_VertexID \"gl_VertexID\")");
+}
+
+// Test that gl_InstanceID cannot be written to.
+TEST_P(GLSLValidationTest_ES3, InstanceIDNoWrite)
+{
+    constexpr char kVS[] = R"(#version 300 es
+void main(){gl_InstanceID=0;})";
+    validateError(GL_VERTEX_SHADER, kVS,
+                  "l-value required (can't modify gl_InstanceID \"gl_InstanceID\")");
+}
+
+// Test that gl_BaseVertex cannot be written to.
+TEST_P(GLSLValidationTest_ES3, BaseVertexNoWrite)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_ANGLE_base_vertex_base_instance_shader_builtin"));
+
+    constexpr char kVS[] = R"(#version 300 es
+#extension GL_ANGLE_base_vertex_base_instance_shader_builtin : require
+void main(){gl_BaseVertex=0;})";
+    validateError(GL_VERTEX_SHADER, kVS,
+                  "l-value required (can't modify gl_BaseVertex \"gl_BaseVertex\")");
+}
+
+// Test that gl_BaseInstance cannot be written to.
+TEST_P(GLSLValidationTest_ES3, BaseInstanceNoWrite)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_ANGLE_base_vertex_base_instance_shader_builtin"));
+
+    constexpr char kVS[] = R"(#version 300 es
+#extension GL_ANGLE_base_vertex_base_instance_shader_builtin : require
+void main(){gl_BaseInstance=0;})";
+    validateError(GL_VERTEX_SHADER, kVS,
+                  "l-value required (can't modify gl_BaseInstance \"gl_BaseInstance\")");
+}
+
+// Test that gl_DrawID cannot be written to.
+TEST_P(GLSLValidationTest_ES3, DrawIDNoWrite)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_ANGLE_multi_draw"));
+
+    constexpr char kVS[] = R"(#version 300 es
+#extension GL_ANGLE_multi_draw : require
+void main(){gl_DrawID=0;})";
+    validateError(GL_VERTEX_SHADER, kVS, "l-value required (can't modify gl_DrawID \"gl_DrawID\")");
+}
+
+// Test that gl_DepthRange cannot be written to.
+TEST_P(GLSLValidationTest_ES3, DepthRangeNoWrite)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_ANGLE_multi_draw"));
+
+    constexpr char kFS[] = R"(void main(){gl_DepthRange.near=0.;})";
+    validateError(GL_FRAGMENT_SHADER, kFS,
+                  "l-value required (can't modify gl_DepthRange \"gl_DepthRange\")");
+}
+
+// Test that gl_SampleMaskIn cannot be written to.
+TEST_P(GLSLValidationTest_ES3, SampleMaskInNoWrite)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_OES_sample_variables"));
+
+    constexpr char kFS[] = R"(#version 300 es
+#extension GL_OES_sample_variables : require
+void main(){gl_SampleMaskIn[0]=0;})";
+    validateError(GL_FRAGMENT_SHADER, kFS,
+                  "l-value required (can't modify gl_SampleMaskIn \"gl_SampleMaskIn\")");
+}
+
+// Test that gl_NumSamples cannot be written to.
+TEST_P(GLSLValidationTest_ES3, NumSamplesNoWrite)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_OES_sample_variables"));
+
+    constexpr char kFS[] = R"(#version 300 es
+#extension GL_OES_sample_variables : require
+void main(){gl_NumSamples=0;})";
+    validateError(GL_FRAGMENT_SHADER, kFS,
+                  "l-value required (can't modify gl_NumSamples \"gl_NumSamples\")");
+}
+
+// Test that gl_PatchVerticesIn cannot be written to.
+TEST_P(GLSLValidationTest_ES31, PatchVerticesInNoWrite)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_tessellation_shader"));
+
+    constexpr char kTCS[] = R"(#version 310 es
+#extension GL_EXT_tessellation_shader : require
+void main(){gl_PatchVerticesIn=0;})";
+    validateError(GL_TESS_CONTROL_SHADER, kTCS,
+                  "l-value required (can't modify gl_PatchVerticesIn \"gl_PatchVerticesIn\")");
+}
+
+// Test that gl_TessCoord cannot be written to.
+TEST_P(GLSLValidationTest_ES31, TessCoordNoWrite)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_tessellation_shader"));
+
+    constexpr char kTES[] = R"(#version 310 es
+#extension GL_EXT_tessellation_shader : require
+void main(){gl_TessCoord=0;})";
+    validateError(GL_TESS_EVALUATION_SHADER, kTES,
+                  "l-value required (can't modify gl_TessCoord \"gl_TessCoord\")");
+}
+
+// Test that patch in variables cannot be written to.
+TEST_P(GLSLValidationTest_ES31, PatchInNoWrite)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_tessellation_shader"));
+
+    constexpr char kTES[] = R"(#version 310 es
+#extension GL_EXT_tessellation_shader : require
+patch in float f;
+void main(){f=0.;})";
+    validateError(GL_TESS_EVALUATION_SHADER, kTES,
+                  "l-value required (can't modify an input \"f\")");
+}
+
+// Test no mangling collision in structs
+TEST_P(GLSLValidationTest, ManglingCollisionInStruct)
+{
+    constexpr char kFS[] = R"(precision mediump float;
+struct A00B { vec4 y; };
+struct A    { float x; vec4 y; };
+
+void foo(A00B p);
+void foo(A p) {}
+
+void main() {
+    A00B v = A00B(vec4(0));
+    foo(v);
+})";
+    validateError(GL_FRAGMENT_SHADER, kFS, "Function foo() called by main() is undefined");
+}
+
+// Test no mangling collision in function parameters
+TEST_P(GLSLValidationTest, ManglingCollisionInFunctionParams)
+{
+    constexpr char kFS[] = R"(precision mediump float;
+void fooA00B(vec4 y);
+void foo(float x, vec4 y) {}
+
+void main() {
+    fooA00B(vec4(0));
+})";
+    validateError(GL_FRAGMENT_SHADER, kFS, "Function fooA00B() called by main() is undefined");
 }
 
 // Test that infinite loop with while(true) is rejected
@@ -2483,6 +2854,132 @@ void main() {
                   "'rr' : Size of declared variable exceeds implementation-defined limit");
 }
 
+// Test that too large array in UBO, where cast to signed int would produce negative sizes, does not
+// crash.
+TEST_P(WebGL2GLSLValidationTest, LargeArrayUintMaxSizeInUBO)
+{
+    constexpr char kFS[] = R"(#version 300 es
+uniform Block
+{
+    int rr[~1U];
+};
+out int o;
+void main() {
+    o = rr[1];
+})";
+    validateError(GL_FRAGMENT_SHADER, kFS,
+                  "'Block' : Size of declared variable exceeds implementation-defined limit");
+}
+
+// Regression test for a 32-bit overflow bug when setting initializer for a large constant.
+TEST_P(WebGL2GLSLValidationTest, LargeConstantVariableWithInitializer)
+{
+    const int N1 = 256;
+    const int N2 = 256;
+    const int N3 = 65537;
+
+    std::ostringstream aInit;
+    const char *delim = "";
+    for (int i = 0; i < N1; i++)
+    {
+        aInit << delim << "1.5";
+        delim = ",";
+    }
+
+    std::ostringstream bInit;
+    delim = "";
+    for (int i = 0; i < N2; i++)
+    {
+        bInit << delim << "sA";
+        delim = ",";
+    }
+
+    std::ostringstream cInit;
+    delim = "";
+    for (int i = 0; i < N3; i++)
+    {
+        cInit << delim << "sB";
+        delim = ",";
+    }
+
+    // Set up a shader with large arrays, overflowing 32-bit math.
+    //
+    // S: 256*sizeof(float) = 1024 bytes
+    // S2: 256*sizeof(S) = 256KB
+    // c: 65537*sizeof(S2) >= 4*4GB
+    std::ostringstream fs;
+    fs << "#version 300 es\n"
+       << "precision highp float;\n"
+       << "struct S { float a[" << N1 << "]; };\n"
+       << "struct S2 { S b[" << N2 << "]; };\n"
+       << "const float a[" << N1 << "] = float[" << N1 << "](" << aInit.str() << ");\n"
+       << "const S sA = S(a);\n"
+       << "const S b[" << N2 << "] = S[" << N2 << "](" << bInit.str() << ");\n"
+       << "const S2 sB = S2(b);\n"
+       << "const S2 c[" << N3 << "] = S2[" << N3 << "](" << cInit.str() << ");\n"
+       << "void main(){}\n";
+
+    validateError(GL_FRAGMENT_SHADER, fs.str().c_str(),
+                  "Size of declared private variable exceeds implementation-defined limit");
+}
+
+// Test using a large constant that is declared inline, without using variable space that would
+// exceed the implementation-defined limit.  Because of the variable limit, the shader would have to
+// either inline an extremely large constant, which would practically take forever to construct and
+// parse, or use near-limit private variables.  In the latter case, the constant array constructor
+// does not cause any 32-bit overflows, so the shader succeeds compilation just fine.  If the large
+// constant is indexed, it can get constant folded, but at that point the constant is small.
+TEST_P(WebGL2GLSLValidationTest, InlineLargeConstant)
+{
+    const int N1 = 256;
+    const int N2 = 32;
+    const int N3 = 65536 * 8 + 1;
+
+    std::ostringstream aInit;
+    const char *delim = "";
+    for (int i = 0; i < N1; i++)
+    {
+        aInit << delim << "1.5";
+        delim = ",";
+    }
+
+    std::ostringstream bInit;
+    delim = "";
+    for (int i = 0; i < N2; i++)
+    {
+        bInit << delim << "sA";
+        delim = ",";
+    }
+
+    std::ostringstream s2;
+    s2 << "S2[" << N3 << "](";
+    delim = "";
+    for (int i = 0; i < N3; i++)
+    {
+        s2 << delim << "sB";
+        delim = ",";
+    }
+    s2 << ")";
+
+    // Set up a shader with large arrays, overflowing 32-bit math.
+    //
+    // S: 256*sizeof(float) = 1024 bytes
+    // S2: 32*sizeof(S) = 32KB
+    // constant: (65536 * 8 + 1)*sizeof(S2) >= 4*4GB
+    std::ostringstream fs;
+    fs << "#version 300 es\n"
+       << "precision highp float;\n"
+       << "struct S { float a[" << N1 << "]; };\n"
+       << "struct S2 { S b[" << N2 << "]; };\n"
+       << "const float a[" << N1 << "] = float[" << N1 << "](" << aInit.str() << ");\n"
+       << "const S sA = S(a);\n"
+       << "const S b[" << N2 << "] = S[" << N2 << "](" << bInit.str() << ");\n"
+       << "const S2 sB = S2(b);\n"
+       << "void main(){ " << s2.str() << "[0].b[0].a[0]; }\n";
+
+    validateSuccess(GL_FRAGMENT_SHADER, fs.str().c_str());
+}
+
 // Test that too large color outputs are rejected
 TEST_P(WebGL2GLSLValidationTest, LargeColorOutput)
 {
@@ -2896,6 +3393,73 @@ void main() {})";
     }
 }
 
+// Negative test using builtins that can only be used when redefining gl_PerVertex
+TEST_P(GLSLValidationTest_ES31, RedefinePerVertexMembersSeparately)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_geometry_shader"));
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_clip_cull_distance"));
+
+    constexpr char kGS[] = R"(#version 310 es
+#extension GL_EXT_geometry_shader : require
+#extension GL_EXT_clip_cull_distance : require
+
+layout(lines_adjacency, invocations = 3) in;
+layout(points, max_vertices = 16) out;
+
+vec4 gl_Position;
+float gl_ClipDistance[4];
+float gl_CullDistance[4];
+
+void main()
+{
+    for (int n = 0; n < 16; ++n)
+    {
+        gl_Position = vec4(n, 0.0, 0.0, 1.0);
+        EmitVertex();
+    }
+
+    EndPrimitive();
+})";
+
+    validateError(GL_GEOMETRY_SHADER, kGS,
+                  "'gl_Position' : redeclaration of built-in is not allowed");
+}
+
+// Negative test using builtins that can only be used when redefining gl_PerVertex but have the
+// builtins in a differently named struct
+TEST_P(GLSLValidationTest_ES31, RedefinePerVertexMembersInOtherBlock)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_geometry_shader"));
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_clip_cull_distance"));
+
+    constexpr char kGS[] = R"(#version 310 es
+#extension GL_EXT_geometry_shader : require
+#extension GL_EXT_clip_cull_distance : require
+
+layout(lines_adjacency, invocations = 3) in;
+layout(points, max_vertices = 16) out;
+
+out Block {
+    vec4 gl_Position;
+    float gl_ClipDistance[4];
+    float gl_CullDistance[4];
+};
+
+void main()
+{
+    for (int n = 0; n < 16; ++n)
+    {
+        gl_Position = vec4(n, 0.0, 0.0, 1.0);
+        EmitVertex();
+    }
+
+    EndPrimitive();
+})";
+
+    validateError(GL_GEOMETRY_SHADER, kGS,
+                  "'gl_Position' : redefinition in an invalid interface block");
+}
+
 // Regression test case of unary + constant folding of a void struct member.
 TEST_P(GLSLValidationTest, UnaryPlusOnVoidStructMemory)
 {
@@ -3274,21 +3838,19 @@ void main()
 TEST_P(GLSLValidationTest_ES3, LargeNumberOfFloat4Parameters)
 {
     std::stringstream vs;
-    // Note: SPIR-V doesn't allow more than 255 parameters to a function.
-    const unsigned int paramCount = (IsVulkan() || IsMetal()) ? 255u : 1024u;
 
     vs << R"(#version 300 es
 precision highp float;
 in vec4 a_vec;
 vec4 lotsOfVec4Parameters()";
-    for (unsigned int i = 0; i < paramCount - 1; ++i)
+    for (unsigned int i = 0; i < kMaxFunctionParameters - 1; ++i)
     {
         vs << "vec4 a" << i << ", ";
     }
     vs << R"(vec4 aLast)
 {
     vec4 sum = vec4(0.0, 0.0, 0.0, 0.0);)";
-    for (unsigned int i = 0; i < paramCount - 1; ++i)
+    for (unsigned int i = 0; i < kMaxFunctionParameters - 1; ++i)
     {
         vs << "    sum += a" << i << ";\n";
     }
@@ -3298,7 +3860,7 @@ vec4 lotsOfVec4Parameters()";
 void main()
 {
     gl_Position = lotsOfVec4Parameters()";
-    for (unsigned int i = 0; i < paramCount - 1; ++i)
+    for (unsigned int i = 0; i < kMaxFunctionParameters - 1; ++i)
     {
         vs << "a_vec, ";
     }
@@ -3863,6 +4425,23 @@ TEST_P(GLSLValidationTest, LoopBodyEndingInBranch6)
     validateSuccess(GL_FRAGMENT_SHADER, kFS);
 }
 
+// Test that using only a type and no variable in the loop init expression compiles
+TEST_P(GLSLValidationTest_ES3, LoopInitOnlyInt)
+{
+    constexpr char kFS[] = R"(#version 300 es
+void main(){for(int;;){}})";
+    validateSuccess(GL_FRAGMENT_SHADER, kFS);
+}
+
+// Test that using only a struct type (i.e. a symbol, and not a keyword) and no variable in the loop
+// init expression compiles
+TEST_P(GLSLValidationTest_ES3, LoopInitOnlyStructName)
+{
+    constexpr char kFS[] = R"(#version 300 es
+struct S { int a; }; void main(){for(S;;){}})";
+    validateSuccess(GL_FRAGMENT_SHADER, kFS);
+}
+
 // Fuzzer test involving struct samplers and comma operator
 TEST_P(GLSLValidationTest, StructSamplerVsComma)
 {
@@ -4077,6 +4656,19 @@ void main()
                   "'i' : Loop index cannot be statically assigned to within the body of the loop");
 }
 
+// Shader that writes to FragData at index >= gl_MaxDrawBuffers.
+TEST_P(GLSLValidationTest, FragDataIndexTooLarge)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_draw_buffers"));
+
+    constexpr char kFS[] = R"(#extension GL_EXT_draw_buffers : require
+precision mediump float;
+void main() {
+    gl_FragData[gl_MaxDrawBuffers] = vec4(0.1);
+})";
+    validateError(GL_FRAGMENT_SHADER, kFS, "array index out of range");
+}
+
 // Shader that writes to SecondaryFragColor and SecondaryFragData does not compile.
 TEST_P(GLSLValidationTest, BlendFuncExtendedSecondaryColorAndData)
 {
@@ -4120,11 +4712,47 @@ TEST_P(GLSLValidationTest, BlendFuncExtendedDataAndSecondaryColor)
 precision mediump float;
 void main() {
     gl_SecondaryFragColorEXT = vec4(1.0);
-    gl_FragData[gl_MaxDrawBuffers - 1] = vec4(0.1);
+    gl_FragData[gl_MaxDualSourceDrawBuffersEXT - 1] = vec4(0.1);
 })";
     validateError(GL_FRAGMENT_SHADER, kFS,
                   "cannot use both output variable sets (gl_FragData, gl_SecondaryFragDataEXT) and "
                   "(gl_FragColor, gl_SecondaryFragColorEXT)");
+}
+
+// Shader that writes to SecondaryFragData and FragData at an index >= than
+// gl_MaxDualSourceDrawBuffersEXT.
+TEST_P(GLSLValidationTest, BlendFuncExtendedDataArrayAndSecondaryData)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_blend_func_extended"));
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_draw_buffers"));
+
+    constexpr char kFS[] = R"(#extension GL_EXT_draw_buffers : require
+#extension GL_EXT_blend_func_extended : require
+precision mediump float;
+void main() {
+    gl_SecondaryFragDataEXT[0] = vec4(1.0);
+    gl_FragData[gl_MaxDualSourceDrawBuffersEXT] = vec4(0.1);
+})";
+    validateError(GL_FRAGMENT_SHADER, kFS,
+                  "array index for gl_FragData must be less than "
+                  "GL_MAX_DUAL_SOURCE_DRAW_BUFFERS_EXT when gl_SecondaryFragDataEXT is used");
+}
+
+// Shader that writes to FragData at an index >= than gl_MaxDualSourceDrawBuffersEXT is fine if
+// SecondaryFragData is not used.  Note that gl_MaxDualSourceDrawBuffersEXT is typically 1, while
+// the size of gl_FragData (gl_MaxDrawBuffers) is larger.
+TEST_P(GLSLValidationTest, BlendFuncExtendedDataArrayOnly)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_blend_func_extended"));
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_draw_buffers"));
+
+    constexpr char kFS[] = R"(#extension GL_EXT_draw_buffers : require
+#extension GL_EXT_blend_func_extended : require
+precision mediump float;
+void main() {
+    gl_FragData[gl_MaxDrawBuffers - 1] = vec4(0.1);
+})";
+    validateSuccess(GL_FRAGMENT_SHADER, kFS);
 }
 
 // Dynamic indexing of SecondaryFragData is not allowed in WebGL 2.0.
@@ -4576,6 +5204,23 @@ void main() {
                   "there is no acceptable conversion)");
 }
 
+// Shader that uses yuvCscStandardEXT in constructor fails to compile.
+TEST_P(GLSLValidationTest_ES3, YUVTargetCscStandardUintConstructor)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_YUV_target"));
+
+    constexpr char kFS[] =
+        R"(#version 300 es
+#extension GL_EXT_YUV_target : require
+precision mediump float;
+const yuvCscStandardEXT conv = itu_601;
+const uint u = uint(conv);
+void main() {
+})";
+
+    validateError(GL_FRAGMENT_SHADER, kFS, "'constructor' : cannot convert a yuvCscStandardEXT");
+}
+
 // Shader that specifies yuvCscStandardEXT type qualifiers fails to compile.
 TEST_P(GLSLValidationTest_ES3, YUVTargetCscStandardInput)
 {
@@ -4724,6 +5369,114 @@ void main (void)
                   "GL_EXT_shader_framebuffer_fetch_non_coherent extension is used");
 }
 
+// Redeclare gl_LastFragColorARM with unexpected basic type
+TEST_P(GLSLValidationTest, FramebufferFetchLastFragColorWrongType)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_ARM_shader_framebuffer_fetch"));
+
+    constexpr char kFS[] =
+        R"(#extension GL_ARM_shader_framebuffer_fetch : require
+highp int gl_LastFragColorARM;
+
+void main (void)
+{
+    gl_FragColor = vec4(gl_LastFragColorARM);
+})";
+
+    validateError(GL_FRAGMENT_SHADER, kFS,
+                  "'gl_LastFragColorARM' : redeclaration of built-in with a different type");
+}
+
+// Redeclare gl_LastFragColorARM with unexpected arrayness
+TEST_P(GLSLValidationTest, FramebufferFetchLastFragColorArrayed)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_ARM_shader_framebuffer_fetch"));
+
+    constexpr char kFS[] =
+        R"(#extension GL_ARM_shader_framebuffer_fetch : require
+highp vec4 gl_LastFragColorARM[4];
+
+void main (void)
+{
+    gl_FragColor = vec4(gl_LastFragColorARM[0]);
+})";
+
+    validateError(GL_FRAGMENT_SHADER, kFS,
+                  "'gl_LastFragColorARM' : redeclaration of built-in with a different type");
+}
+
+// Redeclare gl_LastFragDepthARM with unexpected basic type
+TEST_P(GLSLValidationTest, FramebufferFetchLastFragDepthWrongType)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_ARM_shader_framebuffer_fetch_depth_stencil"));
+
+    constexpr char kFS[] =
+        R"(#extension GL_ARM_shader_framebuffer_fetch_depth_stencil : require
+highp int gl_LastFragDepthARM;
+
+void main (void)
+{
+    gl_FragColor = vec4(gl_LastFragDepthARM);
+})";
+
+    validateError(GL_FRAGMENT_SHADER, kFS,
+                  "'gl_LastFragDepthARM' : redeclaration of built-in with a different type");
+}
+
+// Redeclare gl_LastFragDepthARM with unexpected arrayness
+TEST_P(GLSLValidationTest, FramebufferFetchLastFragDepthArrayed)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_ARM_shader_framebuffer_fetch_depth_stencil"));
+
+    constexpr char kFS[] =
+        R"(#extension GL_ARM_shader_framebuffer_fetch_depth_stencil : require
+highp float gl_LastFragDepthARM[4];
+
+void main (void)
+{
+    gl_FragColor = vec4(gl_LastFragDepthARM[0]);
+})";
+
+    validateError(GL_FRAGMENT_SHADER, kFS,
+                  "'gl_LastFragDepthARM' : redeclaration of built-in with a different type");
+}
+
+// Redeclare gl_LastFragStencilARM with unexpected basic type
+TEST_P(GLSLValidationTest, FramebufferFetchLastFragStencilWrongType)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_ARM_shader_framebuffer_fetch_depth_stencil"));
+
+    constexpr char kFS[] =
+        R"(#extension GL_ARM_shader_framebuffer_fetch_depth_stencil : require
+highp float gl_LastFragStencilARM;
+
+void main (void)
+{
+    gl_FragColor = vec4(gl_LastFragStencilARM);
+})";
+
+    validateError(GL_FRAGMENT_SHADER, kFS,
+                  "'gl_LastFragStencilARM' : redeclaration of built-in with a different type");
+}
+
+// Redeclare gl_LastFragStencilARM with unexpected arrayness
+TEST_P(GLSLValidationTest, FramebufferFetchLastFragStencilArrayed)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_ARM_shader_framebuffer_fetch_depth_stencil"));
+
+    constexpr char kFS[] =
+        R"(#extension GL_ARM_shader_framebuffer_fetch_depth_stencil : require
+highp int gl_LastFragStencilARM[4];
+
+void main (void)
+{
+    gl_FragColor = vec4(gl_LastFragStencilARM[0]);
+})";
+
+    validateError(GL_FRAGMENT_SHADER, kFS,
+                  "'gl_LastFragStencilARM' : redeclaration of built-in with a different type");
+}
+
 // Ensure that a negative index after a comma generates an error.
 TEST_P(GLSLValidationTest_ES3, NegativeIndexAfterComma)
 {
@@ -4847,6 +5600,684 @@ void main()
     }
 
     reset();
+}
+
+// Validate that deeply nested |while| loops fail in WebGL.
+TEST_P(WebGL2GLSLValidationTest, DeeplyNestedWhileStatements)
+{
+    std::ostringstream fs;
+    fs << R"(#version 300 es
+void main() {
+)";
+    for (int i = 0; i < 1700; ++i)
+    {
+        fs << " while(true)";
+    }
+    fs << "; }";
+    validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "statement is too deeply nested");
+}
+
+// Validate that deeply nested |for| loops fail in WebGL.
+TEST_P(WebGL2GLSLValidationTest, DeeplyNestedForStatements)
+{
+    std::ostringstream fs;
+    fs << R"(#version 300 es
+void main() {
+)";
+    for (int i = 0; i < 1700; ++i)
+    {
+        fs << " for(int i = 0; i < 10; i++)";
+    }
+    fs << "; }";
+    validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "statement is too deeply nested");
+}
+
+// Validate that deeply nested |do-while| loops fail in WebGL.
+TEST_P(WebGL2GLSLValidationTest, DeeplyNestedDoWhileStatements)
+{
+    std::ostringstream fs;
+    fs << R"(#version 300 es
+void main() {
+)";
+    for (int i = 0; i < 1700; ++i)
+    {
+        fs << " do {";
+    }
+    for (int i = 0; i < 1700; ++i)
+    {
+        fs << "} while(true);";
+    }
+    fs << "}";
+    validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "statement is too deeply nested");
+}
+
+// Validate that deeply nested |switch| blocks fail in WebGL.
+TEST_P(WebGL2GLSLValidationTest, DeeplyNestedSwitchStatements)
+{
+    std::ostringstream fs;
+    fs << R"(#version 300 es
+void main() {
+)";
+    for (int i = 0; i < 1700; ++i)
+    {
+        fs << " switch(1) { default: int i=0;";
+    }
+    for (int i = 0; i < 1700; ++i)
+    {
+        fs << "}";
+    }
+    fs << "}";
+    validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "statement is too deeply nested");
+}
+
+// Validate that too many array dimensions fail in WebGL.
+TEST_P(WebGL2GLSLValidationTest, HugeUnsizedMultidimensionalArrayConstructor)
+{
+    std::ostringstream fs;
+    fs << R"(#version 310 es
+int E=int)";
+    for (int i = 0; i < 10000; ++i)
+    {
+        fs << "[]";
+    }
+    fs << "()";
+    validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "array has too many dimensions");
+}
+
+// Validate that too many array dimensions fail in WebGL.
+TEST_P(WebGL2GLSLValidationTest, HugeMultidimensionalArrayConstructor)
+{
+    std::ostringstream fs;
+    fs << R"(#version 310 es
+int E=int)";
+    for (int i = 0; i < 10000; ++i)
+    {
+        fs << "[1]";
+    }
+
+    for (int i = 0; i < 10000; ++i)
+    {
+        fs << "(2)";
+    }
+    validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "array has too many dimensions");
+}
+
+// Validate that too-complex unary expressions fail to compile in WebGL.
+TEST_P(WebGL2GLSLValidationTest, ManyChainedUnaryExpressions)
+{
+    std::ostringstream fs;
+    fs << R"(#version 300 es
+precision mediump float;
+void main() {
+  int iterations=0;)";
+    for (int i = 0; i < 6000; ++i)
+    {
+        fs << "~";
+    }
+    fs << R"(++iterations;
+})";
+
+    // The IR has no limitations with expression complexity.
+    if (getEGLWindow()->isFeatureEnabled(Feature::UseIr))
+    {
+        validateSuccess(GL_FRAGMENT_SHADER, fs.str().c_str());
+    }
+    else
+    {
+        validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "Expression too complex");
+    }
+}
+
+// Validate that too-complex assignment chains fail to compile in WebGL.
+TEST_P(WebGL2GLSLValidationTest, ManyChainedAssignments)
+{
+    std::ostringstream fs;
+    fs << R"(#version 300 es
+void main() {
+    int c = 0;
+)";
+    for (int i = 0; i < 3750; ++i)
+    {
+        fs << "c=\n";
+    }
+    fs << "c+1; }";
+
+    // The IR has no limitations with expression complexity.
+    if (getEGLWindow()->isFeatureEnabled(Feature::UseIr))
+    {
+        validateSuccess(GL_FRAGMENT_SHADER, fs.str().c_str());
+    }
+    else
+    {
+        validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "Expression too complex");
+    }
+}
+
+// Validate that too-complex binary expressions fail to compile in WebGL.
+TEST_P(WebGL2GLSLValidationTest, ManyChainedBinaryExpressions)
+{
+    constexpr char kPreamble[] = R"(precision mediump float;
+            uniform vec4 u_color;
+            void main()
+            {
+               gl_FragColor = u_color)";
+
+    {
+        std::ostringstream fs;
+        fs << kPreamble;
+        for (uint32_t i = 0; i < kMaxExpressionComplexity - 10; ++i)
+        {
+            fs << "+ vec4(" << i << ")";
+        }
+        fs << "; }";
+        validateSuccess(GL_FRAGMENT_SHADER, fs.str().c_str());
+    }
+
+    {
+        std::ostringstream fs;
+        fs << kPreamble;
+        for (uint32_t i = 0; i < kMaxExpressionComplexity + 10; ++i)
+        {
+            fs << "+ vec4(" << i << ")";
+        }
+        fs << "; }";
+        // The IR has no limitations with expression complexity.
+        if (getEGLWindow()->isFeatureEnabled(Feature::UseIr))
+        {
+            validateSuccess(GL_FRAGMENT_SHADER, fs.str().c_str());
+        }
+        else
+        {
+            validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "Expression too complex");
+        }
+    }
+}
+
+// Validate that too-complex binary expressions fail to compile in WebGL, even inside an unused
+// function.
+TEST_P(WebGL2GLSLValidationTest, ManyChainedBinaryExpressionsInUnusedFunction)
+{
+    constexpr char kPreamble[] = R"(precision mediump float;
+            uniform vec4 u_color;
+            void main()
+            {
+               gl_FragColor = u_color;
+            }
+            vec4 someFunction() {
+              return u_color)";
+
+    {
+        std::ostringstream fs;
+        fs << kPreamble;
+        for (uint32_t i = 0; i < kMaxExpressionComplexity - 10; ++i)
+        {
+            fs << "+ vec4(" << i << ")";
+        }
+        fs << "; }";
+        validateSuccess(GL_FRAGMENT_SHADER, fs.str().c_str());
+    }
+
+    {
+        std::ostringstream fs;
+        fs << kPreamble;
+        for (uint32_t i = 0; i < kMaxExpressionComplexity + 10; ++i)
+        {
+            fs << "+ vec4(" << i << ")";
+        }
+        fs << "; }";
+        // The IR has no limitations with expression complexity.
+        if (getEGLWindow()->isFeatureEnabled(Feature::UseIr))
+        {
+            validateSuccess(GL_FRAGMENT_SHADER, fs.str().c_str());
+        }
+        else
+        {
+            validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "Expression too complex");
+        }
+    }
+}
+
+// Validate that too-complex binary expressions fail to compile in WebGL, specifically nested inside
+// a switch statement.
+TEST_P(WebGL2GLSLValidationTest, ManyChainedBinaryExpressionsInSwitch)
+{
+    constexpr char kPreamble[]  = R"(#version 300 es
+            uniform int u;
+
+            void main()
+            {
+                int x;
+                switch (u)
+                {
+                    case 0:
+                        x = x)";
+    constexpr char kPostamble[] = R"(;
+                }  // switch (u)
+            })";
+    {
+        std::ostringstream fs;
+        fs << kPreamble;
+        for (uint32_t i = 0; i < kMaxExpressionComplexity + 1; ++i)
+        {
+            fs << " + x";
+        }
+        fs << kPostamble;
+        // The IR has no limitations with expression complexity.
+        if (getEGLWindow()->isFeatureEnabled(Feature::UseIr))
+        {
+            validateSuccess(GL_FRAGMENT_SHADER, fs.str().c_str());
+        }
+        else
+        {
+            validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "Expression too complex");
+        }
+    }
+
+    // Same test but way over the limit.
+    {
+        std::ostringstream fs;
+        fs << kPreamble;
+        for (uint32_t i = 0; i < 20 * kMaxExpressionComplexity; ++i)
+        {
+            fs << " + x";
+        }
+        fs << kPostamble;
+        // The IR has no limitations with expression complexity.
+        if (getEGLWindow()->isFeatureEnabled(Feature::UseIr))
+        {
+            validateSuccess(GL_FRAGMENT_SHADER, fs.str().c_str());
+        }
+        else
+        {
+            validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "Expression too complex");
+        }
+    }
+}
+
+// Validate that too-complex binary expressions fail to compile in WebGL, specifically inside a
+// global initializer.
+TEST_P(WebGL2GLSLValidationTest, NestingInsideGlobalInitializer)
+{
+    constexpr char kPreamble[]  = R"(uniform int u;
+            int x = u)";
+    constexpr char kPostamble[] = R"(;
+            void main()
+            {
+                gl_FragColor = vec4(0.0);
+            })";
+    {
+        std::ostringstream fs;
+        fs << kPreamble;
+        for (uint32_t i = 0; i < kMaxExpressionComplexity + 1; ++i)
+        {
+            fs << " + u";
+        }
+        fs << kPostamble;
+        validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "Expression too complex");
+    }
+
+    // Same test but way over the limit.
+    {
+        std::ostringstream fs;
+        fs << kPreamble;
+        for (uint32_t i = 0; i < 20 * kMaxExpressionComplexity; ++i)
+        {
+            fs << " + u";
+        }
+        fs << kPostamble;
+        validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "Expression too complex");
+    }
+}
+
+// Validate that too-deep call chains fail to compile in WebGL.
+TEST_P(WebGL2GLSLValidationTest, TooDeepCallStack)
+{
+    std::ostringstream preamble;
+    preamble << R"(precision mediump float;
+        uniform vec4 u_color;
+        vec4 function0()  {
+          return u_color;
+        }
+    )";
+    for (uint32_t i = 0; i < kMaxCallStackDepth - 10; ++i)
+    {
+        preamble << "vec4 function" << (i + 1) << "() {\n"
+                 << "  return function" << i << "();\n"
+                 << "}\n";
+    }
+
+    {
+        std::ostringstream fs;
+        fs << preamble.str();
+        fs << R"(void main() {
+    gl_FragColor = function)"
+           << (kMaxCallStackDepth - 10) << R"(();
+})";
+        validateSuccess(GL_FRAGMENT_SHADER, fs.str().c_str());
+    }
+
+    // Same test, but the call chain is unused.
+    {
+        std::ostringstream fs;
+        fs << preamble.str();
+        fs << R"(void main() {
+    gl_FragColor = vec4(0,0,0,0);
+})";
+        validateSuccess(GL_FRAGMENT_SHADER, fs.str().c_str());
+    }
+
+    // Add more to the call chain, so the depth goes over the limit
+    for (uint32_t i = kMaxCallStackDepth - 10; i < kMaxCallStackDepth + 10; ++i)
+    {
+        preamble << "vec4 function" << (i + 1) << "() {\n"
+                 << "  return function" << i << "();\n"
+                 << "}\n";
+    }
+
+    {
+        std::ostringstream fs;
+        fs << preamble.str();
+        fs << R"(void main() {
+    gl_FragColor = function)"
+           << (kMaxCallStackDepth + 10) << R"(();
+})";
+        validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "Call stack too deep");
+    }
+
+    // Same test, but the call chain is unused.
+    {
+        std::ostringstream fs;
+        fs << preamble.str();
+        fs << R"(void main() {
+    gl_FragColor = vec4(0,0,0,0);
+})";
+        validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "Call stack too deep");
+    }
+}
+
+// Validate that too many function arguments fail to compile in WebGL.
+TEST_P(WebGL2GLSLValidationTest, TooManyFunctionParameters)
+{
+    constexpr char kPreamble[]  = R"(precision mediump float;
+        float foo()";
+    constexpr char kPostamble[] = R"() { return f0; }
+void main() { gl_FragColor = vec4(0, 0, 0, 0); })";
+
+    {
+        std::ostringstream fs;
+        fs << kPreamble;
+        for (uint32_t i = 0; i < kMaxFunctionParameters - 10; ++i)
+        {
+            if (i != 0)
+            {
+                fs << ", ";
+            }
+            fs << "float f" << i;
+        }
+        fs << kPostamble;
+        validateSuccess(GL_FRAGMENT_SHADER, fs.str().c_str());
+    }
+
+    {
+        std::ostringstream fs;
+        fs << kPreamble;
+        for (uint32_t i = 0; i < kMaxFunctionParameters + 10; ++i)
+        {
+            if (i != 0)
+            {
+                fs << ", ";
+            }
+            fs << "float f" << i;
+        }
+        fs << kPostamble;
+        validateError(GL_FRAGMENT_SHADER, fs.str().c_str(), "Function has too many parameters");
+    }
+}
+
+// Test that recursion fails compilation
+TEST_P(GLSLValidationTest, Recursion)
+{
+    {
+        constexpr char kFS[] =
+            R"(precision mediump float;
+        uniform vec4 u_color;
+        vec4 someFunc()  {
+            return someFunc();
+        }
+
+        void main() {
+            gl_FragColor = u_color * someFunc();
+        }
+    )";
+        validateError(GL_FRAGMENT_SHADER, kFS,
+                      "Recursive function call in the following call chain: someFunc");
+    }
+
+    {
+        constexpr char kFS[] =
+            R"(precision mediump float;
+        uniform vec4 u_color;
+
+        vec4 someFunc();
+
+        vec4 someFunc1()  {
+            return someFunc();
+        }
+
+        vec4 someFunc()  {
+            return someFunc1();
+        }
+
+        void main() {
+            gl_FragColor = u_color * someFunc();
+        }
+    )";
+        validateError(GL_FRAGMENT_SHADER, kFS,
+                      "Recursive function call in the following call chain: someFunc1 <- someFunc "
+                      "<- someFunc1");
+    }
+
+    {
+        constexpr char kFS[] =
+            R"(precision mediump float;
+        uniform vec4 u_color;
+        vec4 someFunc()  {
+            if (u_color.x > 0.5) {
+                return someFunc();
+            } else {
+                return vec4(1);
+            }
+        }
+
+        void main() {
+            gl_FragColor = someFunc();
+        }
+    )";
+        validateError(GL_FRAGMENT_SHADER, kFS,
+                      "Recursive function call in the following call chain: someFunc");
+    }
+
+    {
+        constexpr char kFS[] =
+            R"(precision mediump float;
+        uniform vec4 u_color;
+        vec4 someFunc()  {
+            if (u_color.x > 0.5) {
+                return vec4(1);
+            } else {
+                return someFunc();
+            }
+        }
+
+        void main() {
+            gl_FragColor = someFunc();
+        }
+    )";
+        validateError(GL_FRAGMENT_SHADER, kFS,
+                      "Recursive function call in the following call chain: someFunc");
+    }
+
+    {
+        constexpr char kFS[] =
+            R"(precision mediump float;
+        uniform vec4 u_color;
+        vec4 someFunc()  {
+            return (u_color.x > 0.5) ? vec4(1) : someFunc();
+        }
+
+        void main() {
+            gl_FragColor = someFunc();
+        }
+    )";
+        validateError(GL_FRAGMENT_SHADER, kFS,
+                      "Recursive function call in the following call chain: someFunc");
+    }
+
+    {
+        constexpr char kFS[] =
+            R"(precision mediump float;
+        uniform vec4 u_color;
+        vec4 someFunc()  {
+            return (u_color.x > 0.5) ? someFunc() : vec4(1);
+        }
+
+        void main() {
+            gl_FragColor = someFunc();
+        }
+    )";
+        validateError(GL_FRAGMENT_SHADER, kFS,
+                      "Recursive function call in the following call chain: someFunc");
+    }
+
+    {
+        constexpr char kFS[] =
+            R"(precision mediump float;
+        uniform vec4 u_color;
+        vec4 someFunc()  {
+            return someFunc();
+        }
+
+        void main() {
+            gl_FragColor = u_color;
+        }
+    )";
+        validateError(GL_FRAGMENT_SHADER, kFS,
+                      "Recursive function call in the following call chain: someFunc");
+    }
+
+    {
+        constexpr char kFS[] =
+            R"(precision mediump float;
+        uniform vec4 u_color;
+
+        vec4 function2() {
+            return u_color;
+        }
+
+        vec4 function1() {
+            vec4 a = function2();
+            vec4 b = function1();
+            return a + b;
+        }
+
+        void main() {
+            gl_FragColor = function1();
+        }
+    )";
+        validateError(GL_FRAGMENT_SHADER, kFS,
+                      "Recursive function call in the following call chain: function1");
+    }
+
+    {
+        constexpr char kFS[] =
+            R"(precision mediump float;
+        uniform vec4 u_color;
+
+        vec4 function1();
+
+        vec4 function3() {
+            return function1();
+        }
+
+        vec4 function2() {
+            return function3();
+        }
+
+        vec4 function1() {
+            return function2();
+        }
+
+        void main() {
+            gl_FragColor = function1();
+        }
+    )";
+        validateError(GL_FRAGMENT_SHADER, kFS,
+                      "Recursive function call in the following call chain: function3 <- function2 "
+                      "<- function1 <- function3");
+    }
+}
+
+// Test that in WebGL1, extensions can be enabled late in the shader.
+TEST_P(WebGLGLSLValidationTest, LateEnableExtension)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_frag_depth"));
+    constexpr char kFS[] = R"(precision mediump float;
+void main()
+{
+#extension GL_EXT_frag_depth : enable
+    gl_FragDepthEXT = 1.0;
+})";
+    validateSuccess(GL_FRAGMENT_SHADER, kFS);
+}
+
+class WebGLGLSLValidationExtensionDisableTest : public WebGLGLSLValidationTest
+{};
+
+// Test that in WebGL1, even though an extension can be enabled late in the shader, it cannot be
+// disabled late.
+TEST_P(WebGLGLSLValidationExtensionDisableTest, LateDisableExtension)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_frag_depth"));
+    {
+        constexpr char kFS[] = R"(#extension GL_EXT_frag_depth : enable
+precision mediump float;
+void main()
+{
+    gl_FragDepthEXT = 1.0;
+#extension GL_EXT_frag_depth : disable
+})";
+        if (getEGLWindow()->isFeatureEnabled(Feature::AllowExtensionDisableAfterNonPpTokens))
+        {
+            validateSuccess(GL_FRAGMENT_SHADER, kFS);
+        }
+        else
+        {
+            validateError(GL_FRAGMENT_SHADER, kFS,
+                          "extension directive with disable behavior must occur before any "
+                          "non-preprocessor tokens");
+        }
+    }
+
+    {
+        constexpr char kFS[] = R"(#extension GL_EXT_frag_depth : enable
+precision mediump float;
+void main()
+{
+    gl_FragDepthEXT = 1.0;
+}
+#extension all : disable
+)";
+        if (getEGLWindow()->isFeatureEnabled(Feature::AllowExtensionDisableAfterNonPpTokens))
+        {
+            validateSuccess(GL_FRAGMENT_SHADER, kFS);
+        }
+        else
+        {
+            validateError(GL_FRAGMENT_SHADER, kFS,
+                          "extension directive with disable behavior must occur before any "
+                          "non-preprocessor tokens");
+        }
+    }
 }
 
 class GLSLValidationClipDistanceTest_ES3 : public GLSLValidationTest_ES3
@@ -6100,7 +7531,7 @@ uniform int gl_BaseVertex;
 void main() {
    gl_Position = vec4(float(gl_BaseVertex), 0.0, 0.0, 1.0);
 })";
-        validateError(GL_VERTEX_SHADER, kVS, "'gl_' : reserved built-in name");
+        validateError(GL_VERTEX_SHADER, kVS, "'gl_BaseVertex' : reserved built-in name");
     }
 
     {
@@ -6109,7 +7540,7 @@ uniform int gl_BaseInstance;
 void main() {
    gl_Position = vec4(float(gl_BaseInstance), 0.0, 0.0, 1.0);
 })";
-        validateError(GL_VERTEX_SHADER, kVS, "'gl_' : reserved built-in name");
+        validateError(GL_VERTEX_SHADER, kVS, "'gl_BaseInstance' : reserved built-in name");
     }
 
     {
@@ -6118,7 +7549,7 @@ void main() {
    int gl_BaseVertex = 0;
    gl_Position = vec4(float(gl_BaseVertex), 0.0, 0.0, 1.0);
 })";
-        validateError(GL_VERTEX_SHADER, kVS, "'gl_' : reserved built-in name");
+        validateError(GL_VERTEX_SHADER, kVS, "'gl_BaseVertex' : reserved built-in name");
     }
 
     {
@@ -6127,8 +7558,10 @@ void main() {
    int gl_BaseInstance = 0;
    gl_Position = vec4(float(gl_BaseInstance), 0.0, 0.0, 1.0);
 })";
-        validateError(GL_VERTEX_SHADER, kVS, "'gl_' : reserved built-in name");
+        validateError(GL_VERTEX_SHADER, kVS, "'gl_BaseInstance' : reserved built-in name");
     }
+
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_ANGLE_base_vertex_base_instance_shader_builtin"));
 
     {
         // Check that it is not permitted with the extension
@@ -6138,7 +7571,7 @@ uniform int gl_BaseVertex;
 void main() {
    gl_Position = vec4(float(gl_BaseVertex), 0.0, 0.0, 1.0);
 })";
-        validateError(GL_VERTEX_SHADER, kVS, "'gl_' : reserved built-in name");
+        validateError(GL_VERTEX_SHADER, kVS, "'gl_BaseVertex' : reserved built-in name");
     }
 
     {
@@ -6148,7 +7581,7 @@ uniform int gl_BaseInstance;
 void main() {
    gl_Position = vec4(float(gl_BaseInstance), 0.0, 0.0, 1.0);
 })";
-        validateError(GL_VERTEX_SHADER, kVS, "'gl_' : reserved built-in name");
+        validateError(GL_VERTEX_SHADER, kVS, "'gl_BaseInstance' : reserved built-in name");
     }
 
     {
@@ -6158,7 +7591,7 @@ void main() {
    int gl_BaseVertex = 0;
    gl_Position = vec4(float(gl_BaseVertex), 0.0, 0.0, 1.0);
 })";
-        validateError(GL_VERTEX_SHADER, kVS, "'gl_' : reserved built-in name");
+        validateError(GL_VERTEX_SHADER, kVS, "'gl_BaseVertex' : reserved built-in name");
     }
 
     {
@@ -6168,7 +7601,7 @@ void main() {
    int gl_BaseInstance = 0;
    gl_Position = vec4(float(gl_BaseInstance), 0.0, 0.0, 1.0);
 })";
-        validateError(GL_VERTEX_SHADER, kVS, "'gl_' : reserved built-in name");
+        validateError(GL_VERTEX_SHADER, kVS, "'gl_BaseInstance' : reserved built-in name");
     }
 }
 
@@ -6184,7 +7617,7 @@ TEST_P(GLSLValidationDrawIDTest, DisallowsUserDefinedGLDrawID)
 void main() {
    gl_Position = vec4(float(gl_DrawID), 0.0, 0.0, 1.0);
 })";
-        validateError(GL_VERTEX_SHADER, kVS, "'gl_' : reserved built-in name");
+        validateError(GL_VERTEX_SHADER, kVS, "'gl_DrawID' : reserved built-in name");
     }
 
     {
@@ -6192,8 +7625,10 @@ void main() {
    int gl_DrawID = 0;
    gl_Position = vec4(float(gl_DrawID), 0.0, 0.0, 1.0);
 })";
-        validateError(GL_VERTEX_SHADER, kVS, "'gl_' : reserved built-in name");
+        validateError(GL_VERTEX_SHADER, kVS, "'gl_DrawID' : reserved built-in name");
     }
+
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_ANGLE_multi_draw"));
 
     {
         // Check that it is not permitted with the extension
@@ -6202,7 +7637,7 @@ uniform int gl_DrawID;
 void main() {
    gl_Position = vec4(float(gl_DrawID), 0.0, 0.0, 1.0);
 })";
-        validateError(GL_VERTEX_SHADER, kVS, "'gl_' : reserved built-in name");
+        validateError(GL_VERTEX_SHADER, kVS, "'gl_DrawID' : reserved built-in name");
     }
 
     {
@@ -6211,7 +7646,7 @@ void main() {
    int gl_DrawID = 0;
    gl_Position = vec4(float(gl_DrawID), 0.0, 0.0, 1.0);
 })";
-        validateError(GL_VERTEX_SHADER, kVS, "'gl_' : reserved built-in name");
+        validateError(GL_VERTEX_SHADER, kVS, "'gl_DrawID' : reserved built-in name");
     }
 }
 
@@ -6677,7 +8112,7 @@ void main (void)
     testCompileNeedsExtensionDirective(
         GL_FRAGMENT_SHADER, kFS100Coherent, nullptr, "GL_EXT_shader_framebuffer_fetch", hasCoherent,
         hasCoherent ? hasNonCoherent ? "extension is disabled" : "extension is not supported"
-                    : "'gl_' : reserved built-in name",
+                    : "'gl_LastFragData' : reserved built-in name",
         hasCoherent ? hasNonCoherent ? "extension is disabled" : "extension is not supported"
                     : "extension is not supported");
     testCompileNeedsExtensionDirectiveGenericKeyword(
@@ -7336,6 +8771,9 @@ ANGLE_INSTANTIATE_TEST_ES2(WebGLGLSLValidationTest);
 
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(WebGL2GLSLValidationTest);
 ANGLE_INSTANTIATE_TEST_ES3(WebGL2GLSLValidationTest);
+
+ANGLE_INSTANTIATE_TEST_ES2_AND(WebGLGLSLValidationExtensionDisableTest,
+                               ES2_OPENGL().enable(Feature::AllowExtensionDisableAfterNonPpTokens));
 
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(GLSLValidationClipDistanceTest_ES3);
 ANGLE_INSTANTIATE_TEST_ES3_AND(GLSLValidationClipDistanceTest_ES3,

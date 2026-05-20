@@ -30,8 +30,8 @@
 #include "ContextDestructionObserverInlines.h"
 #include "Document.h"
 #include "EventNames.h"
-#include "EventTargetInlines.h"
 #include "ExceptionOr.h"
+#include "JSDOMGlobalObject.h"
 #include "Logging.h"
 #include "MessageEvent.h"
 #include "MessagePortChannelProvider.h"
@@ -40,6 +40,7 @@
 #include "WebCoreOpaqueRoot.h"
 #include "WorkerGlobalScope.h"
 #include "WorkerThread.h"
+#include <JavaScriptCore/TopExceptionScope.h>
 #include <wtf/CompletionHandler.h>
 #include <wtf/Lock.h>
 #include <wtf/Scope.h>
@@ -153,7 +154,7 @@ ExceptionOr<void> MessagePort::postMessage(JSC::JSGlobalObject& globalObject, JS
     LOG(MessagePorts, "Attempting to post message to port %s (to be received by port %s)", m_identifier.logString().utf8().data(), m_remoteIdentifier.logString().utf8().data());
 
     Vector<Ref<MessagePort>> ports;
-    auto messageData = SerializedScriptValue::create(globalObject, messageValue, WTF::move(options.transfer), ports, SerializationForStorage::No, SerializationContext::WorkerPostMessage);
+    auto messageData = SerializedScriptValue::create(globalObject, messageValue, WTF::move(options.transfer), ports, SerializationForStorage::No);
     if (messageData.hasException())
         return messageData.releaseException();
 
@@ -216,7 +217,7 @@ void MessagePort::messageAvailable()
     if (!context || context->activeDOMObjectsAreSuspended())
         return;
 
-    context->processMessageWithMessagePortsSoon([pendingActivity = makePendingActivity(*this)] { });
+    context->processMessageForPortSoon(m_identifier, [pendingActivity = makePendingActivity(*this)] { });
 }
 
 void MessagePort::start()
@@ -230,7 +231,7 @@ void MessagePort::start()
         return;
 
     m_started = true;
-    protect(scriptExecutionContext())->processMessageWithMessagePortsSoon([pendingActivity = makePendingActivity(*this)] { });
+    protect(scriptExecutionContext())->processMessageForPortSoon(m_identifier, [pendingActivity = makePendingActivity(*this)] { });
 }
 
 void MessagePort::close()
@@ -287,7 +288,7 @@ void MessagePort::dispatchMessages()
 
             if (pendingActivity->object().m_messageHandler) {
                 ASSERT(message.transferredPorts.isEmpty());
-                pendingActivity->object().m_messageHandler(*JSC::jsCast<JSDOMGlobalObject*>(globalObject), message.message.releaseNonNull().get());
+                pendingActivity->object().m_messageHandler(*downcast<JSDOMGlobalObject>(globalObject), message.message.releaseNonNull().get());
                 continue;
             }
 

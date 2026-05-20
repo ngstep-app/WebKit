@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2025 Apple Inc. All rights reserved.
+ * Copyright (C) 2015-2026 Apple Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -229,6 +229,20 @@ static NSString * const WKMediaExitFullScreenItem = @"WKMediaExitFullScreenItem"
 
 @implementation WKMouseTrackingObserver {
     WeakPtr<WebKit::WebViewImpl> _impl;
+    BOOL _viewIsTopmostAtLastMouseLocation;
+}
+
+- (BOOL)updateViewIsTopmostAtMouseLocation:(NSEvent *)event
+{
+    CheckedPtr impl = _impl.get();
+    if (!impl)
+        return NO;
+
+    RetainPtr view = impl->view();
+    RetainPtr hitView = [[view window].contentView hitTest:[[view window].contentView.superview convertPoint:event.locationInWindow fromView:nil]];
+
+    _viewIsTopmostAtLastMouseLocation = [hitView isDescendantOf:view.get()];
+    return _viewIsTopmostAtLastMouseLocation;
 }
 
 - (instancetype)initWithViewImpl:(WebKit::WebViewImpl&)impl
@@ -240,19 +254,22 @@ static NSString * const WKMediaExitFullScreenItem = @"WKMediaExitFullScreenItem"
 
 - (void)mouseMoved:(NSEvent *)event
 {
-    if (CheckedPtr impl = _impl.get())
+    CheckedPtr impl = _impl.get();
+    if (impl && [self updateViewIsTopmostAtMouseLocation:event])
         impl->mouseMoved(event);
 }
 
 - (void)mouseEntered:(NSEvent *)event
 {
-    if (CheckedPtr impl = _impl.get())
+    CheckedPtr impl = _impl.get();
+    if (impl && [self updateViewIsTopmostAtMouseLocation:event])
         impl->mouseEntered(event);
 }
 
 - (void)mouseExited:(NSEvent *)event
 {
-    if (CheckedPtr impl = _impl.get())
+    CheckedPtr impl = _impl.get();
+    if (impl && _viewIsTopmostAtLastMouseLocation)
         impl->mouseExited(event);
 }
 
@@ -562,14 +579,14 @@ static void* keyValueObservingContext = &keyValueObservingContext;
 #if HAVE(SUPPORT_HDR_DISPLAY_APIS)
 - (void)_applicationShouldBeginSuppressingHDR:(NSNotification *)notification
 {
-    if (_impl)
-        _impl->applicationShouldSuppressHDR(true);
+    if (CheckedPtr impl = _impl.get())
+        impl->applicationShouldSuppressHDR(true);
 }
 
 - (void)_applicationShouldEndSuppressingHDR:(NSNotification *)notification
 {
-    if (_impl)
-        _impl->applicationShouldSuppressHDR(false);
+    if (CheckedPtr impl = _impl.get())
+        impl->applicationShouldSuppressHDR(false);
 }
 #endif // HAVE(SUPPORT_HDR_DISPLAY_APIS)
 
@@ -1475,6 +1492,10 @@ void WebViewImpl::handleProcessSwapOrExit()
 #if ENABLE(WRITING_TOOLS)
     [m_view.get() _clearWritingToolsPreservedNodes];
 #endif
+
+#if HAVE(APPKIT_GESTURES_SUPPORT)
+    [m_appKitGestureController reset];
+#endif
 }
 
 void WebViewImpl::processWillSwap()
@@ -2271,7 +2292,7 @@ void WebViewImpl::windowDidChangeScreen()
 
 void WebViewImpl::windowDidChangeOcclusionState()
 {
-    LOG(ActivityState, "WebViewImpl %p (page %llu) windowDidChangeOcclusionState", this, m_page->identifier().toUInt64());
+    RELEASE_LOG(ActivityState, "WebViewImpl %p (page %llu) windowDidChangeOcclusionState", this, m_page->identifier().toUInt64());
     m_page->activityStateDidChange(WebCore::ActivityState::IsVisible);
 }
 
@@ -2326,7 +2347,7 @@ bool WebViewImpl::acceptsFirstMouse(NSEvent *event)
         return false;
 
     auto previousEvent = setLastMouseDownEvent(event);
-    WebMouseEvent mouseEvent = WebEventFactory::createWebMouseEvent(event, m_lastPressureEvent.get(), m_view.get().get(), WebMouseEventInputSource::UserDriven);
+    WebMouseEvent mouseEvent = WebEventFactory::createWebMouseEvent(event, m_lastPressureEvent.get(), m_view.get().get(), WebEventInputSource::UserDriven);
     bool result = m_page->acceptsFirstMouse(event.eventNumber, mouseEvent);
     setLastMouseDownEvent(previousEvent.get());
     return result;
@@ -2355,7 +2376,7 @@ bool WebViewImpl::shouldDelayWindowOrderingForEvent(NSEvent *event)
     }
 
     auto previousEvent = setLastMouseDownEvent(event);
-    WebMouseEvent mouseEvent = WebEventFactory::createWebMouseEvent(event, m_lastPressureEvent.get(), m_view.get().get(), WebMouseEventInputSource::UserDriven);
+    WebMouseEvent mouseEvent = WebEventFactory::createWebMouseEvent(event, m_lastPressureEvent.get(), m_view.get().get(), WebEventInputSource::UserDriven);
     bool result = m_page->shouldDelayWindowOrderingForEvent(mouseEvent);
     setLastMouseDownEvent(previousEvent.get());
     return result;
@@ -2581,7 +2602,7 @@ void WebViewImpl::scheduleMouseDidMoveOverElement(NSEvent *flagsChangedEvent)
     RetainPtr fakeEvent = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:flagsChangedEvent.window.mouseLocationOutsideOfEventStream
         modifierFlags:flagsChangedEvent.modifierFlags timestamp:flagsChangedEvent.timestamp windowNumber:flagsChangedEvent.windowNumber
         context:nullptr eventNumber:0 clickCount:0 pressure:0];
-    NativeWebMouseEvent webEvent(fakeEvent.get(), m_lastPressureEvent.get(), m_view.get().get(), WebMouseEventInputSource::UserDriven);
+    NativeWebMouseEvent webEvent(fakeEvent.get(), m_lastPressureEvent.get(), m_view.get().get(), WebEventInputSource::UserDriven);
     m_page->dispatchMouseDidMoveOverElementAsynchronously(webEvent);
 }
 
@@ -2657,6 +2678,7 @@ void WebViewImpl::endDeferringViewInWindowChanges()
         flushPendingObscuredContentInsetChanges();
         m_page->activityStateDidChange(WebCore::ActivityState::IsInWindow);
         m_viewInWindowChangeWasDeferred = false;
+        m_page->webViewDidMoveToWindow();
     }
 }
 
@@ -2673,6 +2695,7 @@ void WebViewImpl::endDeferringViewInWindowChangesSync()
         flushPendingObscuredContentInsetChanges();
         m_page->activityStateDidChange(WebCore::ActivityState::IsInWindow);
         m_viewInWindowChangeWasDeferred = false;
+        m_page->webViewDidMoveToWindow();
     }
 }
 
@@ -2783,7 +2806,7 @@ void WebViewImpl::pressureChangeWithEvent(NSEvent *event)
     if (event.phase != NSEventPhaseChanged && event.phase != NSEventPhaseBegan && event.phase != NSEventPhaseEnded)
         return;
 
-    NativeWebMouseEvent webEvent(event, m_lastPressureEvent.get(), m_view.get().get(), WebMouseEventInputSource::UserDriven);
+    NativeWebMouseEvent webEvent(event, m_lastPressureEvent.get(), m_view.get().get(), WebEventInputSource::UserDriven);
     m_page->handleMouseEvent(webEvent);
 
     m_lastPressureEvent = event;
@@ -4568,7 +4591,11 @@ bool WebViewImpl::performDragOperation(id<NSDraggingInfo> draggingInfo)
     SandboxExtension::Handle sandboxExtensionHandle;
     Vector<SandboxExtension::Handle> sandboxExtensionForUpload;
 
-    if (![types containsObject:PasteboardTypes::WebArchivePboardType] && [types containsObject:WebCore::legacyFilesPromisePasteboardTypeSingleton()])
+    // https://bugs.webkit.org/show_bug.cgi?id=307601
+    bool hasWebArchive = [types containsObject:PasteboardTypes::WebArchivePboardType];
+    bool hasFilePromises = [types containsObject:WebCore::legacyFilesPromisePasteboardTypeSingleton()];
+    bool isDragFromSelf = dragData->flags().contains(WebCore::DragApplicationFlags::IsSource);
+    if (hasFilePromises && !(hasWebArchive && isDragFromSelf))
         return handleLegacyFilesPromisePasteboard(draggingInfo, WTF::move(dragData), page(), m_view.get());
 
     if ([types containsObject:WebCore::legacyFilenamesPasteboardTypeSingleton()])
@@ -4671,6 +4698,17 @@ NSDragOperation WebViewImpl::dragSourceOperationMask(NSDraggingSession *, NSDrag
 void WebViewImpl::draggingSessionEnded(NSDraggingSession *, NSPoint endPoint, NSDragOperation operation)
 {
     sendDragEndToPage(NSPointToCGPoint(endPoint), operation);
+#if HAVE(APPKIT_GESTURES_SUPPORT)
+    [appKitGestureController() clearGestureDragState];
+#endif
+}
+
+void WebViewImpl::cancelDrag()
+{
+    m_page->dragCancelled();
+#if HAVE(APPKIT_GESTURES_SUPPORT)
+    [appKitGestureController() clearGestureDragState];
+#endif
 }
 
 #endif // ENABLE(DRAG_SUPPORT)
@@ -4684,14 +4722,14 @@ void WebViewImpl::startDrag(const WebCore::DragItem& item, ShareableBitmap::Hand
 {
     auto dragImageAsBitmap = ShareableBitmap::create(WTF::move(dragImageHandle));
     if (!dragImageAsBitmap) {
-        m_page->dragCancelled();
+        cancelDrag();
         return;
     }
 
     RetainPtr dragCGImage = dragImageAsBitmap->createPlatformImage(DontCopyBackingStore);
     auto dragNSImage = adoptNS([[NSImage alloc] initWithCGImage:dragCGImage.get() size:dragImageAsBitmap->size()]);
 
-    WebCore::IntSize size([dragNSImage size]);
+    WebCore::FloatSize size { [dragNSImage size] };
     size.scale(1.0 / m_page->deviceScaleFactor());
     [dragNSImage setSize:size];
 
@@ -4701,22 +4739,33 @@ void WebViewImpl::startDrag(const WebCore::DragItem& item, ShareableBitmap::Hand
     if (RefPtr frame = WebFrameProxy::webFrame(item.rootFrameID)) {
         // FIXME: The `dragLocationInWindowCoordinates` is in window coordinates (equivalent to root view), but `convertPointToMainFrameCoordinates`
         // expects the input to be in content coordinates of the frame corresponding to the given frame ID.
-        m_page->convertPointToMainFrameCoordinates(item.dragLocationInWindowCoordinates, item.rootFrameID, [weakThis = WeakPtr { *this }, promisedAttachmentInfo = item.promisedAttachmentInfo, dragNSImage = WTF::move(dragNSImage), size, lastMouseDownEvent = m_lastMouseDownEvent, frameID, &sourceAction = item.sourceAction] (std::optional<FloatPoint> dragLocationInMainFrameCoordinates) mutable {
+        m_page->convertPointToMainFrameCoordinates(item.dragLocationInWindowCoordinates, item.rootFrameID, [weakThis = WeakPtr { *this }, promisedAttachmentInfo = item.promisedAttachmentInfo, dragNSImage = WTF::move(dragNSImage), size, lastMouseDownEvent = m_lastMouseDownEvent, frameID](std::optional<FloatPoint> dragLocationInMainFrameCoordinates) mutable {
+
+            BEGIN_BLOCK_OBJC_EXCEPTIONS
+
             CheckedPtr protectedThis = weakThis.get();
             if (!protectedThis || !dragLocationInMainFrameCoordinates)
                 return;
             RefPtr page = protectedThis->page();
             RetainPtr view = protectedThis->view();
 
+            // clientDragLocation is the bottom-left of the image, but setDraggingFrame: expects a top-left origin.
             auto clientDragLocation = IntPoint(dragLocationInMainFrameCoordinates.value());
+            auto draggingFrame = NSMakeRect(clientDragLocation.x(), clientDragLocation.y() - size.height(), size.width(), size.height());
 
-            bool isImageDrag = protectedThis->m_promisedImageDragData && sourceAction == WebCore::DragSourceAction::Image;
+            bool isImageDrag = protectedThis->m_promisedImageDragData.has_value();
             bool canUseFilePromiseForImageDrag = isImageDrag && !protectedThis->m_promisedImageDragData->imageUTI.isEmpty();
 
             RetainPtr pasteboard = [NSPasteboard pasteboardWithName:NSPasteboardNameDrag];
 
-            if (!lastMouseDownEvent) {
-                page->dragCancelled();
+#if HAVE(APPKIT_GESTURES_SUPPORT)
+            RetainPtr gestureController = protectedThis->appKitGestureController();
+            bool missingDragInitiator = !lastMouseDownEvent && ![gestureController activeDragGestureRecognizer];
+#else
+            bool missingDragInitiator = !lastMouseDownEvent;
+#endif
+            if (missingDragInitiator) {
+                protectedThis->cancelDrag();
                 return;
             }
 
@@ -4731,13 +4780,13 @@ void WebViewImpl::startDrag(const WebCore::DragItem& item, ShareableBitmap::Hand
             if (promisedAttachmentInfo) {
                 RefPtr attachment = page->attachmentForIdentifier(promisedAttachmentInfo.attachmentIdentifier);
                 if (!attachment) {
-                    page->dragCancelled();
+                    protectedThis->cancelDrag();
                     return;
                 }
 
                 RetainPtr utiType = attachment->utiType().createNSString();
                 if (![utiType length]) {
-                    page->dragCancelled();
+                    protectedThis->cancelDrag();
                     return;
                 }
 
@@ -4746,12 +4795,12 @@ void WebViewImpl::startDrag(const WebCore::DragItem& item, ShareableBitmap::Hand
                 RetainPtr context = adoptNS([[WKPromisedAttachmentContext alloc] initWithIdentifier:promisedAttachmentInfo.attachmentIdentifier.createNSString().get() fileName:fileName.get()]);
                 [provider setUserInfo:context.get()];
                 draggingItem = adoptNS([[NSDraggingItem alloc] initWithPasteboardWriter:provider.get()]);
-                [draggingItem setDraggingFrame:NSMakeRect(clientDragLocation.x(), clientDragLocation.y() - size.height(), size.width(), size.height()) contents:dragNSImage.get()];
+                [draggingItem setDraggingFrame:draggingFrame contents:dragNSImage];
             } else if (canUseFilePromiseForImageDrag) {
                 RetainPtr imageUTI = protectedThis->m_promisedImageDragData->imageUTI.createNSString();
                 RetainPtr provider = adoptNS([[NSFilePromiseProvider alloc] initWithFileType:imageUTI.get() delegate:(id<NSFilePromiseProviderDelegate>)view.get()]);
                 draggingItem = adoptNS([[NSDraggingItem alloc] initWithPasteboardWriter:provider.get()]);
-                [draggingItem setDraggingFrame:NSMakeRect(clientDragLocation.x(), clientDragLocation.y(), size.width(), size.height()) contents:dragNSImage.get()];
+                [draggingItem setDraggingFrame:draggingFrame contents:dragNSImage];
             } else {
                 protectedThis->clearPromisedImageDragData();
 
@@ -4766,9 +4815,21 @@ void WebViewImpl::startDrag(const WebCore::DragItem& item, ShareableBitmap::Hand
                 RetainPtr pasteboardItem = adoptNS([[NSPasteboardItem alloc] init]);
                 [pasteboardItem setData:[NSData data] forType:UTTypeData.identifier];
                 draggingItem = adoptNS([[NSDraggingItem alloc] initWithPasteboardWriter:pasteboardItem.get()]);
-                [draggingItem setDraggingFrame:NSMakeRect(clientDragLocation.x(), clientDragLocation.y(), size.width(), size.height()) contents:dragNSImage.get()];
+                [draggingItem setDraggingFrame:draggingFrame contents:dragNSImage];
             }
-            [view beginDraggingSessionWithItems:@[draggingItem.get()] event:lastMouseDownEvent.get() source:(id<NSDraggingSource>)view.get()];
+#if HAVE(APPKIT_GESTURES_SUPPORT)
+            if (RetainPtr gesture = [gestureController activeDragGestureRecognizer]) {
+                RetainPtr session = [view beginDraggingSessionWithItems:@[ draggingItem ] gesture:gesture source:static_cast<id<NSDraggingSource>>(view.get())];
+                [gestureController setGestureDraggingSession:session.get()];
+                if (!session) {
+                    protectedThis->cancelDrag();
+                    return;
+                }
+            } else
+#endif
+            {
+                [view beginDraggingSessionWithItems:@[ draggingItem ] event:lastMouseDownEvent source:static_cast<id<NSDraggingSource>>(view.get())];
+            }
 
             if (promisedAttachmentInfo) {
                 for (size_t index = 0; index < promisedAttachmentInfo.additionalTypesAndData.size(); ++index) {
@@ -4793,8 +4854,11 @@ void WebViewImpl::startDrag(const WebCore::DragItem& item, ShareableBitmap::Hand
                     if (page->sessionID().isEphemeral())
                         [pasteboard _setExpirationDate:[NSDate dateWithTimeIntervalSinceNow:pasteboardExpirationDelay.seconds()]];
                 }
+                [pasteboard setString:@"" forType:PasteboardTypes::WebDummyPboardType];
                 page->didStartDrag(frameID);
             }
+
+            END_BLOCK_OBJC_EXCEPTIONS
         });
     }
 }
@@ -5482,16 +5546,17 @@ Vector<WebCore::KeypressCommand> WebViewImpl::collectKeyboardLayoutCommandsForEv
     if ([event type] != NSEventTypeKeyDown)
         return { };
 
-    ASSERT(!m_collectedKeypressCommands);
-    m_collectedKeypressCommands = Vector<WebCore::KeypressCommand> { };
+    // Push a fresh queue at the FRONT of the deque so the synchronous interpretKeyEvents
+    // call below routes our doCommandBySelector:/insertText: callbacks into our queue,
+    // even if other (IM-driven) keys are also in flight at the back.
+    m_collectedKeypressCommands.prepend(Vector<WebCore::KeypressCommand> { });
 
     if (RetainPtr context = inputContext())
         [context handleEventByKeyboardLayout:event];
     else
         [m_view.get() interpretKeyEvents:@[event]];
 
-    auto commands = WTF::move(*m_collectedKeypressCommands);
-    m_collectedKeypressCommands = std::nullopt;
+    auto commands = m_collectedKeypressCommands.takeFirst();
 
     if (RetainPtr<NSMenu> menu = NSApp.mainMenu; event.modifierFlags & NSEventModifierFlagFunction
         && [menu respondsToSelector:@selector(_containsItemMatchingEvent:includingDisabledItems:)] && [menu _containsItemMatchingEvent:event includingDisabledItems:YES]) {
@@ -5513,18 +5578,43 @@ void WebViewImpl::interpretKeyEvent(NSEvent *event, void(^completionHandler)(BOO
 
 #if PLATFORM(MAC)
     if (m_page->editorState().inputMethodUsesCorrectKeyEventOrder) {
-        if (m_collectedKeypressCommands) {
+        // Keydowns flow through to the IM directly. Each gets its own queue at the BACK
+        // of the deque; the IM serializes its handleEventByInputMethod: processing on its
+        // main thread, so its setMarkedText:/insertText:/doCommandBySelector: callbacks
+        // arrive in dispatch order — the front of the deque is always the queue for the
+        // keydown the IM is currently processing. Concurrent keydowns reach the IM's XPC
+        // queue immediately, which avoids starving TCIM's runloop and triggering the
+        // Zhuyin Traditional stall in Mail (rdar://177042301).
+        //
+        // Keyups instead wait in m_interpretKeyEventHoldingTank until the in-flight
+        // keydown's IM completion has fired (and dispatched its keyboard event IPC).
+        // Each keydown completion releases one keyup from the tank front, preserving
+        // the strict keydown→keyup→keydown→keyup IPC ordering to the web process; the
+        // released keyup dispatches handleEventByInputMethod: directly (bypassing the
+        // tank-check) so it doesn't re-tank when other keydowns are still in flight.
+        if ([event type] == NSEventTypeKeyDown)
+            m_collectedKeypressCommands.append(Vector<WebCore::KeypressCommand> { });
+        else if (!m_collectedKeypressCommands.isEmpty()) {
             m_interpretKeyEventHoldingTank.append([weakThis = WeakPtr { *this }, capturedEvent = retainPtr(event), capturedBlock = makeBlockPtr(completionHandler)] {
                 CheckedPtr checkedThis = weakThis.get();
-                if (!checkedThis)
+                if (!checkedThis) {
                     capturedBlock(NO, { });
-                else
-                    checkedThis->interpretKeyEvent(capturedEvent.get(), capturedBlock.get());
+                    return;
+                }
+                LOG(TextInput, "-> handleEventByInputMethod:%p %@ (released keyup)", capturedEvent.get(), capturedEvent.get());
+                RetainPtr inputContext { checkedThis->inputContext() };
+                [inputContext handleEventByInputMethod:capturedEvent completionHandler:[weakThis, capturedEvent, capturedBlock](BOOL handled) mutable {
+                    if (!weakThis.get()) {
+                        capturedBlock(NO, { });
+                        return;
+                    }
+                    // Released keyups don't take from the deque or produce commands; they
+                    // just need their keyboard-event IPC dispatched.
+                    capturedBlock(handled, { });
+                }];
             });
             return;
         }
-
-        m_collectedKeypressCommands = Vector<WebCore::KeypressCommand> { };
     }
 #endif
 
@@ -5539,40 +5629,50 @@ void WebViewImpl::interpretKeyEvent(NSEvent *event, void(^completionHandler)(BOO
 
         Vector<WebCore::KeypressCommand> commands;
 #if PLATFORM(MAC)
-        if (checkedThis->m_page->editorState().inputMethodUsesCorrectKeyEventOrder) {
-            commands = WTF::move(*checkedThis->m_collectedKeypressCommands);
-            checkedThis->m_collectedKeypressCommands = std::nullopt;
+        if (checkedThis->m_page->editorState().inputMethodUsesCorrectKeyEventOrder && [capturedEvent type] == NSEventTypeKeyDown) {
+            ASSERT(!checkedThis->m_collectedKeypressCommands.isEmpty());
+            commands = checkedThis->m_collectedKeypressCommands.takeFirst();
             checkedThis->m_stagedMarkedRange = std::nullopt;
         }
 #endif
 
         bool hasInsertText = false;
+        bool hasOnlyInsertText = !commands.isEmpty();
         for (auto& command : commands) {
             if (command.commandName == "insertText:"_s)
                 hasInsertText = true;
+            else
+                hasOnlyInsertText = false;
         }
 
-        if (hasInsertText)
+        // If the input method only produced insertText: commands (no setMarkedText:, no other
+        // commands) AND there is no existing composition, this is a modeless insertion — e.g.
+        // Simple Telex or Korean Hangul typing a character that commits inline. Route it through
+        // the keypress flow (handled=NO) so the keydown reports the real keyCode, a keypress
+        // fires, and executeKeypressCommandsInternal runs the insertText: during the Char phase
+        // with underlyingEvent=keypress. Composition activity (setMarkedText:), and insertText:
+        // that commits an existing composition (e.g. Japanese Enter on a marked candidate), keep
+        // handled=YES so the keydown reports keyCode 229 and google.com's keyCode==13 listener
+        // doesn't treat it as a real Enter.
+        if (handled && hasOnlyInsertText && !checkedThis->m_page->editorState().hasComposition)
             handled = NO;
 
         LOG(TextInput, "... handleEventByInputMethod%s handled", handled ? "" : " not");
         if (handled) {
             capturedBlock(YES, WTF::move(commands));
-            auto holdingTank = WTF::move(checkedThis->m_interpretKeyEventHoldingTank);
-            for (auto& function : holdingTank)
-                function();
+            // Release the next held keyup (if any) so it follows this keydown's IPC,
+            // preserving sequential keydown→keyup ordering to the web process.
+            if ([capturedEvent type] == NSEventTypeKeyDown && !checkedThis->m_interpretKeyEventHoldingTank.isEmpty())
+                checkedThis->m_interpretKeyEventHoldingTank.takeFirst()();
             return;
         }
 
-        auto additionalCommands = checkedThis->collectKeyboardLayoutCommandsForEvent(capturedEvent.get());
-        commands.appendVector(additionalCommands);
+        auto additionalCommands = checkedThis->collectKeyboardLayoutCommandsForEvent(capturedEvent);
+        if (!hasInsertText)
+            commands.appendVector(additionalCommands);
         capturedBlock(NO, commands);
-#if PLATFORM(MAC)
-        ASSERT(checkedThis->m_page->editorState().inputMethodUsesCorrectKeyEventOrder || checkedThis->m_interpretKeyEventHoldingTank.isEmpty());
-#endif
-        auto holdingTank = WTF::move(checkedThis->m_interpretKeyEventHoldingTank);
-        for (auto& function : holdingTank)
-            function();
+        if ([capturedEvent type] == NSEventTypeKeyDown && !checkedThis->m_interpretKeyEventHoldingTank.isEmpty())
+            checkedThis->m_interpretKeyEventHoldingTank.takeFirst()();
     }];
 }
 
@@ -5580,9 +5680,9 @@ void WebViewImpl::doCommandBySelector(SEL selector)
 {
     LOG(TextInput, "doCommandBySelector:\"%s\"", sel_getName(selector));
 
-    if (m_collectedKeypressCommands) {
+    if (!m_collectedKeypressCommands.isEmpty()) {
         WebCore::KeypressCommand command(NSStringFromSelector(selector));
-        m_collectedKeypressCommands->append(command);
+        m_collectedKeypressCommands.first().append(command);
         LOG(TextInput, "...stored");
         m_page->registerKeypressCommandName(command.commandName);
     } else {
@@ -5634,10 +5734,15 @@ void WebViewImpl::insertText(id string, NSRange replacementRange)
     // - If it's from an input method, then we should insert the text now.
     // - If it's sent outside of keyboard event processing (e.g. from Character Viewer, or when confirming an inline input area with a mouse),
     // then we also execute it immediately, as there will be no other chance.
-    if (m_collectedKeypressCommands && !m_isTextInsertionReplacingSoftSpace) {
-        ASSERT(replacementRange.location == NSNotFound);
-        WebCore::KeypressCommand command("insertText:"_s, text.get());
-        m_collectedKeypressCommands->append(command);
+    if (!m_collectedKeypressCommands.isEmpty() && !m_isTextInsertionReplacingSoftSpace) {
+        // Modeless input methods (Vietnamese Simple Telex, Korean Hangul) call insertText: with a
+        // replacementRange during their handleEventByInputMethod: callback to commit a previously
+        // inserted character into a longer sequence (e.g. replace 'v' with 'vi'). Queue it with
+        // the replacement range preserved so executeKeypressCommandsInternal can replay it during
+        // the keydown default handler, after keydown has fired but before composition/input —
+        // matching the event ordering 297270@main set up for plain insertText:.
+        WebCore::KeypressCommand command("insertText:"_s, text.get(), { }, { }, { }, EditingRange { replacementRange }.toCharacterRange());
+        m_collectedKeypressCommands.first().append(command);
         LOG(TextInput, "...stored");
         m_page->registerKeypressCommandName(command.commandName);
         return;
@@ -5663,7 +5768,32 @@ void WebViewImpl::selectedRangeWithCompletionHandler(void(^completionHandlerPtr)
     auto completionHandler = adoptNS([completionHandlerPtr copy]);
 
     LOG(TextInput, "selectedRange");
-    m_page->getSelectedRangeAsync([completionHandler, stagedSelectedRange = m_stagedMarkedRange](const EditingRange& editingRangeResult, const EditingRange& compositionRange) {
+
+    // When the IME calls insertText: during its handleEventByInputMethod: callback and then polls
+    // selectedRange to verify, the queued insertText: hasn't reached the web process yet, so the
+    // cursor appears not to have advanced. Modeless input methods (Vietnamese Simple Telex,
+    // Korean Hangul) interpret that stale cursor as "my insertion didn't stick" and fall back to
+    // setMarkedText: for the rest of the session. Surface the cumulative insertText: advance from
+    // the queue so the IME observes the cursor it expects, while leaving the actual execution
+    // (and 310826's event ordering) untouched. Only applies when every queued command is
+    // insertText:; if setMarkedText: is in the mix, the IME is already in composition mode and
+    // the unstaged selectedRange is the right answer.
+    size_t stagedInsertLength = 0;
+    if (!m_collectedKeypressCommands.isEmpty() && !m_collectedKeypressCommands.first().isEmpty()) {
+        bool onlyInsertText = true;
+        size_t total = 0;
+        for (auto& command : m_collectedKeypressCommands.first()) {
+            if (command.commandName != "insertText:"_s) {
+                onlyInsertText = false;
+                break;
+            }
+            total += command.text.length();
+        }
+        if (onlyInsertText)
+            stagedInsertLength = total;
+    }
+
+    m_page->getSelectedRangeAsync([completionHandler, stagedSelectedRange = m_stagedMarkedRange, stagedInsertLength](const EditingRange& editingRangeResult, const EditingRange& compositionRange) {
         void (^completionHandlerBlock)(NSRange) = (void (^)(NSRange))completionHandler.get();
 
         if (stagedSelectedRange) {
@@ -5672,6 +5802,10 @@ void WebViewImpl::selectedRangeWithCompletionHandler(void(^completionHandlerPtr)
         }
 
         NSRange result = editingRangeResult;
+        if (stagedInsertLength && result.location != NSNotFound) {
+            result.location += stagedInsertLength;
+            result.length = 0;
+        }
         if (result.location == NSNotFound)
             LOG(TextInput, "    -> selectedRange returned (NSNotFound, %zu)", result.length);
         else
@@ -5971,10 +6105,10 @@ void WebViewImpl::setMarkedText(id string, NSRange selectedRange, NSRange replac
     }
 
 #if PLATFORM(MAC)
-    if (m_page->editorState().inputMethodUsesCorrectKeyEventOrder && m_collectedKeypressCommands) {
+    if (m_page->editorState().inputMethodUsesCorrectKeyEventOrder && !m_collectedKeypressCommands.isEmpty()) {
         WebCore::KeypressCommand command("setMarkedText:"_s, text.get(), WTF::move(underlines), WTF::move(highlights),
             EditingRange { selectedRange }.toCharacterRange(), EditingRange { replacementRange }.toCharacterRange());
-        m_collectedKeypressCommands->append(command);
+        m_collectedKeypressCommands.first().append(command);
         m_stagedMarkedRange = selectedRange;
         LOG(TextInput, "...stored");
         m_page->registerKeypressCommandName(command.commandName);
@@ -6250,7 +6384,7 @@ static TextStream& operator<<(TextStream& ts, NSEventType eventType)
 }
 #endif
 
-void WebViewImpl::nativeMouseEventHandler(NSEvent *event, WebMouseEventInputSource inputSource)
+void WebViewImpl::nativeMouseEventHandler(NSEvent *event, WebEventInputSource inputSource, WebCore::PlatformMouseEvent::CanInitiateDrag canInitiateDrag)
 {
     if (m_ignoresNonWheelEvents) {
         RELEASE_LOG(MouseHandling, "[pageProxyID=%lld] WebViewImpl::nativeMouseEventHandler: ignored event", m_page->identifier().toUInt64());
@@ -6260,23 +6394,23 @@ void WebViewImpl::nativeMouseEventHandler(NSEvent *event, WebMouseEventInputSour
     if (RetainPtr context = [m_view.get() inputContext]) {
         WeakPtr weakThis { *this };
         RetainPtr<NSEvent> retainedEvent = event;
-        [context handleEvent:event completionHandler:[weakThis, retainedEvent, inputSource] (BOOL handled) {
+        [context handleEvent:event completionHandler:[weakThis, retainedEvent, inputSource, canInitiateDrag] (BOOL handled) {
             if (!weakThis)
                 return;
             if (handled)
                 LOG_WITH_STREAM(TextInput, stream << "Event " << [retainedEvent type] << " was handled by text input context");
             else {
-                NativeWebMouseEvent webEvent(retainedEvent.get(), weakThis->m_lastPressureEvent.get(), weakThis->m_view.getAutoreleased(), inputSource);
+                NativeWebMouseEvent webEvent(retainedEvent.get(), weakThis->m_lastPressureEvent.get(), weakThis->m_view.getAutoreleased(), inputSource, canInitiateDrag);
                 weakThis->m_page->handleMouseEvent(webEvent);
             }
         }];
         return;
     }
-    NativeWebMouseEvent webEvent(event, m_lastPressureEvent.get(), m_view.get().get(), inputSource);
+    NativeWebMouseEvent webEvent(event, m_lastPressureEvent.get(), m_view.get().get(), inputSource, canInitiateDrag);
     m_page->handleMouseEvent(webEvent);
 }
 
-void WebViewImpl::nativeMouseEventHandlerInternal(NSEvent *event, WebMouseEventInputSource inputSource)
+void WebViewImpl::nativeMouseEventHandlerInternal(NSEvent *event, WebEventInputSource inputSource, WebCore::PlatformMouseEvent::CanInitiateDrag canInitiateDrag)
 {
     if (m_warningView)
         return;
@@ -6285,7 +6419,7 @@ void WebViewImpl::nativeMouseEventHandlerInternal(NSEvent *event, WebMouseEventI
         return;
 #endif
 
-    nativeMouseEventHandler(event, inputSource);
+    nativeMouseEventHandler(event, inputSource, canInitiateDrag);
 }
 
 void WebViewImpl::createFlagsChangedEventMonitor()
@@ -6326,7 +6460,7 @@ void WebViewImpl::mouseEntered(NSEvent *event)
         return;
     }
 
-    nativeMouseEventHandler(event, WebMouseEventInputSource::UserDriven);
+    nativeMouseEventHandler(event, WebEventInputSource::UserDriven);
 }
 
 void WebViewImpl::mouseExited(NSEvent *event)
@@ -6339,57 +6473,57 @@ void WebViewImpl::mouseExited(NSEvent *event)
         return;
     }
 
-    nativeMouseEventHandler(event, WebMouseEventInputSource::UserDriven);
+    nativeMouseEventHandler(event, WebEventInputSource::UserDriven);
 }
 
 void WebViewImpl::otherMouseDown(NSEvent *event)
 {
-    nativeMouseEventHandler(event, WebMouseEventInputSource::UserDriven);
+    nativeMouseEventHandler(event, WebEventInputSource::UserDriven);
 }
 
 void WebViewImpl::otherMouseDragged(NSEvent *event)
 {
-    nativeMouseEventHandler(event, WebMouseEventInputSource::UserDriven);
+    nativeMouseEventHandler(event, WebEventInputSource::UserDriven);
 }
 
 void WebViewImpl::otherMouseUp(NSEvent *event)
 {
-    nativeMouseEventHandler(event, WebMouseEventInputSource::UserDriven);
+    nativeMouseEventHandler(event, WebEventInputSource::UserDriven);
 }
 
 void WebViewImpl::rightMouseDown(NSEvent *event)
 {
-    nativeMouseEventHandler(event, WebMouseEventInputSource::UserDriven);
+    nativeMouseEventHandler(event, WebEventInputSource::UserDriven);
 }
 
 void WebViewImpl::rightMouseDragged(NSEvent *event)
 {
-    nativeMouseEventHandler(event, WebMouseEventInputSource::UserDriven);
+    nativeMouseEventHandler(event, WebEventInputSource::UserDriven);
 }
 
 void WebViewImpl::rightMouseUp(NSEvent *event)
 {
-    nativeMouseEventHandler(event, WebMouseEventInputSource::UserDriven);
+    nativeMouseEventHandler(event, WebEventInputSource::UserDriven);
 }
 
 void WebViewImpl::mouseMovedInternal(NSEvent *event)
 {
-    nativeMouseEventHandlerInternal(event, WebMouseEventInputSource::UserDriven);
+    nativeMouseEventHandlerInternal(event, WebEventInputSource::UserDriven);
 }
 
-void WebViewImpl::mouseDownInternal(NSEvent *event, WebMouseEventInputSource inputSource)
+void WebViewImpl::mouseDownInternal(NSEvent *event, WebEventInputSource inputSource, WebCore::PlatformMouseEvent::CanInitiateDrag canInitiateDrag)
 {
-    nativeMouseEventHandlerInternal(event, inputSource);
+    nativeMouseEventHandlerInternal(event, inputSource, canInitiateDrag);
 }
 
-void WebViewImpl::mouseUpInternal(NSEvent *event, WebMouseEventInputSource inputSource)
+void WebViewImpl::mouseUpInternal(NSEvent *event, WebEventInputSource inputSource, WebCore::PlatformMouseEvent::CanInitiateDrag canInitiateDrag)
 {
-    nativeMouseEventHandlerInternal(event, inputSource);
+    nativeMouseEventHandlerInternal(event, inputSource, canInitiateDrag);
 }
 
-void WebViewImpl::mouseDraggedInternal(NSEvent *event, WebMouseEventInputSource inputSource)
+void WebViewImpl::mouseDraggedInternal(NSEvent *event, WebEventInputSource inputSource, WebCore::PlatformMouseEvent::CanInitiateDrag canInitiateDrag)
 {
-    nativeMouseEventHandlerInternal(event, inputSource);
+    nativeMouseEventHandlerInternal(event, inputSource, canInitiateDrag);
 }
 
 void WebViewImpl::mouseMoved(NSEvent *event)
@@ -6476,7 +6610,7 @@ void WebViewImpl::setAlwaysBounceHorizontal(bool value)
     m_page->setAlwaysBounceHorizontal(value);
 }
 
-void WebViewImpl::mouseDown(NSEvent *event, WebMouseEventInputSource inputSource)
+void WebViewImpl::mouseDown(NSEvent *event, WebEventInputSource inputSource, WebCore::PlatformMouseEvent::CanInitiateDrag canInitiateDrag)
 {
     if (m_ignoresNonWheelEvents)
         return;
@@ -6484,10 +6618,10 @@ void WebViewImpl::mouseDown(NSEvent *event, WebMouseEventInputSource inputSource
     setLastMouseDownEvent(event);
     setIgnoresMouseDraggedEvents(false);
 
-    mouseDownInternal(event, inputSource);
+    mouseDownInternal(event, inputSource, canInitiateDrag);
 }
 
-void WebViewImpl::mouseUp(NSEvent *event, WebMouseEventInputSource inputSource)
+void WebViewImpl::mouseUp(NSEvent *event, WebEventInputSource inputSource, WebCore::PlatformMouseEvent::CanInitiateDrag canInitiateDrag)
 {
     if (m_ignoresNonWheelEvents)
         return;
@@ -6498,17 +6632,17 @@ void WebViewImpl::mouseUp(NSEvent *event, WebMouseEventInputSource inputSource)
     fulfillDeferredImageAnalysisOverlayViewHierarchyTask();
 #endif
 
-    mouseUpInternal(event, inputSource);
+    mouseUpInternal(event, inputSource, canInitiateDrag);
 }
 
-void WebViewImpl::mouseDragged(NSEvent *event, WebMouseEventInputSource inputSource)
+void WebViewImpl::mouseDragged(NSEvent *event, WebEventInputSource inputSource, WebCore::PlatformMouseEvent::CanInitiateDrag canInitiateDrag)
 {
     if (m_ignoresNonWheelEvents)
         return;
     if (ignoresMouseDraggedEvents())
         return;
 
-    mouseDraggedInternal(event, inputSource);
+    mouseDraggedInternal(event, inputSource, canInitiateDrag);
 }
 
 bool WebViewImpl::windowIsFrontWindowUnderMouse(NSEvent *event)
@@ -7188,7 +7322,7 @@ void WebViewImpl::handleClickForDataDetectionResult(const WebCore::DataDetectorE
 #if ENABLE(REVEAL)
     m_revealItemPresenter = adoptNS([[WKRevealItemPresenter alloc] initWithWebViewImpl:*this item:adoptNS([PAL::allocRVItemInstance() initWithDDResult:info.result.get()]).get() frame:info.elementBounds menuLocation:clickLocation]);
     [m_revealItemPresenter setShouldUseDefaultHighlight:NO];
-    [m_revealItemPresenter showContextMenu];
+    [protect(m_revealItemPresenter) showContextMenu];
 #else
     UNUSED_PARAM(info);
     UNUSED_PARAM(clickLocation);
@@ -7588,6 +7722,36 @@ void WebViewImpl::showCaptionDisplaySettings(WebCore::HTMLMediaElementIdentifier
 void WebViewImpl::addTextSelectionManager()
 {
     [m_textSelectionController addTextSelectionManager];
+}
+
+bool WebViewImpl::isTextSelectedAtPoint(NSPoint point)
+{
+    return [m_textSelectionController isTextSelectedAtPoint:point];
+}
+
+void WebViewImpl::setTextSelectionDragGesture(NSGestureRecognizer *gesture, void (^completionHandler)(NSDraggingSession *))
+{
+    [m_appKitGestureController setTextSelectionDragGesture:gesture completionHandler:completionHandler];
+}
+
+void WebViewImpl::invalidateCachedPositionInformation()
+{
+    [m_appKitGestureController didCommitLoadForMainFrame];
+}
+
+void WebViewImpl::positionInformationDidChange(const InteractionInformationAtPosition& info)
+{
+    [m_appKitGestureController positionInformationDidChange:info];
+}
+
+void WebViewImpl::beginSuppressingSingleClickGestureForTextSelection()
+{
+    [m_appKitGestureController beginSuppressingSingleClickGestureForTextSelection];
+}
+
+void WebViewImpl::endSuppressingSingleClickGestureForTextSelection()
+{
+    [m_appKitGestureController endSuppressingSingleClickGestureForTextSelection];
 }
 #endif // HAVE(APPKIT_GESTURES_SUPPORT)
 

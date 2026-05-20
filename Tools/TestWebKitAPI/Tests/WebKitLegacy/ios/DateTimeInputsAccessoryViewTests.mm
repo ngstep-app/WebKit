@@ -29,11 +29,11 @@
 
 IGNORE_WARNINGS_BEGIN("deprecated-implementations")
 
-#import "DeprecatedGlobalValues.h"
+#import "Helpers/DeprecatedGlobalValues.h"
 #import "InstanceMethodSwizzler.h"
-#import "PlatformUtilities.h"
+#import "Helpers/PlatformUtilities.h"
 #import "UIKitSPIForTesting.h"
-#import "UserInterfaceSwizzler.h"
+#import "Helpers/ios/UserInterfaceSwizzler.h"
 #import <wtf/RetainPtr.h>
 
 @interface DateTimeInputsTestsLoadingDelegate : NSObject <UIWebViewDelegate>
@@ -61,13 +61,13 @@ static void runTestWithInputType(NSString *type)
     NSInteger width = 800;
     NSInteger height = 600;
 
-    auto uiWindow = adoptNS([[UIWindow alloc] initWithFrame:NSMakeRect(0, 0, width, height)]);
-    auto uiWebView = adoptNS([[UIWebView alloc] initWithFrame:NSMakeRect(0, 0, width, height)]);
+    RetainPtr uiWindow = adoptNS([[UIWindow alloc] initWithFrame:NSMakeRect(0, 0, width, height)]);
+    RetainPtr uiWebView = adoptNS([[UIWebView alloc] initWithFrame:NSMakeRect(0, 0, width, height)]);
     [uiWindow addSubview:uiWebView.get()];
 
     [uiWebView setKeyboardDisplayRequiresUserAction:NO];
 
-    auto delegate = adoptNS([[DateTimeInputsTestsLoadingDelegate alloc] init]);
+    RetainPtr delegate = adoptNS([[DateTimeInputsTestsLoadingDelegate alloc] init]);
     [uiWebView setDelegate:delegate.get()];
 
     NSString *elementString = [NSString stringWithFormat:@"<input type='%@'>", type];

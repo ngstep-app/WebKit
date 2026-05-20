@@ -919,6 +919,10 @@ void DisplayMtl::ensureCapsInitialized() const
     // Apple platforms require PVRTC1 textures to be squares.
     mNativeLimitations.squarePvrtc1 = true;
 
+    // MSL `uint32 instance_id = baseInstance + count`, so GLES baseinstance + primcount
+    // must not overflow GLuint.
+    mNativeLimitations.instanceIdMayOverflow = true;
+
     if (mFeatures.disableProgrammableBlending.enabled || !supportsAppleGPUFamily(1))
     {
         const MTLReadWriteTextureTier readWriteTextureTier = [mMetalDevice readWriteTextureSupport];
@@ -1209,11 +1213,6 @@ void DisplayMtl::initializeTextureCaps() const
     mNativeExtensions.depthBufferFloat2NV = false;
 }
 
-void DisplayMtl::initializeLimitations()
-{
-    mNativeLimitations.noVertexAttributeAliasing = true;
-}
-
 void DisplayMtl::initializeFeatures()
 {
     bool isOSX       = TARGET_OS_OSX;
@@ -1349,8 +1348,8 @@ angle::Result DisplayMtl::initializeShaderLibrary()
 {
     angle::ObjCPtr<NSError> err;
 #if ANGLE_METAL_XCODE_BUILDS_SHADERS || ANGLE_METAL_HAS_PREBUILT_INTERNAL_SHADERS
-    mDefaultShaders = mtl::CreateShaderLibraryFromStaticBinary(getMetalDevice(), gDefaultMetallib,
-                                                               std::size(gDefaultMetallib), &err);
+    mDefaultShaders =
+        mtl::CreateShaderLibraryFromStaticBinary(getMetalDevice(), gDefaultMetallib, &err);
 #else
     const bool disableFastMath = false;
     const bool usesInvariance  = true;

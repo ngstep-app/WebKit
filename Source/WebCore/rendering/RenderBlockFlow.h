@@ -41,6 +41,10 @@ struct FloatingObjectHashFunctions;
 
 using FloatingObjectSet = ListHashSet<std::unique_ptr<FloatingObject>, FloatingObjectHashFunctions>;
 
+namespace Layout {
+class InlineContentCache;
+}
+
 namespace LayoutIntegration {
 class LineLayout;
 }
@@ -159,6 +163,7 @@ protected:
 
 public:
     MarginValues marginValuesForChild(RenderBox& child) const;
+    void dirtyForLayoutFromPercentageHeightDescendant(RenderBox&);
 
     class MarginInfo {
     public:
@@ -251,7 +256,6 @@ public:
     void trimBlockEndChildrenMargins();
 
     void setStaticInlinePositionForChild(RenderBox& child, LayoutUnit inlinePosition);
-    void updateStaticInlinePositionForChild(RenderBox& child, LayoutUnit logicalTop);
 
     LayoutUnit staticInlinePositionForOriginalDisplayInline(LayoutUnit logicalTop);
 
@@ -278,8 +282,8 @@ public:
     RenderMultiColumnFlow* NODELETE multiColumnFlowSlowCase() const;
     void setMultiColumnFlow(RenderMultiColumnFlow&);
     void NODELETE clearMultiColumnFlow();
-    bool willCreateColumns(std::optional<unsigned> desiredColumnCount = std::nullopt) const;
-    virtual bool requiresColumns(int) const;
+    bool willCreateColumns() const;
+    virtual bool requiresFragmentedFlow() const;
 
     bool containsFloats() const override;
     bool NODELETE containsFloat(const RenderBox&) const;
@@ -538,6 +542,9 @@ public:
     RenderBlockFlowRareData& ensureRareBlockFlowData() LIFETIME_BOUND;
     void materializeRareBlockFlowData();
 
+    Layout::InlineContentCache& ensureInlineContentCache();
+    void resetInlineContentCache();
+
 #if ENABLE(TEXT_AUTOSIZING)
     void adjustComputedFontSizes(float size, float visibleWidth);
     void resetComputedFontSize()
@@ -552,6 +559,9 @@ protected:
     std::unique_ptr<RenderBlockFlowRareData> m_rareBlockFlowData;
 
 private:
+    // m_inlineContentCache must be declared before m_lineLayout.
+    // m_lineLayout's destructor runs first which requires the cache to still exist.
+    std::unique_ptr<Layout::InlineContentCache> m_inlineContentCache;
     Variant<
         std::monostate,
         std::unique_ptr<LayoutIntegration::LineLayout>,

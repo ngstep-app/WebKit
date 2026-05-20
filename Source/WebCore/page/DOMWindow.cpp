@@ -31,6 +31,7 @@
 #include "CSSRuleList.h"
 #include "CSSStyleProperties.h"
 #include "CookieStore.h"
+#include "Crypto.h"
 #include "CustomElementRegistry.h"
 #include "DocumentSecurityOrigin.h"
 #include "DocumentView.h"
@@ -66,6 +67,7 @@
 #include <wtf/NeverDestroyed.h>
 #include <wtf/TypeCasts.h>
 #include <wtf/TZoneMallocInlines.h>
+#include "DocumentPage.h"
 
 namespace WebCore {
 
@@ -975,17 +977,17 @@ String DOMWindow::crossDomainAccessErrorMessage(const LocalDOMWindow& activeWind
     URL activeURL = activeWindow.document()->url();
     RefPtr<const SecurityOrigin> remoteFrameSecurityOrigin = (m_type == DOMWindowType::Remote) ? remoteFrame->frameDocumentSecurityOriginOrOpaque() : RefPtr<const SecurityOrigin>();
     URL targetURL = localDocument ? localDocument->url() : remoteFrameSecurityOrigin->toURL();
-    bool localSandboxed = (localDocument && localDocument->isSandboxed(SandboxFlag::Origin));
+    bool targetSandboxed = localDocument ? localDocument->isSandboxed(SandboxFlag::Origin) : (remoteFrame && remoteFrame->frameDocumentIsSandboxedOrigin());
 
-    if (localSandboxed || activeWindow.document()->isSandboxed(SandboxFlag::Origin)) {
+    if (targetSandboxed || activeWindow.document()->isSandboxed(SandboxFlag::Origin)) {
         if (includeTargetOrigin == IncludeTargetOrigin::Yes)
             message = makeString("Blocked a frame at \""_s, SecurityOrigin::create(activeURL).get().toString(), "\" from accessing a frame at \""_s, SecurityOrigin::create(targetURL).get().toString(), "\". "_s);
         else
             message = makeString("Blocked a frame at \""_s, SecurityOrigin::create(activeURL).get().toString(), "\" from accessing a cross-origin frame. "_s);
 
-        if (localSandboxed && activeWindow.document()->isSandboxed(SandboxFlag::Origin))
+        if (targetSandboxed && activeWindow.document()->isSandboxed(SandboxFlag::Origin))
             return makeString("Sandbox access violation: "_s, message, " Both frames are sandboxed and lack the \"allow-same-origin\" flag."_s);
-        if (localSandboxed)
+        if (targetSandboxed)
             return makeString("Sandbox access violation: "_s, message, " The frame being accessed is sandboxed and lacks the \"allow-same-origin\" flag."_s);
         return makeString("Sandbox access violation: "_s, message, " The frame requesting access is sandboxed and lacks the \"allow-same-origin\" flag."_s);
     }
@@ -1008,9 +1010,9 @@ String DOMWindow::crossDomainAccessErrorMessage(const LocalDOMWindow& activeWind
     return makeString(message, "Protocols, domains, and ports must match."_s);
 }
 
-bool DOMWindow::isInsecureScriptAccess(const LocalDOMWindow& activeWindow, const String& urlString)
+bool DOMWindow::isInsecureScriptAccess(const LocalDOMWindow& activeWindow, const URL& url)
 {
-    if (!WTF::protocolIsJavaScript(urlString))
+    if (!url.protocolIsJavaScript())
         return false;
 
     // If this LocalDOMWindow isn't currently active in the Frame, then there's no
@@ -1050,7 +1052,7 @@ bool DOMWindow::passesSetLocationSecurityChecks(const LocalDOMWindow& activeWind
     if (navigationState == CanNavigateState::Unable)
         return false;
 
-    if (isInsecureScriptAccess(activeWindow, completedURL.string()))
+    if (isInsecureScriptAccess(activeWindow, completedURL))
         return false;
     return true;
 }

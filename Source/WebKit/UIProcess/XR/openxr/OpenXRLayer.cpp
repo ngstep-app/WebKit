@@ -18,7 +18,11 @@
  */
 
 #include "config.h"
+
+#if ENABLE(WEBXR) && USE(OPENXR)
+
 #include "OpenXRLayer.h"
+#include <openxr/openxr.h>
 #if USE(LIBEPOXY)
 #define __GBM__ 1
 #include <epoxy/egl.h>
@@ -39,17 +43,21 @@
 #endif
 
 #if USE(GBM)
+#include <WebCore/DMABufBuffer.h>
 #include <WebCore/GBMDevice.h>
 #include <WebCore/GBMVersioning.h>
 #include <drm_fourcc.h>
 #endif
 
-#if ENABLE(WEBXR) && USE(OPENXR)
-
 namespace WebKit {
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(OpenXRLayer);
 WTF_MAKE_TZONE_ALLOCATED_IMPL(OpenXRLayerProjection);
+WTF_MAKE_TZONE_ALLOCATED_IMPL(OpenXRCompositionLayer);
+WTF_MAKE_TZONE_ALLOCATED_IMPL(OpenXRQuadLayer);
+#if defined(XR_KHR_composition_layer_equirect2)
+WTF_MAKE_TZONE_ALLOCATED_IMPL(OpenXREquirectLayer);
+#endif
 
 OpenXRLayer::OpenXRLayer(UniqueRef<OpenXRSwapchain>&& swapchain)
     : m_swapchain(WTF::move(swapchain))
@@ -249,54 +257,15 @@ std::optional<PlatformXR::FrameData::ExternalTexture> OpenXRLayer::exportOpenXRT
         return std::nullopt;
     }
 
-    Vector<UnixFileDescriptor> fds;
-    Vector<uint32_t> offsets;
-    Vector<uint32_t> strides;
-    uint32_t fourcc = gbm_bo_get_format(buffer);
-    uint64_t modifier = gbm_bo_get_modifier(buffer);
-    int planeCount = gbm_bo_get_plane_count(buffer);
-
-    Vector<EGLAttrib> attributes = {
-        EGL_WIDTH, static_cast<EGLAttrib>(gbm_bo_get_width(buffer)),
-        EGL_HEIGHT, static_cast<EGLAttrib>(gbm_bo_get_height(buffer)),
-        EGL_LINUX_DRM_FOURCC_EXT, static_cast<EGLAttrib>(fourcc),
-    };
-
-#define ADD_PLANE_ATTRIBUTES(planeIndex) { \
-    fds.append(UnixFileDescriptor { gbm_bo_get_fd_for_plane(buffer, planeIndex), UnixFileDescriptor::Adopt }); \
-    offsets.append(gbm_bo_get_offset(buffer, planeIndex)); \
-    strides.append(gbm_bo_get_stride_for_plane(buffer, planeIndex)); \
-    std::array<EGLAttrib, 6> planeAttributes { \
-        EGL_DMA_BUF_PLANE##planeIndex##_FD_EXT, fds.last().value(), \
-        EGL_DMA_BUF_PLANE##planeIndex##_OFFSET_EXT, static_cast<EGLAttrib>(offsets.last()), \
-        EGL_DMA_BUF_PLANE##planeIndex##_PITCH_EXT, static_cast<EGLAttrib>(strides.last()) \
-    }; \
-    attributes.append(std::span<const EGLAttrib> { planeAttributes }); \
-    if (modifier != DRM_FORMAT_MOD_INVALID) { \
-        std::array<EGLAttrib, 4> modifierAttributes { \
-            EGL_DMA_BUF_PLANE##planeIndex##_MODIFIER_HI_EXT, static_cast<EGLAttrib>(modifier >> 32), \
-            EGL_DMA_BUF_PLANE##planeIndex##_MODIFIER_LO_EXT, static_cast<EGLAttrib>(modifier & 0xffffffff) \
-        }; \
-        attributes.append(std::span<const EGLAttrib> { modifierAttributes }); \
-    } \
+    auto dmaBufAttributes = WebCore::DMABufBufferAttributes::fromGBMBufferObject(buffer);
+    if (!dmaBufAttributes) {
+        gbm_bo_destroy(buffer);
+        RELEASE_LOG(XR, "Failed to extract DMA-buf attributes from GBM buffer for OpenXR texture");
+        return std::nullopt;
     }
 
-    if (planeCount > 0)
-        ADD_PLANE_ATTRIBUTES(0);
-    if (planeCount > 1)
-        ADD_PLANE_ATTRIBUTES(1);
-    if (planeCount > 2)
-        ADD_PLANE_ATTRIBUTES(2);
-    if (planeCount > 3)
-        ADD_PLANE_ATTRIBUTES(3);
-
-#undef ADD_PLANE_ATTRIBS
-
-    attributes.append(EGL_NONE);
-
-    auto image = display.createImage(EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attributes);
+    auto image = WebCore::DMABufBuffer::createEGLImage(display, *dmaBufAttributes);
     gbm_bo_destroy(buffer);
-
     if (!image) {
         RELEASE_LOG(XR, "Failed to create EGL image from OpenXR texture");
         return std::nullopt;
@@ -319,11 +288,11 @@ std::optional<PlatformXR::FrameData::ExternalTexture> OpenXRLayer::exportOpenXRT
     m_exportedTexturesMap.add(openxrTexture, exportedTexture);
 
     return PlatformXR::FrameData::ExternalTexture {
-        .fds = WTF::move(fds),
-        .strides = WTF::move(strides),
-        .offsets = WTF::move(offsets),
-        .fourcc = fourcc,
-        .modifier = modifier
+        .fds = WTF::move(dmaBufAttributes->fds),
+        .strides = WTF::move(dmaBufAttributes->strides),
+        .offsets = WTF::move(dmaBufAttributes->offsets),
+        .fourcc = dmaBufAttributes->fourcc.value,
+        .modifier = dmaBufAttributes->modifier
     };
 }
 #endif // USE(GBM)
@@ -426,8 +395,10 @@ std::optional<PlatformXR::FrameData::LayerData> OpenXRLayerProjection::startFram
     return layerData;
 }
 
-XrCompositionLayerBaseHeader* OpenXRLayerProjection::endFrame(const PlatformXR::DeviceLayer& layer, XrSpace space, const Vector<XrView>& frameViews)
+Vector<XrCompositionLayerBaseHeader*> OpenXRLayerProjection::endFrame(const PlatformXR::DeviceLayer& layer, XrSpace space, const Vector<XrView>& frameViews)
 {
+    ASSERT(m_swapchain->acquiredTexture());
+
 #if OS(ANDROID) || USE(GBM)
     if (needsBlitTexture()) {
         if (!m_fbosForBlitting[0])
@@ -455,8 +426,412 @@ XrCompositionLayerBaseHeader* OpenXRLayerProjection::endFrame(const PlatformXR::
 
     m_swapchain->releaseImage();
 
-    return reinterpret_cast<XrCompositionLayerBaseHeader*>(&m_layerProjection);
+    return { reinterpret_cast<XrCompositionLayerBaseHeader*>(&m_layerProjection) };
 }
+
+#if ENABLE(WEBXR_LAYERS)
+
+OpenXRCompositionLayer::OpenXRCompositionLayer(UniqueRef<OpenXRSwapchain>&& swapchain, PlatformXR::LayerLayout layout)
+    : OpenXRLayer(WTF::move(swapchain))
+    , m_layout(layout)
+{
+}
+
+std::unique_ptr<OpenXRQuadLayer> OpenXRQuadLayer::create(std::unique_ptr<OpenXRSwapchain>&& swapchain, PlatformXR::LayerLayout layout)
+{
+    return std::unique_ptr<OpenXRQuadLayer>(new OpenXRQuadLayer(makeUniqueRefFromNonNullUniquePtr(WTF::move(swapchain)), layout));
+}
+
+OpenXRQuadLayer::OpenXRQuadLayer(UniqueRef<OpenXRSwapchain>&& swapchain, PlatformXR::LayerLayout layout)
+    : OpenXRCompositionLayer(WTF::move(swapchain), layout)
+{
+    m_layers.resize(layout == PlatformXR::LayerLayout::Mono ? 1 : 2);
+    m_layers.fill(createOpenXRStruct<XrCompositionLayerQuad, XR_TYPE_COMPOSITION_LAYER_QUAD>());
+    int xOffset = 0;
+    int yOffset = 0;
+    int subImageWidth = layout == PlatformXR::LayerLayout::StereoLeftRight ? m_swapchain->width() / 2 : m_swapchain->width();
+    int subImageHeight = layout == PlatformXR::LayerLayout::StereoTopBottom ? m_swapchain->height() / 2 : m_swapchain->height();
+    XrExtent2Di subImageExtent = { subImageWidth, subImageHeight };
+    for (auto& xrLayer : m_layers) {
+        xrLayer.subImage.swapchain = m_swapchain->swapchain();
+        xrLayer.subImage.imageRect.offset = { xOffset, yOffset };
+        xrLayer.subImage.imageRect.extent = subImageExtent;
+        xrLayer.subImage.imageArrayIndex = 0;
+
+        xOffset += layout == PlatformXR::LayerLayout::StereoLeftRight ? subImageWidth : 0;
+        yOffset += layout == PlatformXR::LayerLayout::StereoTopBottom ? subImageHeight : 0;
+    }
+}
+
+std::optional<PlatformXR::FrameData::LayerData> OpenXRQuadLayer::startFrame()
+{
+    auto texture = m_swapchain->acquireImage();
+    if (!texture)
+        return std::nullopt;
+
+    auto addResult = m_exportedTextures.add(*texture, m_nextReusableTextureIndex);
+    bool needsExport = addResult.isNewEntry;
+
+    PlatformXR::FrameData::LayerData layerData;
+    layerData.renderingFrameIndex = m_renderingFrameIndex++;
+    layerData.textureData = {
+        .reusableTextureIndex = addResult.iterator->value,
+        .colorTexture = { },
+        .depthStencilBuffer = { },
+    };
+
+    if (!needsExport)
+        return layerData;
+    m_nextReusableTextureIndex++;
+
+    auto externalTexture = exportOpenXRTexture(*texture);
+    if (!externalTexture)
+        return std::nullopt;
+
+    layerData.textureData->colorTexture = WTF::move(externalTexture.value());
+
+    layerData.layerSetup = {
+        .physicalSize = { { { static_cast<uint16_t>(m_swapchain->width()), static_cast<uint16_t>(m_swapchain->height()) } } },
+        .viewports = { },
+        .foveationRateMapDesc = { }
+    };
+
+    return layerData;
+}
+
+Vector<XrCompositionLayerBaseHeader*> OpenXRQuadLayer::endFrame(const PlatformXR::DeviceLayer& layer, XrSpace space, const Vector<XrView>& frameViews)
+{
+    ASSERT(m_swapchain->acquiredTexture());
+
+#if OS(ANDROID) || USE(GBM)
+    if (needsBlitTexture()) {
+        if (!m_fbosForBlitting[0])
+            glGenFramebuffers(m_fbosForBlitting.size(), m_fbosForBlitting.data());
+        blitTexture();
+    }
+#endif
+
+    auto eyeVisibility = [](bool isLeftEye, bool isMonoPresentation) {
+        if (isMonoPresentation)
+            return XR_EYE_VISIBILITY_BOTH;
+        return isLeftEye ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
+    };
+    auto flags = layer.blendTextureSourceAlpha ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0;
+
+    auto isLeftEyeIndex = [this](int layerIndex) {
+        switch (m_layout) {
+        case PlatformXR::LayerLayout::Mono:
+        case PlatformXR::LayerLayout::StereoLeftRight:
+            return !layerIndex;
+        case PlatformXR::LayerLayout::StereoTopBottom:
+#if defined(XR_USE_GRAPHICS_API_OPENGL_ES) || defined(XR_USE_GRAPHICS_API_OPENGL)
+            // Origin of coordinates in OpenGL is bottom left, so the origin is on the half for the right side.
+            return layerIndex == 1;
+#elif defined(XR_USE_GRAPHICS_API_VULKAN)
+            // Origin of coordinates in Vulkan is top left, so the origin is on the half for the left side.
+            return !layerIndex;
+#endif
+        default:
+            ASSERT_NOT_REACHED_WITH_MESSAGE("Unrecognized layout for quad layer");
+            return false;
+        };
+    };
+
+    const auto numLayers = m_layers.size();
+    Vector<XrCompositionLayerBaseHeader*> layerHeaders;
+    layerHeaders.reserveCapacity(numLayers);
+
+    bool isMonoPresentation = layer.forceMonoPresentation || m_layout == PlatformXR::LayerLayout::Mono;
+    for (size_t i = 0; i < numLayers; ++i) {
+        // WebXR requires right eye to display the left eye image in mono presentation mode. No need to pass more than one header.
+        if (isMonoPresentation && !isLeftEyeIndex(i))
+            continue;
+
+        auto& xrLayer = m_layers[i];
+        xrLayer.layerFlags = flags;
+        xrLayer.eyeVisibility = eyeVisibility(isLeftEyeIndex(i), isMonoPresentation);
+        xrLayer.space = space;
+
+        ASSERT(layer.quadLayerData);
+        auto pose = layer.quadLayerData->poseInLocalSpace;
+        xrLayer.pose.position = { pose.position.x(), pose.position.y(), pose.position.z() };
+        xrLayer.pose.orientation = { pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w };
+        xrLayer.size = { layer.quadLayerData->worldSize.width(), layer.quadLayerData->worldSize.height() };
+
+        layerHeaders.append(reinterpret_cast<XrCompositionLayerBaseHeader*>(&xrLayer));
+    }
+
+    m_swapchain->releaseImage();
+
+    return layerHeaders;
+}
+
+#if defined(XR_KHR_composition_layer_equirect2)
+
+std::unique_ptr<OpenXREquirectLayer> OpenXREquirectLayer::create(std::unique_ptr<OpenXRSwapchain>&& swapchain, PlatformXR::LayerLayout layout)
+{
+    return std::unique_ptr<OpenXREquirectLayer>(new OpenXREquirectLayer(makeUniqueRefFromNonNullUniquePtr(WTF::move(swapchain)), layout));
+}
+
+OpenXREquirectLayer::OpenXREquirectLayer(UniqueRef<OpenXRSwapchain>&& swapchain, PlatformXR::LayerLayout layout)
+    : OpenXRCompositionLayer(WTF::move(swapchain), layout)
+{
+    m_layers.resize(layout == PlatformXR::LayerLayout::Mono ? 1 : 2);
+    m_layers.fill(createOpenXRStruct<XrCompositionLayerEquirect2KHR, XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR>());
+    int xOffset = 0;
+    int yOffset = 0;
+    int subImageWidth = layout == PlatformXR::LayerLayout::StereoLeftRight ? m_swapchain->width() / 2 : m_swapchain->width();
+    int subImageHeight = layout == PlatformXR::LayerLayout::StereoTopBottom ? m_swapchain->height() / 2 : m_swapchain->height();
+    XrExtent2Di subImageExtent = { subImageWidth, subImageHeight };
+    for (auto& xrLayer : m_layers) {
+        xrLayer.subImage.swapchain = m_swapchain->swapchain();
+        xrLayer.subImage.imageRect.offset = { xOffset, yOffset };
+        xrLayer.subImage.imageRect.extent = subImageExtent;
+        xrLayer.subImage.imageArrayIndex = 0;
+
+        xOffset += layout == PlatformXR::LayerLayout::StereoLeftRight ? subImageWidth : 0;
+        yOffset += layout == PlatformXR::LayerLayout::StereoTopBottom ? subImageHeight : 0;
+    }
+}
+
+std::optional<PlatformXR::FrameData::LayerData> OpenXREquirectLayer::startFrame()
+{
+    auto texture = m_swapchain->acquireImage();
+    if (!texture)
+        return std::nullopt;
+
+    auto addResult = m_exportedTextures.add(*texture, m_nextReusableTextureIndex);
+    bool needsExport = addResult.isNewEntry;
+
+    PlatformXR::FrameData::LayerData layerData;
+    layerData.renderingFrameIndex = m_renderingFrameIndex++;
+    layerData.textureData = {
+        .reusableTextureIndex = addResult.iterator->value,
+        .colorTexture = { },
+        .depthStencilBuffer = { },
+    };
+
+    if (!needsExport)
+        return layerData;
+    m_nextReusableTextureIndex++;
+
+    auto externalTexture = exportOpenXRTexture(*texture);
+    if (!externalTexture)
+        return std::nullopt;
+
+    layerData.textureData->colorTexture = WTF::move(externalTexture.value());
+
+    layerData.layerSetup = {
+        .physicalSize = { { { static_cast<uint16_t>(m_swapchain->width()), static_cast<uint16_t>(m_swapchain->height()) } } },
+        .viewports = { },
+        .foveationRateMapDesc = { }
+    };
+
+    return layerData;
+}
+
+Vector<XrCompositionLayerBaseHeader*> OpenXREquirectLayer::endFrame(const PlatformXR::DeviceLayer& layer, XrSpace space, const Vector<XrView>& frameViews)
+{
+    ASSERT(m_swapchain->acquiredTexture());
+
+#if OS(ANDROID) || USE(GBM)
+    if (needsBlitTexture()) {
+        if (!m_fbosForBlitting[0])
+            glGenFramebuffers(m_fbosForBlitting.size(), m_fbosForBlitting.data());
+        blitTexture();
+    }
+#endif
+
+    auto eyeVisibility = [](bool isLeftEye, bool isMonoPresentation) {
+        if (isMonoPresentation)
+            return XR_EYE_VISIBILITY_BOTH;
+        return isLeftEye ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
+    };
+    auto flags = layer.blendTextureSourceAlpha ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0;
+
+    auto isLeftEyeIndex = [layout = m_layout](int layerIndex) {
+        switch (layout) {
+        case PlatformXR::LayerLayout::Mono:
+        case PlatformXR::LayerLayout::StereoLeftRight:
+            return !layerIndex;
+        case PlatformXR::LayerLayout::StereoTopBottom:
+#if defined(XR_USE_GRAPHICS_API_OPENGL_ES) || defined(XR_USE_GRAPHICS_API_OPENGL)
+            return layerIndex == 1;
+#elif defined(XR_USE_GRAPHICS_API_VULKAN)
+            return !layerIndex;
+#endif
+        default:
+            ASSERT_NOT_REACHED_WITH_MESSAGE("Unrecognized layout for equirect layer");
+            return false;
+        };
+    };
+
+    const auto numLayers = m_layers.size();
+    Vector<XrCompositionLayerBaseHeader*> layerHeaders;
+    layerHeaders.reserveCapacity(numLayers);
+
+    bool isMonoPresentation = layer.forceMonoPresentation || m_layout == PlatformXR::LayerLayout::Mono;
+    for (size_t i = 0; i < numLayers; ++i) {
+        if (isMonoPresentation && !isLeftEyeIndex(i))
+            continue;
+
+        auto& xrLayer = m_layers[i];
+        xrLayer.layerFlags = flags;
+        xrLayer.eyeVisibility = eyeVisibility(isLeftEyeIndex(i), isMonoPresentation);
+        xrLayer.space = space;
+
+        ASSERT(layer.equirectLayerData);
+        auto& equirectData = *layer.equirectLayerData;
+        xrLayer.pose.position = { equirectData.poseInLocalSpace.position.x(), equirectData.poseInLocalSpace.position.y(), equirectData.poseInLocalSpace.position.z() };
+        xrLayer.pose.orientation = { equirectData.poseInLocalSpace.orientation.x, equirectData.poseInLocalSpace.orientation.y, equirectData.poseInLocalSpace.orientation.z, equirectData.poseInLocalSpace.orientation.w };
+        xrLayer.radius = equirectData.radius;
+        xrLayer.centralHorizontalAngle = equirectData.centralHorizontalAngle;
+        xrLayer.upperVerticalAngle = equirectData.upperVerticalAngle;
+        xrLayer.lowerVerticalAngle = equirectData.lowerVerticalAngle;
+
+        layerHeaders.append(reinterpret_cast<XrCompositionLayerBaseHeader*>(&xrLayer));
+    }
+
+    m_swapchain->releaseImage();
+
+    return layerHeaders;
+}
+
+#endif
+
+#if defined(XR_KHR_composition_layer_cylinder)
+
+std::unique_ptr<OpenXRCylinderLayer> OpenXRCylinderLayer::create(std::unique_ptr<OpenXRSwapchain>&& swapchain, PlatformXR::LayerLayout layout)
+{
+    return std::unique_ptr<OpenXRCylinderLayer>(new OpenXRCylinderLayer(makeUniqueRefFromNonNullUniquePtr(WTF::move(swapchain)), layout));
+}
+
+OpenXRCylinderLayer::OpenXRCylinderLayer(UniqueRef<OpenXRSwapchain>&& swapchain, PlatformXR::LayerLayout layout)
+    : OpenXRCompositionLayer(WTF::move(swapchain), layout)
+{
+    m_layers.resize(layout == PlatformXR::LayerLayout::Mono ? 1 : 2);
+    m_layers.fill(createOpenXRStruct<XrCompositionLayerCylinderKHR, XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR>());
+    int xOffset = 0;
+    int yOffset = 0;
+    int subImageWidth = layout == PlatformXR::LayerLayout::StereoLeftRight ? m_swapchain->width() / 2 : m_swapchain->width();
+    int subImageHeight = layout == PlatformXR::LayerLayout::StereoTopBottom ? m_swapchain->height() / 2 : m_swapchain->height();
+    XrExtent2Di subImageExtent = { subImageWidth, subImageHeight };
+    for (auto& xrLayer : m_layers) {
+        xrLayer.subImage.swapchain = m_swapchain->swapchain();
+        xrLayer.subImage.imageRect.offset = { xOffset, yOffset };
+        xrLayer.subImage.imageRect.extent = subImageExtent;
+        xrLayer.subImage.imageArrayIndex = 0;
+
+        xOffset += layout == PlatformXR::LayerLayout::StereoLeftRight ? subImageWidth : 0;
+        yOffset += layout == PlatformXR::LayerLayout::StereoTopBottom ? subImageHeight : 0;
+    }
+}
+
+std::optional<PlatformXR::FrameData::LayerData> OpenXRCylinderLayer::startFrame()
+{
+    auto texture = m_swapchain->acquireImage();
+    if (!texture)
+        return std::nullopt;
+
+    auto addResult = m_exportedTextures.add(*texture, m_nextReusableTextureIndex);
+    bool needsExport = addResult.isNewEntry;
+
+    PlatformXR::FrameData::LayerData layerData;
+    layerData.renderingFrameIndex = m_renderingFrameIndex++;
+    layerData.textureData = {
+        .reusableTextureIndex = addResult.iterator->value,
+        .colorTexture = { },
+        .depthStencilBuffer = { },
+    };
+
+    if (!needsExport)
+        return layerData;
+    m_nextReusableTextureIndex++;
+
+    auto externalTexture = exportOpenXRTexture(*texture);
+    if (!externalTexture)
+        return std::nullopt;
+
+    layerData.textureData->colorTexture = WTF::move(externalTexture.value());
+
+    layerData.layerSetup = {
+        .physicalSize = { { { static_cast<uint16_t>(m_swapchain->width()), static_cast<uint16_t>(m_swapchain->height()) } } },
+        .viewports = { },
+        .foveationRateMapDesc = { }
+    };
+
+    return layerData;
+}
+
+Vector<XrCompositionLayerBaseHeader*> OpenXRCylinderLayer::endFrame(const PlatformXR::DeviceLayer& layer, XrSpace space, const Vector<XrView>& frameViews)
+{
+    ASSERT(m_swapchain->acquiredTexture());
+
+#if OS(ANDROID) || USE(GBM)
+    if (needsBlitTexture()) {
+        if (!m_fbosForBlitting[0])
+            glGenFramebuffers(m_fbosForBlitting.size(), m_fbosForBlitting.data());
+        blitTexture();
+    }
+#endif
+
+    auto eyeVisibility = [](bool isLeftEye, bool isMonoPresentation) {
+        if (isMonoPresentation)
+            return XR_EYE_VISIBILITY_BOTH;
+        return isLeftEye ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
+    };
+    auto flags = layer.blendTextureSourceAlpha ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0;
+
+    auto isLeftEyeIndex = [layout = m_layout](int layerIndex) {
+        switch (layout) {
+        case PlatformXR::LayerLayout::Mono:
+        case PlatformXR::LayerLayout::StereoLeftRight:
+            return !layerIndex;
+        case PlatformXR::LayerLayout::StereoTopBottom:
+#if defined(XR_USE_GRAPHICS_API_OPENGL_ES) || defined(XR_USE_GRAPHICS_API_OPENGL)
+            return layerIndex == 1;
+#elif defined(XR_USE_GRAPHICS_API_VULKAN)
+            return !layerIndex;
+#endif
+        default:
+            ASSERT_NOT_REACHED_WITH_MESSAGE("Unrecognized layout for cylinder layer");
+            return false;
+        };
+    };
+
+    const auto numLayers = m_layers.size();
+    Vector<XrCompositionLayerBaseHeader*> layerHeaders;
+    layerHeaders.reserveCapacity(numLayers);
+
+    bool isMonoPresentation = layer.forceMonoPresentation || m_layout == PlatformXR::LayerLayout::Mono;
+    for (size_t i = 0; i < numLayers; ++i) {
+        if (isMonoPresentation && !isLeftEyeIndex(i))
+            continue;
+
+        auto& xrLayer = m_layers[i];
+        xrLayer.layerFlags = flags;
+        xrLayer.eyeVisibility = eyeVisibility(isLeftEyeIndex(i), isMonoPresentation);
+        xrLayer.space = space;
+
+        ASSERT(layer.cylinderLayerData);
+        auto& cylinderData = *layer.cylinderLayerData;
+        xrLayer.pose.position = { cylinderData.poseInLocalSpace.position.x(), cylinderData.poseInLocalSpace.position.y(), cylinderData.poseInLocalSpace.position.z() };
+        xrLayer.pose.orientation = { cylinderData.poseInLocalSpace.orientation.x, cylinderData.poseInLocalSpace.orientation.y, cylinderData.poseInLocalSpace.orientation.z, cylinderData.poseInLocalSpace.orientation.w };
+        xrLayer.radius = cylinderData.radius;
+        xrLayer.centralAngle = cylinderData.centralAngle;
+        xrLayer.aspectRatio = cylinderData.aspectRatio;
+
+        layerHeaders.append(reinterpret_cast<XrCompositionLayerBaseHeader*>(&xrLayer));
+    }
+
+    m_swapchain->releaseImage();
+
+    return layerHeaders;
+}
+
+#endif
+
+#endif
 
 } // namespace WebKit
 

@@ -129,7 +129,9 @@ public:
 
     virtual void setPageIsVisible(bool) = 0;
     virtual void setVisibleForCanvas(bool visible) { setPageIsVisible(visible); }
-    virtual void setVisibleInViewport(bool) { }
+
+    using ViewportVisibility = MediaPlayer::ViewportVisibility;
+    virtual void setViewportVisibility(ViewportVisibility) { }
 
     virtual MediaTime duration() const { return MediaTime::zeroTime(); }
 
@@ -394,6 +396,10 @@ public:
     virtual void elementIdChanged(const String&) const { }
 
     static WEBCORE_EXPORT RefPtr<ShareableBitmap> bitmapFromImage(NativeImage&);
+
+#if PLATFORM(MAC)
+    virtual void screenReservedChanged(bool) { }
+#endif
 
 protected:
     mutable PlatformTimeRanges m_seekable;

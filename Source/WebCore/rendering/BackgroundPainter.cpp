@@ -3,7 +3,7 @@
  *           (C) 1999 Antti Koivisto (koivisto@kde.org)
  *           (C) 2005 Allan Sandfeld Jensen (kde@carewolf.com)
  *           (C) 2005, 2006 Samuel Weinig (sam.weinig@gmail.com)
- * Copyright (C) 2005-2025 Apple Inc. All rights reserved.
+ * Copyright (C) 2005-2026 Apple Inc. All rights reserved.
  * Copyright (C) 2010-2013 Google Inc. All rights reserved.
  *
  * This library is free software; you can redistribute it and/or
@@ -533,14 +533,23 @@ template<typename Layer> void BackgroundPainter::paintFillLayerImpl(const Color&
         if (!geometry.destinationRect.isEmpty() && (image = bgImage->image(backgroundObject ? backgroundObject : &m_renderer, geometry.tileSize, context, isFirstLine))) {
             context.setDrawLuminanceMask(layer.layer.maskMode() == Style::MaskMode::Luminance);
 
+            // image-orientation does not apply to mask images (https://drafts.csswg.org/css-images-3/#propdef-image-orientation).
+            auto orientation = [&] {
+                if constexpr (std::is_same_v<Layer, Style::MaskLayer>)
+                    return ImageOrientation(ImageOrientation::Orientation::FromImage);
+                else
+                    return m_renderer.imageOrientation();
+            }();
+
             ImagePaintingOptions options = {
                 op == CompositeOperator::SourceOver ? layer.layer.compositeForPainting(layer.isLast) : op,
                 layerBlendMode,
                 m_renderer.decodingModeForImageDraw(*image, m_paintInfo),
-                ImageOrientation::Orientation::FromImage,
+                orientation,
                 m_renderer.chooseInterpolationQuality(context, *image, &layer.layer, geometry.tileSize),
                 document().settings().imageSubsamplingEnabled() ? AllowImageSubsampling::Yes : AllowImageSubsampling::No,
                 document().settings().showDebugBorders() ? ShowDebugBackground::Yes : ShowDebugBackground::No,
+                document().settings().hdrAcceleratedApplyGainMapEnabled() ? AllowAcceleratedApplyGainMap::Yes : AllowAcceleratedApplyGainMap::No,
                 m_paintInfo.paintBehavior.contains(PaintBehavior::DrawsHDRContent) ? DrawsHDRContent::Yes : DrawsHDRContent::No,
                 style.dynamicRangeLimit().toPlatformDynamicRangeLimit()
             };
@@ -843,7 +852,7 @@ template<typename Layer> LayoutSize BackgroundPainter::calculateFillTileSize(con
 
             // If one of the values is auto we have to use the appropriate
             // scale to maintain our aspect ratio.
-            bool hasNaturalAspectRatio = image && image->imageHasNaturalDimensions();
+            bool hasNaturalAspectRatio = image && image->imageHasNaturalAspectRatio();
             if (layerWidth.isAuto() && !layerHeight.isAuto()) {
                 if (hasNaturalAspectRatio && imageIntrinsicSize.height())
                     tileSize.setWidth(imageIntrinsicSize.width() * tileSize.height() / imageIntrinsicSize.height());
@@ -908,17 +917,14 @@ void BackgroundPainter::paintBoxShadow(const LayoutRect& paintRect, const Render
                 if (!shadowSpread)
                     return borderShape;
 
-                if (shadowSpread > 0) {
-                    auto spreadRect = paintRect;
-                    spreadRect.inflate(shadowSpread);
-                    return BorderShape::shapeForOutsetRect(style, paintRect, spreadRect, { }, closedEdges);
-                }
-
                 auto spreadRect = paintRect;
-                auto inflateX = std::max(shadowSpread, -paintRect.width() / 2);
-                auto inflateY = std::max(shadowSpread, -paintRect.height() / 2);
-                spreadRect.inflate(LayoutSize { inflateX, inflateY });
-                return BorderShape::shapeForInsetRect(style, paintRect, spreadRect /* , closedEdges*/);
+                if (shadowSpread < 0) {
+                    auto inflateX = std::max(shadowSpread, -paintRect.width() / 2);
+                    auto inflateY = std::max(shadowSpread, -paintRect.height() / 2);
+                    spreadRect.inflate(LayoutSize { inflateX, inflateY });
+                } else
+                    spreadRect.inflate(shadowSpread);
+                return BorderShape::shapeForOffsetRect(style, paintRect, spreadRect, { }, closedEdges);
             }();
 
             if (shadowShape.isEmpty())

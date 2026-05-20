@@ -50,10 +50,11 @@ class Encoder;
 namespace WebKit {
 
 struct NetworkResourceLoadParameters {
-    void createSandboxExtensionHandlesIfNecessary();
+    bool createSandboxExtensionHandlesIfNecessary();
 
     RefPtr<WebCore::SecurityOrigin> NODELETE parentOrigin() const;
     NetworkLoadParameters networkLoadParameters() const;
+    WebCore::SecurityOriginData topOriginForServiceWorkers(const URL& requestURL) const;
 
     WebPageProxyIdentifier webPageProxyID;
     WebCore::PageIdentifier webPageID;
@@ -80,7 +81,6 @@ struct NetworkResourceLoadParameters {
     uint64_t requiredCookiesVersion { 0 };
 
     Markable<WebCore::ResourceLoaderIdentifier> identifier { };
-    Vector<SandboxExtensionHandle> requestBodySandboxExtensions { };
     std::optional<SandboxExtensionHandle> resourceSandboxExtension { };
     Seconds maximumBufferingTime { };
     WebCore::FetchOptions options { };
@@ -131,6 +131,7 @@ struct NetworkResourceLoadParameters {
 
     bool isInitiatorPrefetch { false };
     bool isInitiatedByDedicatedWorker { false };
+    bool globalPrivacyControlEnabled { false };
 };
 
 } // namespace WebKit

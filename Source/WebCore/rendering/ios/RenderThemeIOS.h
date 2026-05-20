@@ -49,6 +49,7 @@ public:
 
 #if USE(SYSTEM_PREVIEW)
     void paintSystemPreviewBadge(Image&, const PaintInfo&, const FloatRect&) final;
+    void paintSystemPreviewBadge(const PaintInfo&, const FloatRect&) final;
 #endif
 
     using CSSValueToSystemColorMap = HashMap<CSSValueKey, Color>;
@@ -65,7 +66,7 @@ public:
 
     bool canCreateControlPartForRenderer(const RenderElement&) const final;
 
-    Style::PaddingBox popupInternalPaddingBox(const RenderStyle&) const final;
+    Style::PaddingBox platformPopupInternalPaddingBox(const RenderStyle&) const final;
 
     int baselinePosition(const RenderBox&) const final;
 
@@ -162,6 +163,8 @@ public:
 
     WEBCORE_EXPORT Color systemColor(CSSValueID, OptionSet<StyleColorOptions>) const final;
     Color pictureFrameColor(const RenderElement&) final;
+
+    Style::PreferredSizePair controlSize(StyleAppearance, const FontCascade&, const Style::PreferredSizePair&, float zoomFactor) const final;
 
 private:
     RenderThemeIOS();

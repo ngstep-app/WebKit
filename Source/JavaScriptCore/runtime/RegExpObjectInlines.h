@@ -34,6 +34,34 @@
 
 namespace JSC {
 
+ALWAYS_INLINE bool RegExpObject::isSymbolMatchFastAndNonObservable()
+{
+    JSGlobalObject* globalObject = this->realm();
+    if (!globalObject->regExpPrimordialPropertiesWatchpointSet().isStillValid())
+        return false;
+
+    if (!globalObject->stringSymbolMatchWatchpointSet().isStillValid())
+        return false;
+
+    if (!getLastIndex().isNumber())
+        return false;
+
+    Structure* structure = this->structure();
+    if (structure == globalObject->regExpStructure()) [[likely]]
+        return true;
+
+    if (structure->hasPolyProto())
+        return false;
+
+    if (structure->storedPrototype() != globalObject->regExpPrototype())
+        return false;
+
+    if (hasCustomProperties())
+        return false;
+
+    return true;
+}
+
 ALWAYS_INLINE bool RegExpObject::isSymbolReplaceFastAndNonObservable()
 {
     JSGlobalObject* globalObject = this->realm();
@@ -44,6 +72,36 @@ ALWAYS_INLINE bool RegExpObject::isSymbolReplaceFastAndNonObservable()
         return false;
 
     if (!getLastIndex().isNumber())
+        return false;
+
+    Structure* structure = this->structure();
+    if (structure == globalObject->regExpStructure()) [[likely]]
+        return true;
+
+    if (structure->hasPolyProto())
+        return false;
+
+    if (structure->storedPrototype() != globalObject->regExpPrototype())
+        return false;
+
+    if (hasCustomProperties())
+        return false;
+
+    return true;
+}
+
+ALWAYS_INLINE bool RegExpObject::isSymbolSplitFastAndNonObservable()
+{
+    JSGlobalObject* globalObject = this->realm();
+    if (!globalObject->regExpPrimordialPropertiesWatchpointSet().isStillValid())
+        return false;
+
+    if (!globalObject->stringSymbolSplitWatchpointSet().isStillValid())
+        return false;
+
+    // The C++ split fast path skips the JS regExpPrototypeSplit body, so the
+    // RegExp[Symbol.species] override must not be observable.
+    if (!globalObject->regExpSpeciesWatchpointSet().isStillValid())
         return false;
 
     Structure* structure = this->structure();
@@ -92,13 +150,14 @@ ALWAYS_INLINE JSValue RegExpObject::execInline(JSGlobalObject* globalObject, JSS
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    RegExp* regExp = this->regExp();
     auto input = string->view(globalObject);
     RETURN_IF_EXCEPTION(scope, { });
 
-    bool globalOrSticky = regExp->globalOrSticky();
     unsigned lastIndex = getRegExpObjectLastIndexAsUnsigned(globalObject, this, input);
     RETURN_IF_EXCEPTION(scope, { });
+
+    RegExp* regExp = this->regExp();
+    bool globalOrSticky = regExp->globalOrSticky();
     if (lastIndex == UINT_MAX && globalOrSticky) {
         scope.release();
         setLastIndex(globalObject, 0);
@@ -131,12 +190,13 @@ ALWAYS_INLINE MatchResult RegExpObject::matchInline(JSGlobalObject* globalObject
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    RegExp* regExp = this->regExp();
     auto input = string->view(globalObject);
     RETURN_IF_EXCEPTION(scope, { });
 
     unsigned lastIndex = getRegExpObjectLastIndexAsUnsigned(globalObject, this, input);
     RETURN_IF_EXCEPTION(scope, { });
+
+    RegExp* regExp = this->regExp();
     if (!regExp->global() && !regExp->sticky()) {
         scope.release();
         return globalObject->regExpGlobalData().performMatch(globalObject, regExp, string, input, 0);
@@ -295,7 +355,7 @@ ALWAYS_INLINE JSValue collectGlobalAtomMatches(JSGlobalObject* globalObject, JSS
         } else {
             if (pattern.length() == 1) {
                 oneCharacterMatch = true;
-                numberOfMatches = WTF::countMatchedCharacters(input->span16(), pattern.characterAt(0));
+                numberOfMatches = WTF::countMatchedCharacters(input->span16(), pattern.codeUnitAt(0));
             } else {
                 size_t startIndex = 0;
                 lastResult = genericMatches(vm, input->span16(), pattern.span8(), numberOfMatches, startIndex);
@@ -308,7 +368,7 @@ ALWAYS_INLINE JSValue collectGlobalAtomMatches(JSGlobalObject* globalObject, JSS
         } else {
             if (pattern.length() == 1) {
                 oneCharacterMatch = true;
-                numberOfMatches = WTF::countMatchedCharacters(input->span16(), pattern.characterAt(0));
+                numberOfMatches = WTF::countMatchedCharacters(input->span16(), pattern.codeUnitAt(0));
             } else {
                 size_t startIndex = 0;
                 lastResult = genericMatches(vm, input->span16(), pattern.span16(), numberOfMatches, startIndex);

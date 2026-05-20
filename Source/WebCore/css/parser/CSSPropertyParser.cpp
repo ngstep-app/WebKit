@@ -31,6 +31,7 @@
 #include "config.h"
 #include "CSSPropertyParser.h"
 
+#include "CSSCustomIdentValue.h"
 #include "CSSCustomPropertySyntax.h"
 #include "CSSCustomPropertyValue.h"
 #include "CSSMarkup.h"
@@ -59,6 +60,7 @@
 #include "CSSPropertyParserState.h"
 #include "CSSPropertyParsing.h"
 #include "CSSShorthandSubstitutionValue.h"
+#include "CSSStringValue.h"
 #include "CSSSubstitutionParser.h"
 #include "CSSSubstitutionValue.h"
 #include "CSSTokenizer.h"
@@ -67,11 +69,14 @@
 #include "CSSWideKeyword.h"
 #include "ComputedStyleDependencies.h"
 #include "StyleBuilder.h"
+#include "StyleCalculationValue.h"
+#include "StyleCustomIdent.h"
 #include "StyleCustomProperty.h"
 #include "StylePrimitiveNumericTypes+CSSValueConversion.h"
 #include "StylePropertyShorthand.h"
 #include "StylePropertyShorthandFunctions.h"
 #include "StyleRuleType.h"
+#include "StyleURL.h"
 #include <memory>
 #include <wtf/StdLibExtras.h>
 #include <wtf/text/ParsingUtilities.h>
@@ -87,7 +92,7 @@ static std::optional<Variant<Ref<const Style::CustomProperty>, CSSWideKeyword>> 
 // MARK: - Root consumers
 
 // Style properties.
-static bool consumeStyleProperty(CSSParserTokenRange&, const CSSParserContext&, CSSPropertyID, IsImportant, StyleRuleType, CSS::PropertyParserResult&);
+static bool consumeStyleProperty(CSSParserTokenRange&, const CSSParserContext&, CSSPropertyID, IsImportant, StyleRuleType, CSS::PropertyParserResult&, const CSSNamespacePrefixMap& = { });
 
 // @font-face descriptors.
 static bool consumeFontFaceDescriptor(CSSParserTokenRange&, const CSSParserContext&, CSSPropertyID, CSS::PropertyParserResult&);
@@ -191,12 +196,12 @@ CSSValueID cssValueKeywordID(StringView string)
 
 bool isCustomPropertyName(StringView propertyName)
 {
-    return propertyName.length() > 2 && propertyName.characterAt(0) == '-' && propertyName.characterAt(1) == '-';
+    return propertyName.length() > 2 && propertyName.codeUnitAt(0) == '-' && propertyName.codeUnitAt(1) == '-';
 }
 
 // MARK: - CSS-wide keyword value consumer
 
-static RefPtr<CSSPrimitiveValue> consumeCSSWideKeywordValue(CSSParserTokenRange& range)
+static RefPtr<CSSValue> consumeCSSWideKeywordValue(CSSParserTokenRange& range)
 {
     auto rangeCopy = range;
     auto valueID = rangeCopy.consumeIncludingWhitespace().id();
@@ -207,29 +212,14 @@ static RefPtr<CSSPrimitiveValue> consumeCSSWideKeywordValue(CSSParserTokenRange&
         return nullptr;
 
     range = rangeCopy;
-    return CSSPrimitiveValue::create(valueID);
-}
-
-static std::optional<CSSWideKeyword> consumeCSSWideKeyword(CSSParserTokenRange& range)
-{
-    auto rangeCopy = range;
-    auto valueID = rangeCopy.consumeIncludingWhitespace().id();
-    if (!rangeCopy.atEnd())
-        return { };
-
-    auto keyword = parseCSSWideKeyword(valueID);
-    if (!keyword)
-        return { };
-
-    range = rangeCopy;
-    return keyword;
+    return CSSKeywordValue::create(valueID);
 }
 
 // MARK: - Parser entry points
 
 using namespace CSSPropertyParserHelpers;
 
-bool CSSPropertyParser::parseValue(CSSPropertyID property, IsImportant important, CSSParserTokenRange range, const CSSParserContext& context, ParsedPropertyVector& parsedProperties, StyleRuleType ruleType)
+bool CSSPropertyParser::parseValue(CSSPropertyID property, IsImportant important, CSSParserTokenRange range, const CSSParserContext& context, ParsedPropertyVector& parsedProperties, StyleRuleType ruleType, const CSSNamespacePrefixMap& namespaceMap)
 {
     int initialParsedPropertiesSize = parsedProperties.size();
 
@@ -267,7 +257,7 @@ bool CSSPropertyParser::parseValue(CSSPropertyID property, IsImportant important
         parseSuccess = consumeFunctionDescriptor(range, context, property, result);
         break;
     default:
-        parseSuccess = consumeStyleProperty(range, context, property, important, ruleType, result);
+        parseSuccess = consumeStyleProperty(range, context, property, important, ruleType, result, namespaceMap);
         break;
     }
 
@@ -440,9 +430,24 @@ bool CSSPropertyParser::isValidCustomPropertyValueForSyntax(const CSSCustomPrope
     return !!consumeCustomPropertyValueWithSyntax(range, state, syntax).first;
 }
 
-std::optional<CSSWideKeyword> CSSPropertyParser::parseCSSWideKeyword(CSSParserTokenRange range)
+// https://drafts.csswg.org/css-values-5/#parse-with-a-syntax
+RefPtr<CSSValue> CSSPropertyParser::parseWithSyntax(const CSSCustomPropertySyntax& syntax, CSSParserTokenRange range, const CSSParserContext& context)
 {
-    return consumeCSSWideKeyword(range);
+    ASSERT(!syntax.isUniversal());
+
+    range.consumeWhitespace();
+
+    auto state = CSS::PropertyParserState {
+        .context = context,
+        .currentRule = StyleRuleType::Style,
+        .currentProperty = CSSPropertyCustom,
+        .important = IsImportant::No,
+    };
+
+    auto [value, syntaxType] = consumeCustomPropertyValueWithSyntax(range, state, syntax);
+    if (!value || !range.atEnd())
+        return { };
+    return value;
 }
 
 std::pair<RefPtr<CSSValue>, CSSCustomPropertySyntax::Type> consumeCustomPropertyValueWithSyntax(CSSParserTokenRange& range, CSS::PropertyParserState& state, const CSSCustomPropertySyntax& syntax)
@@ -453,16 +458,16 @@ std::pair<RefPtr<CSSValue>, CSSCustomPropertySyntax::Type> consumeCustomProperty
 
     auto consumeSingleValue = [&](auto& range, auto& component) -> RefPtr<CSSValue> {
         switch (component.type) {
+        case CSSCustomPropertySyntax::Type::Ident:
+            if (range.peek().type() != IdentToken || range.peek().value() != component.ident)
+                return nullptr;
+            return CSSCustomIdentValue::create(CSS::CustomIdent { range.consumeIncludingWhitespace().value().toAtomString() });
+        case CSSCustomPropertySyntax::Type::CustomIdent:
+            return consumeCustomIdent(range, state);
         case CSSCustomPropertySyntax::Type::Length:
             return CSSPrimitiveValueResolver<CSS::Length<>>::consumeAndResolve(range, state);
         case CSSCustomPropertySyntax::Type::LengthPercentage:
             return CSSPrimitiveValueResolver<CSS::LengthPercentage<>>::consumeAndResolve(range, state);
-        case CSSCustomPropertySyntax::Type::CustomIdent:
-            if (RefPtr value = consumeCustomIdent(range)) {
-                if (component.ident.isNull() || value->stringValue() == component.ident)
-                    return value;
-            }
-            return nullptr;
         case CSSCustomPropertySyntax::Type::Percentage:
             return CSSPrimitiveValueResolver<CSS::Percentage<>>::consumeAndResolve(range, state);
         case CSSCustomPropertySyntax::Type::Integer:
@@ -556,18 +561,17 @@ std::optional<Variant<Ref<const Style::CustomProperty>, CSSWideKeyword>> consume
             return Style::toStyleFromCSSValue<Style::Resolution<>>(builderState, downcast<CSSPrimitiveValue>(value));
         case CSSCustomPropertySyntax::Type::Color:
             return Style::toStyleFromCSSValue<Style::Color>(builderState, value, Style::ForVisitedLink::No);
-        case CSSCustomPropertySyntax::Type::Image: {
-            auto styleImage = builderState.createStyleImage(value);
-            if (!styleImage)
-                return { };
-            return Style::ImageWrapper { styleImage.releaseNonNull() };
-        }
+        case CSSCustomPropertySyntax::Type::Image:
+            if (RefPtr styleImage = builderState.createStyleImage(value))
+                return Style::ImageWrapper { styleImage.releaseNonNull() };
+            return { };
         case CSSCustomPropertySyntax::Type::URL:
-            return Style::toStyle(downcast<CSSURLValue>(value).url(), builderState);
+            return Style::toStyleFromCSSValue<Style::URL>(builderState, downcast<CSSURLValue>(value));
+        case CSSCustomPropertySyntax::Type::Ident:
         case CSSCustomPropertySyntax::Type::CustomIdent:
-            return CustomIdentifier { AtomString { downcast<CSSPrimitiveValue>(value).stringValue() } };
+            return Style::toStyleFromCSSValue<Style::CustomIdent>(builderState, downcast<CSSCustomIdentValue>(value));
         case CSSCustomPropertySyntax::Type::String:
-            return downcast<CSSPrimitiveValue>(value).stringValue();
+            return Style::toStyleFromCSSValue<Style::String>(builderState, downcast<CSSStringValue>(value));
         case CSSCustomPropertySyntax::Type::TransformFunction:
         case CSSCustomPropertySyntax::Type::TransformList:
             return Style::toStyleFromCSSValue<Style::TransformFunction>(builderState, value);
@@ -599,7 +603,7 @@ std::optional<Variant<Ref<const Style::CustomProperty>, CSSWideKeyword>> consume
 
 // MARK: - Root consumers
 
-bool consumeStyleProperty(CSSParserTokenRange& range, const CSSParserContext& context, CSSPropertyID property, IsImportant important, StyleRuleType ruleType, CSS::PropertyParserResult& result)
+bool consumeStyleProperty(CSSParserTokenRange& range, const CSSParserContext& context, CSSPropertyID property, IsImportant important, StyleRuleType ruleType, CSS::PropertyParserResult& result, const CSSNamespacePrefixMap& namespaceMap)
 {
     if (CSSProperty::isDescriptorOnly(property))
         return false;
@@ -625,7 +629,7 @@ bool consumeStyleProperty(CSSParserTokenRange& range, const CSSParserContext& co
             return true;
 
         if (CSSSubstitutionParser::containsSubstitutionFunctions(originalRange, context)) {
-            result.addPropertyForAllLonghandsOfCurrentShorthand(state, CSSShorthandSubstitutionValue::create(property, CSSSubstitutionValue::create(originalRange, context)));
+            result.addPropertyForAllLonghandsOfCurrentShorthand(state, CSSShorthandSubstitutionValue::create(property, CSSSubstitutionValue::create(originalRange, namespaceMap, context)));
             return true;
         }
     } else {
@@ -645,7 +649,7 @@ bool consumeStyleProperty(CSSParserTokenRange& range, const CSSParserContext& co
         }
 
         if (CSSSubstitutionParser::containsSubstitutionFunctions(originalRange, context)) {
-            result.addProperty(state, property, CSSPropertyInvalid, CSSSubstitutionValue::create(originalRange, context), important);
+            result.addProperty(state, property, CSSPropertyInvalid, CSSSubstitutionValue::create(originalRange, namespaceMap, context), important);
             return true;
         }
     }

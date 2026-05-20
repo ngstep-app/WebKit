@@ -38,12 +38,23 @@
 #include "WebProcess.h"
 #include <WebCore/CoordinatedPlatformLayer.h>
 #include <WebCore/Damage.h>
+#include <WebCore/FontCache.h>
+#include <WebCore/Page.h>
 #include <WebCore/PlatformDisplay.h>
+#include <WebCore/Settings.h>
+#include <WebCore/SkiaCompositingLayer.h>
 #include <WebCore/TextureMapperLayer.h>
 #include <WebCore/TransformationMatrix.h>
+WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+#include <skia/core/SkCanvas.h>
+#include <skia/core/SkFont.h>
+#include <skia/core/SkFontMgr.h>
+#include <skia/core/SkPaint.h>
+WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
 #include <wtf/SetForScope.h>
 #include <wtf/SystemTracing.h>
 #include <wtf/TZoneMallocInlines.h>
+#include <wtf/text/StringToIntegerConversion.h>
 
 #if USE(GLIB_EVENT_LOOP)
 #include <wtf/glib/RunLoopSourcePriority.h>
@@ -69,7 +80,8 @@ Ref<ThreadedCompositor> ThreadedCompositor::create(WebPage& webPage, LayerTreeHo
 ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTreeHost, CoordinatedSceneState& sceneState)
     : m_workQueue(WorkQueue::create("org.webkit.ThreadedCompositor"_s))
     , m_layerTreeHost(&layerTreeHost)
-    , m_surface(AcceleratedSurface::create(webPage, [this] { frameComplete(); }))
+    , m_useSkia(webPage.corePage()->settings().useSkiaForComposition())
+    , m_surface(AcceleratedSurface::create(webPage, [this] { frameComplete(); }, AcceleratedSurface::RenderingPurpose::Composited, m_useSkia))
     , m_sceneState(&sceneState)
     , m_flipY(m_surface->shouldPaintMirrored())
     , m_renderTimer(m_workQueue->runLoop(), "ThreadedCompositor::RenderTimer"_s, this, &ThreadedCompositor::renderLayerTree)
@@ -82,7 +94,17 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
 
     initializeFPSCounter();
 #if ENABLE(DAMAGE_TRACKING)
-    m_damage.visualizer = TextureMapperDamageVisualizer::create();
+    if (m_useSkia) {
+        // WEBKIT_SHOW_DAMAGE=N renders the frame damage rects, insetting them
+        // by N-1 pixels (mirrors TextureMapperDamageVisualizer's behavior).
+        if (const auto* showDamageVariable = getenv("WEBKIT_SHOW_DAMAGE")) {
+            if (auto value = parseInteger<unsigned>(StringView::fromLatin1(showDamageVariable)); value && *value) {
+                m_damage.showSkiaDamage = true;
+                m_damage.skiaDamageMargin = *value - 1;
+            }
+        }
+    } else
+        m_damage.visualizer = TextureMapperDamageVisualizer::create();
 #endif
 
     updateSceneAttributes(webPage.size(), webPage.deviceScaleFactor());
@@ -96,13 +118,21 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
         // a plain C cast expression in this one instance works in all cases.
         static_assert(sizeof(GLNativeWindowType) <= sizeof(uint64_t), "GLNativeWindowType must not be longer than 64 bits.");
         auto nativeSurfaceHandle = (GLNativeWindowType)m_surface->window();
-        m_context = GLContext::create(PlatformDisplay::sharedDisplay(), nativeSurfaceHandle);
-        if (m_context && m_context->makeContextCurrent()) {
+        auto context = GLContext::create(PlatformDisplay::sharedDisplay(), nativeSurfaceHandle);
+        if (!context || !context->makeContextCurrent()) {
+            m_state.state = State::Invalidated;
+            return;
+        }
+
+        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &m_maxTextureSize);
+
+        if (m_useSkia)
+            PlatformDisplay::sharedDisplay().setSkiaGLContextForCurrentThread(WTF::move(context));
+        else {
+            m_context = WTF::move(context);
+            m_textureMapper = TextureMapper::create();
             if (!nativeSurfaceHandle)
                 m_flipY = !m_flipY;
-            glGetIntegerv(GL_MAX_TEXTURE_SIZE, &m_maxTextureSize);
-
-            m_textureMapper = TextureMapper::create();
         }
     });
 }
@@ -123,12 +153,12 @@ void ThreadedCompositor::invalidate()
         Locker locker { m_state.lock };
         stopRenderTimer();
         m_state.didCompositeRenderingUpdateFunction = nullptr;
-        m_state.state = State::Idle;
+        m_state.state = State::Invalidated;
     }
 
     m_didCompositeRunLoopObserver->invalidate();
     m_workQueue->dispatchSync([this] {
-        if (!m_context || !m_context->makeContextCurrent())
+        if (!m_useSkia && (!m_context || !m_context->makeContextCurrent()))
             return;
 
         // Update the scene at this point ensures the layers state are correctly propagated.
@@ -195,7 +225,7 @@ void ThreadedCompositor::resume()
 bool ThreadedCompositor::isActive() const
 {
     Locker locker { m_state.lock };
-    return m_state.state != State::Idle;
+    return m_state.state != State::Idle && m_state.state != State::Invalidated;
 }
 
 void ThreadedCompositor::backgroundColorDidChange()
@@ -236,7 +266,7 @@ void ThreadedCompositor::setSize(const IntSize& size, float deviceScaleFactor)
 void ThreadedCompositor::setDamagePropagationFlags(std::optional<OptionSet<DamagePropagationFlags>> flags)
 {
     m_damage.flags = flags;
-    if (m_damage.visualizer && m_damage.flags) {
+    if ((m_damage.visualizer || m_damage.showSkiaDamage) && m_damage.flags) {
         // We don't use damage when rendering layers if the visualizer is enabled, because we need to make sure the whole
         // frame is invalidated in the next paint so that previous damage rects are cleared.
         m_damage.flags->remove(DamagePropagationFlags::UseForCompositing);
@@ -260,12 +290,21 @@ void ThreadedCompositor::flushCompositingState(const OptionSet<CompositionReason
         ASSERT(!reasons.contains(CompositionReason::RenderingUpdate) || !m_state.isWaitingForTiles);
     }
 #endif
-    m_sceneState->rootLayer().flushCompositingState(reasons);
+
+    m_sceneState->rootLayer().flushCompositingState(reasons, m_useSkia);
     for (auto& layer : m_sceneState->committedLayers())
-        layer->flushCompositingState(reasons);
+        layer->flushCompositingState(reasons, m_useSkia);
 }
 
 void ThreadedCompositor::paintToCurrentGLContext(const TransformationMatrix& matrix, const IntSize& size, const OptionSet<CompositionReason>& reasons)
+{
+    if (m_useSkia)
+        paintToSkiaCanvas(matrix, size, reasons);
+    else
+        paintToTextureMapper(matrix, size, reasons);
+}
+
+void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix, const IntSize& size, const OptionSet<CompositionReason>& reasons)
 {
     FloatRect clipRect(FloatPoint { }, size);
     TextureMapperLayer& currentRootLayer = m_sceneState->rootLayer().ensureTarget();
@@ -333,6 +372,59 @@ void ThreadedCompositor::paintToCurrentGLContext(const TransformationMatrix& mat
         requestComposition(CompositionReason::Animation);
 }
 
+void ThreadedCompositor::paintToSkiaCanvas(const TransformationMatrix& matrix, const IntSize& size, const OptionSet<CompositionReason>& reasons)
+{
+    auto* canvas = m_surface->canvas();
+    if (!canvas)
+        return;
+
+    auto& rootLayer = m_sceneState->rootLayer().ensureSkiaTarget();
+    rootLayer.setTransform(matrix);
+
+    m_surface->clear(reasons);
+
+    canvas->save();
+
+    std::optional<Damage> frameDamage;
+#if ENABLE(DAMAGE_TRACKING)
+    if (m_damage.flags)
+        frameDamage = Damage(size, m_damage.flags->contains(DamagePropagationFlags::Unified) ? Damage::Mode::BoundingBox : Damage::Mode::Rectangles);
+#endif
+
+    bool sceneHasRunningAnimations = rootLayer.paint(*canvas, frameDamage);
+    canvas->restore();
+
+#if ENABLE(DAMAGE_TRACKING)
+    if (frameDamage) {
+        if (m_damage.shouldNotifyFrameDamageForTesting && m_layerTreeHost)
+            m_layerTreeHost->notifyFrameDamageForTesting(frameDamage->regionForTesting());
+
+        if (!frameDamage->isEmpty())
+            m_surface->setFrameDamage(WTF::move(*frameDamage));
+    }
+#endif
+
+#if ENABLE(DAMAGE_TRACKING)
+    if (m_damage.showSkiaDamage) {
+        if (auto damage = m_surface->frameDamage())
+            drawSkiaDamage(*canvas, damage);
+
+        // When the damage visualizer is active we cannot send the original damage to the platform, as the
+        // damage rects visualized in the previous frame may not get erased if the platform uses damage.
+        m_surface->setFrameDamage(Damage(size, Damage::Mode::Full));
+    }
+#endif
+
+    if (m_fpsCounter.drawsFPS)
+        drawFPSCounter(*canvas);
+
+    if (auto* surface = canvas->getSurface())
+        PlatformDisplay::sharedDisplay().skiaGrContext()->flushAndSubmit(surface, GrSyncCpu::kNo);
+
+    if (sceneHasRunningAnimations)
+        requestComposition(CompositionReason::Animation);
+}
+
 #if HAVE(OS_SIGNPOST) || USE(SYSPROF_CAPTURE)
 static String reasonsToString(const OptionSet<CompositionReason>& reasons)
 {
@@ -362,6 +454,9 @@ void ThreadedCompositor::renderLayerTree()
     {
         Locker locker { m_state.lock };
 
+        if (m_state.state == State::Invalidated)
+            return;
+
         // The timer has been stopped.
         if (!m_state.isRenderTimerActive)
             return;
@@ -380,7 +475,7 @@ void ThreadedCompositor::renderLayerTree()
         m_state.state = State::InProgress;
     }
 
-    if (!m_context || !m_context->makeContextCurrent())
+    if (!m_useSkia && (!m_context || !m_context->makeContextCurrent()))
         return;
 
     // Retrieve the scene attributes in a thread-safe manner.
@@ -420,7 +515,10 @@ void ThreadedCompositor::renderLayerTree()
 
     WTFEmitSignpost(this, DidRenderFrame, "reasons: %s", reasonsToString(reasons).ascii().data());
 
-    m_context->swapBuffers();
+    if (m_context)
+        m_context->swapBuffers();
+    else
+        PlatformDisplay::sharedDisplay().skiaGLContext()->swapBuffers();
 
     m_surface->didRenderFrame();
     m_surface->sendFrame();
@@ -461,6 +559,8 @@ ASCIILiteral ThreadedCompositor::stateToString(ThreadedCompositor::State state)
         return "InProgress"_s;
     case State::ScheduledWhileInProgress:
         return "ScheduledWhileInProgress"_s;
+    case State::Invalidated:
+        return "Invalidated"_s;
     }
     RELEASE_ASSERT_NOT_REACHED();
 }
@@ -484,6 +584,7 @@ void ThreadedCompositor::scheduleUpdateLocked()
         m_state.state = State::ScheduledWhileInProgress;
         break;
     case State::ScheduledWhileInProgress:
+    case State::Invalidated:
         break;
     }
 }
@@ -498,6 +599,7 @@ void ThreadedCompositor::frameComplete()
     switch (m_state.state) {
     case State::Idle:
     case State::Scheduled:
+    case State::Invalidated:
         break;
     case State::InProgress:
         if (m_state.reasons.contains(CompositionReason::RenderingUpdate) && m_state.isWaitingForTiles)
@@ -548,6 +650,15 @@ void ThreadedCompositor::initializeFPSCounter()
         m_fpsCounter.exposesFPS = true;
         m_fpsCounter.calculationInterval = interval;
     }
+
+    // WEBKIT_DRAW_FPS=1 additionally renders the FPS as an on-screen overlay,
+    // reusing the calculation interval (which WEBKIT_SHOW_FPS may override).
+    if (const auto* drawFPSEnvironment = getenv("WEBKIT_DRAW_FPS")) {
+        if (auto enabled = parseInteger<unsigned>(StringView::fromLatin1(drawFPSEnvironment)); enabled && *enabled) {
+            m_fpsCounter.exposesFPS = true;
+            m_fpsCounter.drawsFPS = true;
+        }
+    }
 }
 
 void ThreadedCompositor::updateFPSCounter()
@@ -562,7 +673,8 @@ void ThreadedCompositor::updateFPSCounter()
     m_fpsCounter.frameCountSinceLastCalculation++;
     const Seconds delta = MonotonicTime::now() - m_fpsCounter.lastCalculationTimestamp;
     if (delta >= m_fpsCounter.calculationInterval) {
-        WTFSetCounter(FPS, static_cast<int>(std::round(m_fpsCounter.frameCountSinceLastCalculation / delta.seconds())));
+        m_fpsCounter.lastFPS = static_cast<int>(std::round(m_fpsCounter.frameCountSinceLastCalculation / delta.seconds()));
+        WTFSetCounter(FPS, m_fpsCounter.lastFPS);
         if (m_fpsCounter.exposesFPS)
             m_fpsCounter.fps = m_fpsCounter.frameCountSinceLastCalculation / delta.seconds();
         m_fpsCounter.frameCountSinceLastCalculation = 0;
@@ -570,6 +682,66 @@ void ThreadedCompositor::updateFPSCounter()
     } else if (m_fpsCounter.exposesFPS)
         m_fpsCounter.fps = std::nullopt;
 }
+
+void ThreadedCompositor::drawFPSCounter(SkCanvas& canvas)
+{
+    static SkFont font = [] {
+        constexpr unsigned defaultFontSize = 14;
+        unsigned fontSize = defaultFontSize;
+        if (const auto* fontSizeEnvvar = getenv("WEBKIT_DRAW_FPS_FONT_SIZE")) {
+            if (auto value = parseInteger<unsigned>(StringView::fromLatin1(fontSizeEnvvar)); value && *value)
+                fontSize = *value;
+        }
+        auto typeface = FontCache::forCurrentThread().fontManager().matchFamilyStyle("monospace", SkFontStyle::Bold());
+        SkFont f(typeface, fontSize);
+        f.setEdging(SkFont::Edging::kAntiAlias);
+        f.setSubpixel(true);
+        return f;
+    }();
+
+    // Scale the box padding with the font size so the overlay stays
+    // proportionate at large WEBKIT_DRAW_FPS_FONT_SIZE values
+    // (~3px at the default size of 14).
+    const float padding = font.getSize() * 0.2f;
+
+    if (m_fpsCounter.lastFPS != m_fpsCounter.displayedFPS) {
+        m_fpsCounter.displayedFPS = m_fpsCounter.lastFPS;
+        m_fpsCounter.fpsString = String::number(m_fpsCounter.lastFPS).ascii();
+        SkRect textBounds;
+        font.measureText(m_fpsCounter.fpsString.data(), m_fpsCounter.fpsString.length(), SkTextEncoding::kUTF8, &textBounds);
+        m_fpsCounter.backgroundWidth = textBounds.width() + padding * 2;
+        m_fpsCounter.backgroundHeight = textBounds.height() + padding * 2;
+        m_fpsCounter.textBaseline = -textBounds.fTop + padding;
+    }
+
+    // Drawn in device space at the top-left corner, matching the debug repaint
+    // counter style used by SkiaCompositingLayer.
+    SkAutoCanvasRestore autoRestore(&canvas, true);
+    canvas.resetMatrix();
+
+    SkPaint backgroundPaint;
+    backgroundPaint.setColor(SK_ColorBLACK);
+    backgroundPaint.setStyle(SkPaint::kFill_Style);
+    canvas.drawRect(SkRect::MakeXYWH(0, 0, m_fpsCounter.backgroundWidth, m_fpsCounter.backgroundHeight), backgroundPaint);
+
+    SkPaint textPaint;
+    textPaint.setColor(SK_ColorWHITE);
+    textPaint.setAntiAlias(true);
+    canvas.drawString(m_fpsCounter.fpsString.data(), padding, m_fpsCounter.textBaseline, font, textPaint);
+}
+
+#if ENABLE(DAMAGE_TRACKING)
+void ThreadedCompositor::drawSkiaDamage(SkCanvas& canvas, const std::optional<WebCore::Damage>& damage)
+{
+    SkPaint paint;
+    paint.setStyle(SkPaint::kFill_Style);
+    paint.setColor(SkColorSetARGB(200, 255, 0, 0));
+
+    const auto margin = static_cast<SkScalar>(m_damage.skiaDamageMargin);
+    for (const auto& rect : *damage)
+        canvas.drawRect(SkRect::MakeXYWH(rect.x() - margin, rect.y() - margin, rect.width() + margin * 2, rect.height() + margin * 2), paint);
+}
+#endif
 
 void ThreadedCompositor::fillGLInformation(RenderProcessInfo&& info, CompletionHandler<void(RenderProcessInfo&&)>&& completionHandler)
 {

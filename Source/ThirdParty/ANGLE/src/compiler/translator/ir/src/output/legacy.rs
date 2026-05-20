@@ -21,6 +21,17 @@ pub mod ffi {
         Empty,
     }
 
+    #[derive(Copy, Clone)]
+    #[repr(u32)]
+    enum ASTForLoopConditionOp {
+        Equal,
+        NotEqual,
+        LessThan,
+        GreaterThan,
+        LessThanEqual,
+        GreaterThanEqual,
+    }
+
     unsafe extern "C++" {
         include!("compiler/translator/ir/src/builder.rs.h");
 
@@ -117,7 +128,9 @@ pub mod ffi {
             is_static_use: bool,
         ) -> *mut TIntermTyped;
         unsafe fn make_internal_variable_gl_layer_vs() -> *mut TIntermTyped;
-        unsafe fn make_internal_variable_gl_instance_es100() -> *mut TIntermTyped;
+        unsafe fn make_internal_variable_gl_instanceid_es100() -> *mut TIntermTyped;
+        unsafe fn make_internal_variable_gl_instanceindex() -> *mut TIntermTyped;
+        unsafe fn make_internal_variable_gl_vertexindex() -> *mut TIntermTyped;
         unsafe fn make_nameless_block_field_variable(
             compiler: *mut TCompiler,
             variable: *mut TIntermTyped,
@@ -152,6 +165,10 @@ pub mod ffi {
         ) -> *mut TIntermNode;
 
         unsafe fn make_interm_block() -> *mut TIntermBlock;
+        unsafe fn append_typed_instruction_to_block(
+            block: *mut TIntermBlock,
+            node: *mut TIntermTyped,
+        );
         unsafe fn append_instructions_to_block(
             block: *mut TIntermBlock,
             nodes: &[*mut TIntermNode],
@@ -874,6 +891,16 @@ pub mod ffi {
             body_block: *mut TIntermBlock,
         );
         unsafe fn branch_do_loop(block: *mut TIntermBlock, body_block: *mut TIntermBlock);
+        unsafe fn branch_for_loop(
+            block: *mut TIntermBlock,
+            loop_variable_declaration: *mut TIntermNode,
+            loop_variable: *mut TIntermTyped,
+            condition_op: ASTForLoopConditionOp,
+            condition_comparator: *mut TIntermTyped,
+            ascending: bool,
+            increment_step: *mut TIntermTyped,
+            body_block: *mut TIntermBlock,
+        );
         unsafe fn branch_loop_if(block: *mut TIntermBlock, condition: &Expression);
         unsafe fn branch_switch(
             block: *mut TIntermBlock,
@@ -999,6 +1026,9 @@ pub struct Generator<'options> {
     expressions: HashMap<RegisterId, *mut TIntermTyped>,
     needs_deep_copy: HashSet<RegisterId>,
 
+    // `for` loop variable declarations are deferred.
+    for_loop_variable_declarations: HashMap<VariableId, *mut TIntermNode>,
+
     // Used by legacy code to declare types and variables.
     legacy_compiler: *mut TCompiler,
     // Derived from the GLSL version, used to decide which built-in to use, e.g. texture2D() vs
@@ -1023,6 +1053,7 @@ impl<'options> Generator<'options> {
             function_declarations: Vec::new(),
             expressions: HashMap::new(),
             needs_deep_copy: HashSet::new(),
+            for_loop_variable_declarations: HashMap::new(),
             legacy_compiler,
             options,
         }
@@ -1311,21 +1342,13 @@ impl<'options> Generator<'options> {
                     }
                 }
             },
-            ImageDimension::Rect => match image_basic_type {
-                ImageBasicType::Float => {
-                    // Rect storage images are a desktop GLSL feature
-                    debug_assert!(image_type.is_sampled);
-                    ffi::ASTBasicType::Sampler2DRect
-                }
-                ImageBasicType::Int => {
-                    debug_assert!(image_type.is_sampled);
-                    ffi::ASTBasicType::ISampler2DRect
-                }
-                ImageBasicType::Uint => {
-                    debug_assert!(image_type.is_sampled);
-                    ffi::ASTBasicType::USampler2DRect
-                }
-            },
+            ImageDimension::Rect => {
+                // Only float rect samplers are exposed via GL_ANGLE_texture_rectangle.
+                debug_assert!(image_basic_type == ImageBasicType::Float);
+                // Rect storage images are a desktop GLSL feature
+                debug_assert!(image_type.is_sampled);
+                ffi::ASTBasicType::Sampler2DRect
+            }
             ImageDimension::Buffer => match image_basic_type {
                 ImageBasicType::Float => {
                     if image_type.is_sampled {
@@ -1374,8 +1397,10 @@ impl<'options> Generator<'options> {
     ) -> ffi::ASTQualifier {
         if let Some(built_in) = built_in {
             match built_in {
-                BuiltIn::InstanceID => ffi::ASTQualifier::InstanceID,
-                BuiltIn::VertexID => ffi::ASTQualifier::VertexID,
+                // Note: the AST uses the same Instance/VertexID qualifiers for
+                // Instance/VertexIndex.
+                BuiltIn::InstanceID | BuiltIn::InstanceIndex => ffi::ASTQualifier::InstanceID,
+                BuiltIn::VertexID | BuiltIn::VertexIndex => ffi::ASTQualifier::VertexID,
                 BuiltIn::Position => ffi::ASTQualifier::Position,
                 BuiltIn::PointSize => ffi::ASTQualifier::PointSize,
                 BuiltIn::BaseVertex => ffi::ASTQualifier::BaseVertex,
@@ -1406,7 +1431,6 @@ impl<'options> Generator<'options> {
                 BuiltIn::SampleMask => ffi::ASTQualifier::SampleMask,
                 BuiltIn::NumSamples => ffi::ASTQualifier::NumSamples,
                 BuiltIn::NumWorkGroups => ffi::ASTQualifier::NumWorkGroups,
-                BuiltIn::WorkGroupSize => ffi::ASTQualifier::WorkGroupSize,
                 BuiltIn::WorkGroupID => ffi::ASTQualifier::WorkGroupID,
                 BuiltIn::LocalInvocationID => ffi::ASTQualifier::LocalInvocationID,
                 BuiltIn::GlobalInvocationID => ffi::ASTQualifier::GlobalInvocationID,
@@ -1423,13 +1447,8 @@ impl<'options> Generator<'options> {
                 BuiltIn::TessLevelInner => ffi::ASTQualifier::TessLevelInner,
                 BuiltIn::TessCoord => ffi::ASTQualifier::TessCoord,
                 BuiltIn::BoundingBoxOES => ffi::ASTQualifier::BoundingBox,
-                BuiltIn::PixelLocalEXT => ffi::ASTQualifier::PixelLocalEXT,
             }
-        } else if decorations
-            .decorations
-            .iter()
-            .any(|&decoration| matches!(decoration, Decoration::SpecConst(_)))
-        {
+        } else if has_decoration!(decorations, Decoration::SpecConst) {
             ffi::ASTQualifier::SpecConst
         } else if decorations.has(Decoration::EmulatedViewIDOut)
             || decorations.has(Decoration::EmulatedViewIDIn)
@@ -1649,6 +1668,8 @@ impl<'options> Generator<'options> {
         match built_in {
             BuiltIn::InstanceID => "gl_InstanceID",
             BuiltIn::VertexID => "gl_VertexID",
+            BuiltIn::InstanceIndex => "gl_InstanceIndex",
+            BuiltIn::VertexIndex => "gl_VertexIndex",
             BuiltIn::Position => "gl_Position",
             BuiltIn::PointSize => "gl_PointSize",
             BuiltIn::BaseVertex => "gl_BaseVertex",
@@ -1685,7 +1706,6 @@ impl<'options> Generator<'options> {
             BuiltIn::SampleMask => "gl_SampleMask",
             BuiltIn::NumSamples => "gl_NumSamples",
             BuiltIn::NumWorkGroups => "gl_NumWorkGroups",
-            BuiltIn::WorkGroupSize => "gl_WorkGroupSize",
             BuiltIn::WorkGroupID => "gl_WorkGroupID",
             BuiltIn::LocalInvocationID => "gl_LocalInvocationID",
             BuiltIn::GlobalInvocationID => "gl_GlobalInvocationID",
@@ -1708,7 +1728,6 @@ impl<'options> Generator<'options> {
             BuiltIn::TessLevelInner => "gl_TessLevelInner",
             BuiltIn::TessCoord => "gl_TessCoord",
             BuiltIn::BoundingBoxOES => "gl_BoundingBoxOES",
-            BuiltIn::PixelLocalEXT => "gl_PixelLocalEXT",
         }
     }
 
@@ -1889,10 +1908,14 @@ impl ast::Target for Generator<'_> {
                 }
                 // Used by multiview emulation, gl_InstanceID does not exist in ESSL 100.
                 (Some(BuiltIn::InstanceID), _, 100) => {
-                    Some(unsafe { ffi::make_internal_variable_gl_instance_es100() })
+                    Some(unsafe { ffi::make_internal_variable_gl_instanceid_es100() })
                 }
-                // TODO(http://anglebug.com/349994211): gl_VertexIndex and gl_InstanceIndex too, when
-                // added for the SPIR-V output.
+                (Some(BuiltIn::InstanceIndex), _, _) => {
+                    Some(unsafe { ffi::make_internal_variable_gl_instanceindex() })
+                }
+                (Some(BuiltIn::VertexIndex), _, _) => {
+                    Some(unsafe { ffi::make_internal_variable_gl_vertexindex() })
+                }
                 _ => None,
             };
         if let Some(legacy_variable) = internal_variable {
@@ -2088,12 +2111,22 @@ impl ast::Target for Generator<'_> {
         });
     }
 
-    fn begin_block(&mut self, ir_meta: &IRMeta, variables: &[VariableId]) -> *mut TIntermBlock {
+    fn begin_block(
+        &mut self,
+        ir_meta: &IRMeta,
+        variables: &[VariableId],
+        for_loop_variable: Option<VariableId>,
+    ) -> *mut TIntermBlock {
         let block = unsafe { ffi::make_interm_block() };
         variables.iter().for_each(|&id| {
             let variable = ir_meta.get_variable(id);
             let declaration = self.declare_variable(self.variables[&id], variable.initializer);
-            unsafe { ffi::append_instructions_to_block(block, &[declaration]) };
+            if for_loop_variable != Some(id) {
+                unsafe { ffi::append_instructions_to_block(block, &[declaration]) };
+            } else {
+                // If this is a `for` loop variable, declare it inside the `for` loop itself.
+                self.for_loop_variable_declarations.insert(id, declaration);
+            }
         });
         block
     }
@@ -2213,13 +2246,18 @@ impl ast::Target for Generator<'_> {
         result: Option<RegisterId>,
         function_id: FunctionId,
         params: &[TypedId],
+        has_side_effect_with_unused_result: bool,
     ) {
         let params = params.iter().map(|&id| self.get_expression(id)).collect::<Vec<_>>();
         let function = self.functions[&function_id];
         match result {
             Some(result) => {
                 let expr = unsafe { ffi::call(function, &params) };
-                self.expressions.insert(result, expr);
+                if has_side_effect_with_unused_result {
+                    unsafe { ffi::append_typed_instruction_to_block(*block_result, expr) };
+                } else {
+                    self.expressions.insert(result, expr);
+                }
             }
             None => {
                 let statement = unsafe { ffi::call_void(function, &params) };
@@ -2230,10 +2268,11 @@ impl ast::Target for Generator<'_> {
 
     fn unary(
         &mut self,
-        _block_result: &mut *mut TIntermBlock,
+        block_result: &mut *mut TIntermBlock,
         result: RegisterId,
         unary_op: UnaryOpCode,
         id: TypedId,
+        has_side_effect_with_unused_result: bool,
     ) {
         let operand = self.get_expression(id);
         let expr = unsafe {
@@ -2357,16 +2396,21 @@ impl ast::Target for Generator<'_> {
                 }
             }
         };
-        self.expressions.insert(result, expr);
+        if has_side_effect_with_unused_result {
+            unsafe { ffi::append_typed_instruction_to_block(*block_result, expr) };
+        } else {
+            self.expressions.insert(result, expr);
+        }
     }
 
     fn binary(
         &mut self,
-        _block_result: &mut *mut TIntermBlock,
+        block_result: &mut *mut TIntermBlock,
         result: RegisterId,
         binary_op: BinaryOpCode,
         lhs: TypedId,
         rhs: TypedId,
+        has_side_effect_with_unused_result: bool,
     ) {
         let lhs = self.get_expression(lhs);
         let rhs = self.get_expression(rhs);
@@ -2456,7 +2500,11 @@ impl ast::Target for Generator<'_> {
                 }
             }
         };
-        self.expressions.insert(result, expr);
+        if has_side_effect_with_unused_result {
+            unsafe { ffi::append_typed_instruction_to_block(*block_result, expr) };
+        } else {
+            self.expressions.insert(result, expr);
+        }
     }
 
     fn built_in(
@@ -2465,6 +2513,7 @@ impl ast::Target for Generator<'_> {
         result: Option<RegisterId>,
         built_in_op: BuiltInOpCode,
         args: &[TypedId],
+        has_side_effect_with_unused_result: bool,
     ) {
         let args = args.iter().map(|&arg| self.get_expression(arg)).collect::<Vec<_>>();
         let (expr, statement) = unsafe {
@@ -2627,7 +2676,11 @@ impl ast::Target for Generator<'_> {
             }
         };
         if let Some(result) = result {
-            self.expressions.insert(result, expr.unwrap());
+            if has_side_effect_with_unused_result {
+                unsafe { ffi::append_typed_instruction_to_block(*block_result, expr.unwrap()) };
+            } else {
+                self.expressions.insert(result, expr.unwrap());
+            }
         } else {
             unsafe { ffi::append_instructions_to_block(*block_result, &[statement.unwrap()]) };
         }
@@ -2993,6 +3046,44 @@ impl ast::Target for Generator<'_> {
         // instead of before.
         unsafe { ffi::branch_do_loop(*block, body_block.unwrap()) };
     }
+    fn branch_for_loop(
+        &mut self,
+        block: &mut *mut TIntermBlock,
+        info: &util::TrivialLoopInfo,
+        body_block: Option<*mut TIntermBlock>,
+    ) {
+        // The condition, continue and body blocks should always be present.  Condition and
+        // continue blocks will also be one-liners.  However, we can't use the continue block if
+        // the source used += or -= because they are expanded during translation.  So instead, the
+        // contents of `info` is passed so that the `for` loop is reconstructed as appropriate for
+        // the AST.
+        let loop_variable_declaration = self.for_loop_variable_declarations[&info.loop_variable];
+        let loop_variable = self.variables[&info.loop_variable];
+        let condition_op = match info.condition_op {
+            BinaryOpCode::Equal => ffi::ASTForLoopConditionOp::Equal,
+            BinaryOpCode::NotEqual => ffi::ASTForLoopConditionOp::NotEqual,
+            BinaryOpCode::LessThan => ffi::ASTForLoopConditionOp::LessThan,
+            BinaryOpCode::GreaterThan => ffi::ASTForLoopConditionOp::GreaterThan,
+            BinaryOpCode::LessThanEqual => ffi::ASTForLoopConditionOp::LessThanEqual,
+            BinaryOpCode::GreaterThanEqual => ffi::ASTForLoopConditionOp::GreaterThanEqual,
+            _ => panic!("Internal error: Invalid for loop condition operator"),
+        };
+        let condition_comparator = self.constants[&info.condition_comparator];
+        let increment_step =
+            info.increment_step.map_or(std::ptr::null_mut(), |id| self.constants[&id]);
+        unsafe {
+            ffi::branch_for_loop(
+                *block,
+                loop_variable_declaration,
+                loop_variable,
+                condition_op,
+                condition_comparator,
+                info.ascending,
+                increment_step,
+                body_block.unwrap(),
+            )
+        };
+    }
     fn branch_loop_if(&mut self, block: &mut *mut TIntermBlock, condition: TypedId) {
         // The condition block of a loop ends in `if (!condition) break;`
         unsafe { ffi::branch_loop_if(*block, &self.get_expression(condition)) };
@@ -3007,7 +3098,7 @@ impl ast::Target for Generator<'_> {
         let value = self.get_expression(value);
         let case_labels = case_ids
             .iter()
-            .map(|id| id.map(|id| self.constants[&id]).unwrap_or(std::ptr::null_mut()))
+            .map(|id| id.map_or(std::ptr::null_mut(), |id| self.constants[&id]))
             .collect::<Vec<_>>();
 
         unsafe { ffi::branch_switch(*block, &value, &case_labels, &case_blocks) };

@@ -60,7 +60,6 @@ public:
     unsigned currentFrameIndex() const { return m_source->currentFrameIndex(); }
     bool currentFrameHasAlpha() const { return m_source->currentImageFrame().hasAlpha(); }
     ImageOrientation currentFrameOrientation() const { return m_source->currentImageFrame().orientation(); }
-    Headroom currentFrameHeadroom(ShouldDecodeToHDR shouldDecodeToHDR) const { return m_source->currentImageFrame().headroom(shouldDecodeToHDR); }
     DecodingOptions currentFrameDecodingOptions() const { return m_source->currentImageFrame().decodingOptions(std::nullopt); }
 
     // Primary & current NativeImage
@@ -69,8 +68,10 @@ public:
     RefPtr<NativeImage> currentNativeImage() final { return m_source->currentNativeImage(); }
 
     // Image Metadata
+    String uti() const final { return m_source->uti(); }
     FloatSize size(ImageOrientation orientation = ImageOrientation::Orientation::FromImage) const final { return m_source->size(orientation); }
     FloatSize sourceSize(ImageOrientation orientation = ImageOrientation::Orientation::FromImage) const { return m_source->sourceSize(orientation); }
+    FloatSize density() const { return m_source->density(); }
     DestinationColorSpace colorSpace() final { return m_source->colorSpace(); }
     bool hasHDRContent() const final { return m_source->hasHDRContent(); }
     ImageOrientation orientation() const final { return m_source->orientation(); }
@@ -122,7 +123,6 @@ private:
 
     // Image Metadata
     bool hasDensityCorrectedSize() const final { return m_source->hasDensityCorrectedSize(); }
-    String uti() const final { return m_source->uti(); }
     String filenameExtension() const final { return m_source->filenameExtension(); }
     String accessibilityDescription() const final { return m_source->accessibilityDescription(); }
     std::optional<IntPoint> hotSpot() const final { return m_source->hotSpot(); }

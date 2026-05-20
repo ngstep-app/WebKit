@@ -25,8 +25,7 @@
 #include "Document.h"
 #include "ElementInlines.h"
 #include "Event.h"
-#include "EventTargetInlines.h"
-#include "NodeInlines.h"
+#include "EventNames.h"
 #include "ScriptElement.h"
 #include <wtf/TZoneMallocInlines.h>
 
@@ -113,7 +112,7 @@ void SVGScriptElement::addSubresourceAttributeURLs(ListHashSet<URL>& urls) const
 {
     SVGElement::addSubresourceAttributeURLs(urls);
 
-    addSubresourceURL(urls, protect(document())->completeURL(href()));
+    addSubresourceURL(urls, protect(document())->encodingParseURL(href()));
 }
 Ref<Element> SVGScriptElement::cloneElementWithoutAttributesAndChildren(Document& document, CustomElementRegistry*) const
 {

@@ -26,7 +26,12 @@
 #include "config.h"
 #include "RemoteFrameView.h"
 
+#include "AXObjectCache.h"
+#include "Chrome.h"
+#include "ChromeClient.h"
+#include "DocumentPage.h"
 #include "GraphicsContext.h"
+#include "Page.h"
 #include "RemoteFrame.h"
 #include "RemoteFrameClient.h"
 #include <wtf/TZoneMallocInlines.h>
@@ -49,8 +54,16 @@ void RemoteFrameView::setFrameRect(const IntRect& newRect)
 {
     IntRect oldRect = frameRect();
     setFrameRectWithoutSync(newRect);
-    if (newRect != oldRect)
+    if (newRect != oldRect) {
         m_frame->client().frameRectDidChange(newRect);
+
+#if ENABLE(ACCESSIBILITY_LOCAL_FRAME)
+        if (AXObjectCache::accessibilityEnabled()) {
+            if (RefPtr page = m_frame->page())
+                page->chrome().client().scheduleAccessibilityFrameGeometryUpdate();
+        }
+#endif
+    }
 }
 
 LayoutRect RemoteFrameView::layoutViewportRect() const
@@ -66,12 +79,12 @@ std::optional<LayoutRect> RemoteFrameView::visibleRectOfChild(const Frame& child
     });
 }
 
-bool RemoteFrameView::ownerElementOfChildFrameUsesDarkAppearance(const Frame& child) const
+OptionSet<FrameOwnerElementAppearance> RemoteFrameView::appearanceOfOwnerElementOfChildFrame(const Frame& child) const
 {
-    auto maybeInfo = m_frame->frameTreeSyncData().childrenFrameLayoutInfo.getOptional(child.frameID());
-    return maybeInfo.transform([] (auto& info) {
-        return info.useDarkAppearance;
-    }).value_or(false);
+    if (auto info = m_frame->frameTreeSyncData().childrenFrameLayoutInfo.getOptional(child.frameID()))
+        return info->ownerElementAppearance;
+
+    return { };
 }
 
 // FIXME: Implement all the stubs below.

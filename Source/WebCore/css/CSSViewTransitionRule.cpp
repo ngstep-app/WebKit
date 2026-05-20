@@ -26,6 +26,8 @@
 #include "config.h"
 #include "CSSViewTransitionRule.h"
 
+#include "CSSCustomIdentValue.h"
+#include "CSSKeywordValue.h"
 #include "CSSPropertyParser.h"
 #include "CSSStyleSheet.h"
 #include "CSSTokenizer.h"
@@ -40,13 +42,11 @@ namespace WebCore {
 
 static std::optional<ViewTransitionNavigation> NODELETE toViewTransitionNavigationEnum(RefPtr<CSSValue> navigation)
 {
-    if (!navigation || !navigation->isPrimitiveValue())
+    RefPtr keywordValue = dynamicDowncast<CSSKeywordValue>(navigation);
+    if (!keywordValue)
         return std::nullopt;
 
-    auto& primitiveNavigationValue = downcast<CSSPrimitiveValue>(*navigation);
-    ASSERT(primitiveNavigationValue.isValueID());
-
-    if (primitiveNavigationValue.valueID() == CSSValueAuto)
+    if (keywordValue->valueID() == CSSValueAuto)
         return ViewTransitionNavigation::Auto;
     return ViewTransitionNavigation::None;
 }
@@ -58,8 +58,8 @@ StyleRuleViewTransition::StyleRuleViewTransition(Ref<StyleProperties>&& properti
 
     if (auto value = properties->getPropertyCSSValue(CSSPropertyTypes)) {
         auto processSingleValue = [&](const CSSValue& currentValue) {
-            if (currentValue.isCustomIdent())
-                m_types.append(currentValue.customIdent());
+            if (RefPtr customIdentValue = dynamicDowncast<CSSCustomIdentValue>(currentValue))
+                m_types.append(customIdentValue->customIdent().value);
         };
         if (auto* list = dynamicDowncast<CSSValueList>(*value)) {
             for (Ref currentValue : *list)

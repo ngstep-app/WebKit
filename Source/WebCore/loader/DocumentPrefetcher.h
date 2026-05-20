@@ -25,7 +25,7 @@
 
 #pragma once
 
-#include "CachedResourceClient.h"
+#include "CachedRawResourceClient.h"
 #include "CachedResourceHandle.h"
 #include <optional>
 #include <wtf/CompletionHandler.h>
@@ -58,6 +58,7 @@ public:
     void ref() const final { RefCounted::ref(); }
     void deref() const final { RefCounted::deref(); }
 
+    void clear();
     void prefetch(const URL&, const Vector<String>& tags, std::optional<ReferrerPolicy>, bool lowPriority = false);
     void removePrefetch(const URL&);
     bool wasPrefetched(const URL&) const;

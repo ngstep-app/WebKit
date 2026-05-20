@@ -56,8 +56,10 @@ public:
     
     // This is the default DOM unwrapping. It calls toUnsharedArrayBuffer().
     static ArrayBuffer* toWrapped(VM&, JSValue);
+    static ArrayBuffer* toWrappedAllowResizable(VM&, JSValue);
     static ArrayBuffer* toWrappedAllowShared(VM&, JSValue);
-    
+    static ArrayBuffer* toWrappedAllowSharedAndResizable(VM&, JSValue);
+
 private:
     JSArrayBuffer(VM&, Structure*, RefPtr<ArrayBuffer>&&);
     void finishCreation(VM&, JSGlobalObject*);
@@ -69,7 +71,7 @@ private:
 
 inline ArrayBuffer* toPossiblySharedArrayBuffer(VM&, JSValue value)
 {
-    JSArrayBuffer* wrapper = jsDynamicCast<JSArrayBuffer*>(value);
+    JSArrayBuffer* wrapper = dynamicDowncast<JSArrayBuffer>(value);
     if (!wrapper)
         return nullptr;
     return wrapper->impl();
@@ -91,12 +93,22 @@ inline ArrayBuffer* JSArrayBuffer::toWrapped(VM& vm, JSValue value)
     return result;
 }
 
+inline ArrayBuffer* JSArrayBuffer::toWrappedAllowResizable(VM& vm, JSValue value)
+{
+    return toUnsharedArrayBuffer(vm, value);
+}
+
 inline ArrayBuffer* JSArrayBuffer::toWrappedAllowShared(VM& vm, JSValue value)
 {
     auto result = toPossiblySharedArrayBuffer(vm, value);
     if (!result || result->isResizableOrGrowableShared())
         return nullptr;
     return result;
+}
+
+inline ArrayBuffer* JSArrayBuffer::toWrappedAllowSharedAndResizable(VM& vm, JSValue value)
+{
+    return toPossiblySharedArrayBuffer(vm, value);
 }
 
 } // namespace JSC

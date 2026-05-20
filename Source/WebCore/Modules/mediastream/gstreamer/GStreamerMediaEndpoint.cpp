@@ -944,6 +944,7 @@ void GStreamerMediaEndpoint::doSetRemoteDescription(const RTCSessionDescription&
         }
 
         if (unsigned totalMedias = gst_sdp_message_medias_len(sdpMessage.get())) {
+            bool hasInvalidFormat = false;
             bool hasRtcpMuxAttribute = false;
             for (unsigned i = 0; i < totalMedias; i++) {
                 const auto media = gst_sdp_message_get_media(sdpMessage.get(), i);
@@ -961,11 +962,27 @@ void GStreamerMediaEndpoint::doSetRemoteDescription(const RTCSessionDescription&
                         break;
                     }
                 }
-                if (hasRtcpMuxAttribute)
+
+                unsigned totalFormats = gst_sdp_media_formats_len(media);
+                for (unsigned ii = 0; ii < totalFormats; ii++) {
+                    auto formatString = CStringView::unsafeFromUTF8(gst_sdp_media_get_format(media, ii));
+                    auto format = WTF::parseInteger<int>(formatString.span());
+                    if (!format) [[unlikely]]
+                        continue;
+                    if (*format < 64 || *format >= 96)
+                        continue;
+                    hasInvalidFormat = true;
+                    break;
+                }
+                if (hasRtcpMuxAttribute || hasInvalidFormat)
                     break;
             }
             if (!hasRtcpMuxAttribute) {
                 peerConnectionBackend->setRemoteDescriptionFailed(Exception { ExceptionCode::InvalidAccessError, "Invalid SDP, the rtcp-mux attribute is missing"_s });
+                return;
+            }
+            if (hasInvalidFormat) {
+                peerConnectionBackend->setRemoteDescriptionFailed(Exception { ExceptionCode::InvalidAccessError, "Invalid SDP, PT is in 64-95 range"_s });
                 return;
             }
         }
@@ -1074,8 +1091,7 @@ void GStreamerMediaEndpoint::setDescription(const RTCSessionDescription* descrip
         }
 
         if (!description->sdp().isEmpty()) {
-            auto sdp = makeStringByReplacingAll(description->sdp(), "opus"_s, "OPUS"_s);
-            if (gst_sdp_message_new_from_text(sdp.utf8().data(), &message.outPtr()) != GST_SDP_OK) {
+            if (gst_sdp_message_new_from_text(description->sdp().utf8().data(), &message.outPtr()) != GST_SDP_OK) {
                 failureCallback(nullptr);
                 return;
             }
@@ -1620,6 +1636,27 @@ void GStreamerMediaEndpoint::connectIncomingTrack(WebRTCTrackData& data)
     gst_element_set_state(m_pipeline.get(), GST_STATE_PLAYING);
 }
 
+void GStreamerMediaEndpoint::notifyFirstPacketReceived(WebRTCTrackData& data)
+{
+    auto peerConnectionBackend = this->peerConnectionBackend();
+    if (!peerConnectionBackend)
+        return;
+
+    RefPtr<RTCRtpTransceiver> transceiver = peerConnectionBackend->existingTransceiver([&](auto& backend) -> bool {
+        GUniqueOutPtr<char> mid;
+        g_object_get(backend.rtcTransceiver(), "mid", &mid.outPtr(), nullptr);
+        GST_DEBUG_OBJECT(m_pipeline.get(), "Checking if transceiver with mid %s matches the track mid", mid.get());
+        return data.mid == StringView::fromLatin1(mid.get());
+    });
+    if (!transceiver)
+        return;
+
+    GST_DEBUG_OBJECT(m_pipeline.get(), "Un-muting incoming track with MID %s", data.mid.ascii().data());
+    auto& track = transceiver->receiver().track();
+    auto& source = track.privateTrack().source();
+    source.setMuted(false);
+}
+
 void GStreamerMediaEndpoint::connectPad(GstPad* pad)
 {
     auto caps = adoptGRef(gst_pad_get_current_caps(pad));
@@ -1855,7 +1892,7 @@ ExceptionOr<GStreamerMediaEndpoint::Backends> GStreamerMediaEndpoint::createTran
             gst_value_set_structure(&value, encodingData.returnValue().get());
             gst_value_list_append_and_take_value(&encodingsValue, &value);
         } else {
-            GUniquePtr<GstStructure> encodingData(gst_structure_new("encoding-parameters", "encoding-name", G_TYPE_STRING, "OPUS", "payload", G_TYPE_INT, 96, "active", G_TYPE_BOOLEAN, TRUE, nullptr));
+            GUniquePtr<GstStructure> encodingData(gst_structure_new("encoding-parameters", "encoding-name", G_TYPE_STRING, "opus", "payload", G_TYPE_INT, 96, "active", G_TYPE_BOOLEAN, TRUE, nullptr));
             GValue value = G_VALUE_INIT;
             g_value_init(&value, GST_TYPE_STRUCTURE);
             gst_value_set_structure(&value, encodingData.get());

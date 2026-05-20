@@ -33,6 +33,7 @@
 #include "B3SlotBaseValue.h"
 #include "B3ValueInlines.h"
 #include "B3ValueKeyInlines.h"
+#include "B3WasmArrayLengthValue.h"
 #include "B3WasmRefTypeCheckValue.h"
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
@@ -205,6 +206,10 @@ Value* ValueKey::materialize(Procedure& proc, Origin origin) const
     case VectorTransposeEven:
     case VectorTransposeOdd:
     case VectorRelaxedSwizzle:
+    case VectorRelaxedMin:
+    case VectorRelaxedMax:
+    case VectorRelaxedQ15Mulr:
+    case VectorRelaxedDotI8x16I7x16:
         return proc.add<SIMDValue>(origin, kind(), type(), simdInfo(), child(proc, 0), child(proc, 1));
     case VectorReplaceLane:
     case VectorMulByElement:
@@ -214,6 +219,7 @@ Value* ValueKey::materialize(Procedure& proc, Origin origin) const
     case VectorRelaxedNMAdd:
     case VectorBitwiseSelect:
     case VectorRelaxedLaneSelect:
+    case VectorRelaxedDotI8x16I7x16Add:
         return proc.add<SIMDValue>(origin, kind(), type(), simdInfo(), child(proc, 0), child(proc, 1), child(proc, 2));
     case VectorSwizzle:
         if (u.indices[2] == UINT32_MAX)
@@ -245,6 +251,11 @@ Value* ValueKey::materialize(Procedure& proc, Origin origin) const
             return proc.add<WasmRefTypeCheckValue>(kind(), type(), origin, targetHeapType, flags, WTF::move(targetRTT), child(proc, 0), child(proc, 1));
         return proc.add<WasmRefTypeCheckValue>(kind(), type(), origin, targetHeapType, flags, WTF::move(targetRTT), child(proc, 0));
     }
+    case WasmArrayLength: {
+        auto* v = proc.add<WasmArrayLengthValue>(kind(), type(), origin, child(proc, 0));
+        v->setRange(proc.heaps().JSWebAssemblyArray_size.range());
+        return v;
+    }
     case Nop:
     case Set:
     case Get:
@@ -269,6 +280,9 @@ Value* ValueKey::materialize(Procedure& proc, Origin origin) const
     case WasmStructGet:
     case WasmStructSet:
     case WasmStructNew:
+    case WasmArrayGet:
+    case WasmArraySet:
+    case WasmArrayNew:
     case MemoryCopy:
     case MemoryFill:
     case Fence:

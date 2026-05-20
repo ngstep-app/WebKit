@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2013-2024 Apple Inc. All rights reserved.
+ * Copyright (C) 2013-2026 Apple Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -82,7 +82,11 @@ using namespace WebCore;
 - (instancetype)initWithMediaEnvironment:(NSString *)mediaEnvironment;
 @end
 
-@interface WebCoreAVVideoCaptureSourceObserver : NSObject<AVCaptureVideoDataOutputSampleBufferDelegate, AVCapturePhotoCaptureDelegate> {
+@interface WebCoreAVVideoCaptureSourceObserver : NSObject<AVCaptureVideoDataOutputSampleBufferDelegate,
+#if HAVE(AVCAPTUREPHOTOOUTPUT_READINESS_COORDINATOR)
+    AVCapturePhotoOutputReadinessCoordinatorDelegate,
+#endif
+    AVCapturePhotoCaptureDelegate> {
     ThreadSafeWeakPtr<AVVideoCaptureSource> m_captureSource;
 }
 
@@ -92,13 +96,19 @@ using namespace WebCore;
 -(void)removeNotificationObservers;
 -(void)captureOutput:(AVCaptureOutput*)captureOutput didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection*)connection;
 -(void)observeValueForKeyPath:keyPath ofObject:(id)object change:(NSDictionary*)change context:(void*)context;
+-(void)captureOutput:(AVCapturePhotoOutput *)output didFinishProcessingPhoto:(AVCapturePhoto *)photo error:(NSError *)error;
+
 #if PLATFORM(IOS_FAMILY)
 -(void)sessionRuntimeError:(NSNotification*)notification;
 -(void)beginSessionInterrupted:(NSNotification*)notification;
 -(void)endSessionInterrupted:(NSNotification*)notification;
 -(void)deviceConnectedDidChange:(NSNotification*)notification;
 #endif
-- (void)captureOutput:(AVCapturePhotoOutput *)output didFinishProcessingPhoto:(AVCapturePhoto *)photo error:(NSError *)error;
+
+#if HAVE(AVCAPTUREPHOTOOUTPUT_READINESS_COORDINATOR)
+-(void)readinessCoordinator:(AVCapturePhotoOutputReadinessCoordinator *)coordinator captureReadinessDidChange:(AVCapturePhotoOutputCaptureReadiness)captureReadiness;
+#endif
+
 @end
 
 namespace WebCore {
@@ -193,6 +203,27 @@ static MeteringMode NODELETE meteringModeFromAVCaptureWhiteBalanceMode(AVCapture
     return MeteringMode::None;
 }
 
+static IntSize maxPhotoSizeForFormat(AVCaptureDeviceFormat *format, IntSize requestedSize)
+{
+    ASSERT([format respondsToSelector:@selector(supportedMaxPhotoDimensions)]);
+
+    NSArray<NSValue*> *maxPhotoDimensions = format.supportedMaxPhotoDimensions;
+    if (!maxPhotoDimensions.count)
+        return { };
+
+    auto bestMaxPhotoSize = maxPhotoDimensions.firstObject.CMVideoDimensionsValue;
+    for (NSValue *value in maxPhotoDimensions) {
+        CMVideoDimensions dimensions = value.CMVideoDimensionsValue;
+        if (dimensions.width >= requestedSize.width() && dimensions.height >= requestedSize.height()) {
+            if (dimensions.width * dimensions.height < bestMaxPhotoSize.width * bestMaxPhotoSize.height)
+                bestMaxPhotoSize = dimensions;
+        }
+    }
+
+    return { bestMaxPhotoSize.width, bestMaxPhotoSize.height };
+}
+
+
 std::optional<double> AVVideoCaptureSource::computeMinZoom() const
 {
 #if PLATFORM(IOS_FAMILY)
@@ -270,6 +301,7 @@ AVVideoCaptureSource::AVVideoCaptureSource(AVCaptureDevice* avDevice, const Capt
 
 AVVideoCaptureSource::~AVVideoCaptureSource()
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     ALWAYS_LOG_IF_POSSIBLE(LOGIDENTIFIER);
 
     [m_objcObserver disconnect];
@@ -327,18 +359,28 @@ void AVVideoCaptureSource::startupTimerFired()
 
 void AVVideoCaptureSource::clearSession()
 {
+    assertIsCurrent(RunLoop::mainSingleton());
+
     ALWAYS_LOG_IF_POSSIBLE(LOGIDENTIFIER);
     ASSERT(m_session);
     [m_session removeObserver:m_objcObserver.get() forKeyPath:@"running"];
     m_session = nullptr;
+    m_photoOutput = nullptr;
+#if HAVE(AVCAPTUREPHOTOOUTPUT_READINESS_COORDINATOR)
+    m_readinessCoordinator = nullptr;
+    if (m_pendingPhotoSettings) {
+        m_pendingPhotoSettings = nullptr;
+        m_pendingCaptureWatchdog = nullptr;
+        rejectPendingPhotoRequest("Session cleared"_s);
+    }
+#endif
 }
 
 void AVVideoCaptureSource::startProducingData()
 {
-    if (!m_session) {
-        if (!setupSession())
-            return;
-    }
+    assertIsCurrent(RunLoop::mainSingleton());
+    if (!m_session && !setupSession())
+        return;
 
     bool isRunning = !![m_session isRunning];
     ALWAYS_LOG_IF_POSSIBLE(LOGIDENTIFIER, isRunning);
@@ -361,6 +403,7 @@ void AVVideoCaptureSource::startProducingData()
 
 void AVVideoCaptureSource::stopProducingData()
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     if (!m_session)
         return;
 
@@ -377,6 +420,7 @@ void AVVideoCaptureSource::stopProducingData()
 
 void AVVideoCaptureSource::stopSession()
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     ASSERT(!m_beginConfigurationCount);
 
     @try {
@@ -414,6 +458,7 @@ void AVVideoCaptureSource::beginConfigurationForConstraintsIfNeeded()
 
 void AVVideoCaptureSource::beginConfiguration()
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     if (++m_beginConfigurationCount > 1)
         return;
 
@@ -423,6 +468,7 @@ void AVVideoCaptureSource::beginConfiguration()
 
 void AVVideoCaptureSource::commitConfiguration()
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     ASSERT(m_beginConfigurationCount);
     if (!m_beginConfigurationCount || --m_beginConfigurationCount > 0)
         return;
@@ -433,6 +479,7 @@ void AVVideoCaptureSource::commitConfiguration()
 
 void AVVideoCaptureSource::settingsDidChange(OptionSet<RealtimeMediaSourceSettings::Flag> settings)
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     m_currentSettings = std::nullopt;
 
     bool whiteBalanceModeChanged = settings.contains(RealtimeMediaSourceSettings::Flag::WhiteBalanceMode);
@@ -454,6 +501,7 @@ void AVVideoCaptureSource::settingsDidChange(OptionSet<RealtimeMediaSourceSettin
 
 void AVVideoCaptureSource::configurationChanged()
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     m_currentSettings = { };
     m_capabilities = { };
 
@@ -484,6 +532,7 @@ static Vector<MeteringMode> supportedWhiteBalanceModes(AVCaptureDevice* device)
 
 const RealtimeMediaSourceSettings& AVVideoCaptureSource::settings()
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     if (m_currentSettings)
         return *m_currentSettings;
 
@@ -549,6 +598,7 @@ const RealtimeMediaSourceSettings& AVVideoCaptureSource::settings()
 
 const RealtimeMediaSourceCapabilities& AVVideoCaptureSource::capabilities()
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     if (m_capabilities)
         return *m_capabilities;
 
@@ -599,24 +649,40 @@ const RealtimeMediaSourceCapabilities& AVVideoCaptureSource::capabilities()
     return *m_capabilities;
 }
 
+AVCaptureDevice* AVVideoCaptureSource::device() const
+{
+    assertIsCurrent(RunLoop::mainSingleton());
+    return m_device.get();
+}
+
+AVCaptureSession* AVVideoCaptureSource::session() const
+{
+    assertIsCurrent(RunLoop::mainSingleton());
+    return m_session.get();
+}
+
 AVCapturePhotoOutput* AVVideoCaptureSource::photoOutput()
 {
     assertIsCurrent(RunLoop::mainSingleton());
 
+    if (m_photoOutput)
+        return m_photoOutput.get();
+
+    m_photoOutput = adoptNS([PAL::allocAVCapturePhotoOutputInstance() init]);
     if (!m_photoOutput) {
-        m_photoOutput = adoptNS([PAL::allocAVCapturePhotoOutputInstance() init]);
-
-        if (!m_photoOutput) {
-            ERROR_LOG_IF_POSSIBLE(LOGIDENTIFIER, "unable to allocate AVCapturePhotoOutput");
-            return nullptr;
-        }
-
-        if (![session() canAddOutput:m_photoOutput.get()]) {
-            ERROR_LOG_IF_POSSIBLE(LOGIDENTIFIER, "unable to add photo output");
-            return nullptr;
-        }
-        [session() addOutput:m_photoOutput.get()];
+        ERROR_LOG_IF_POSSIBLE(LOGIDENTIFIER, "unable to allocate AVCapturePhotoOutput");
+        return nullptr;
     }
+    if (![session() canAddOutput:m_photoOutput.get()]) {
+        ERROR_LOG_IF_POSSIBLE(LOGIDENTIFIER, "unable to add photo output");
+        return nullptr;
+    }
+    [session() addOutput:m_photoOutput.get()];
+
+#if HAVE(AVCAPTUREPHOTOOUTPUT_READINESS_COORDINATOR)
+    m_readinessCoordinator = adoptNS([PAL::allocAVCapturePhotoOutputReadinessCoordinatorInstance() initWithPhotoOutput:m_photoOutput.get()]);
+    [m_readinessCoordinator setDelegate:m_objcObserver.get()];
+#endif
 
     return m_photoOutput.get();
 }
@@ -648,11 +714,11 @@ void AVVideoCaptureSource::rejectPendingPhotoRequest(const String& error)
 
 IntSize AVVideoCaptureSource::maxPhotoSizeForCurrentPreset(IntSize requestedSize) const
 {
-    ASSERT(isMainThread());
+    assertIsCurrent(RunLoop::mainSingleton());
 
-    auto *format = [m_device activeFormat];
+    auto *format = [device() activeFormat];
     if ([format respondsToSelector:@selector(supportedMaxPhotoDimensions)])
-        return maxPhotoSizeForActiveFormat(format, requestedSize);
+        return maxPhotoSizeForFormat(format, requestedSize);
 
     if (m_currentPreset)
         return m_currentPreset->size();
@@ -660,58 +726,43 @@ IntSize AVVideoCaptureSource::maxPhotoSizeForCurrentPreset(IntSize requestedSize
     return { };
 }
 
-IntSize AVVideoCaptureSource::maxPhotoSizeForActiveFormat(AVCaptureDeviceFormat *format, IntSize requestedSize) const
-{
-    ASSERT([format respondsToSelector:@selector(supportedMaxPhotoDimensions)]);
-
-    NSArray<NSValue*> *maxPhotoDimensions = format.supportedMaxPhotoDimensions;
-    if (!maxPhotoDimensions.count)
-        return { };
-
-    auto bestMaxPhotoSize = maxPhotoDimensions.firstObject.CMVideoDimensionsValue;
-    for (NSValue *value in maxPhotoDimensions) {
-        CMVideoDimensions dimensions = value.CMVideoDimensionsValue;
-        if (dimensions.width >= requestedSize.width() && dimensions.height >= requestedSize.height()) {
-            if (dimensions.width * dimensions.height < bestMaxPhotoSize.width * bestMaxPhotoSize.height)
-                bestMaxPhotoSize = dimensions;
-        }
-    }
-
-    return { bestMaxPhotoSize.width, bestMaxPhotoSize.height };
-}
-
-RetainPtr<AVCapturePhotoSettings> AVVideoCaptureSource::photoConfiguration(const PhotoSettings& photoSettings)
+RetainPtr<AVCapturePhotoSettings> AVVideoCaptureSource::photoConfiguration(const PhotoSettings& photoSettings, AVCapturePhotoOutput* photoOutput)
 {
     assertIsCurrent(RunLoop::mainSingleton());
 
-    IntSize requestedPhotoDimensions = { 0, 0 };
-    if (photoSettings.imageHeight && photoSettings.imageWidth)
-        requestedPhotoDimensions = { static_cast<int>(*photoSettings.imageWidth), static_cast<int>(*photoSettings.imageHeight) };
+    RetainPtr<AVCapturePhotoSettings> avPhotoSettings;
 
-    AVCapturePhotoSettings* avPhotoSettings = [PAL::getAVCapturePhotoSettingsClassSingleton() photoSettingsWithFormat:@{
-        AVVideoCodecKey : AVVideoCodecTypeJPEG,
-        AVVideoCompressionPropertiesKey : @{ AVVideoQualityKey : @(1) }
-    }];
+    @try {
+        avPhotoSettings = [PAL::getAVCapturePhotoSettingsClassSingleton() photoSettingsWithFormat:@{
+            AVVideoCodecKey : AVVideoCodecTypeJPEG,
+            AVVideoCompressionPropertiesKey : @{ AVVideoQualityKey : @(1) }
+        }];
 
 #if PLATFORM(IOS_FAMILY)
-    auto* photoOutput = this->photoOutput();
-    ASSERT(photoOutput);
-    if (!photoOutput)
-        return nullptr;
+        if (photoSettings.fillLightMode) {
+            auto flashMode = toAVCaptureFlashMode(*photoSettings.fillLightMode);
+            if ([[photoOutput supportedFlashModes] containsObject:@(flashMode)])
+                [avPhotoSettings setFlashMode:flashMode];
+        }
 
-    if (photoSettings.fillLightMode) {
-        auto flashMode = toAVCaptureFlashMode(*photoSettings.fillLightMode);
-        if ([photoOutput.supportedFlashModes containsObject:@(flashMode)])
-            [avPhotoSettings setFlashMode:flashMode];
-    }
-
-    if (photoSettings.redEyeReduction && photoOutput.isAutoRedEyeReductionSupported)
-        [avPhotoSettings setAutoRedEyeReductionEnabled:!!photoSettings.redEyeReduction.value()];
+        if (photoSettings.redEyeReduction && [photoOutput isAutoRedEyeReductionSupported])
+            [avPhotoSettings setAutoRedEyeReductionEnabled:!!photoSettings.redEyeReduction.value()];
+#else
+        UNUSED_PARAM(photoOutput);
 #endif
 
-    requestedPhotoDimensions = maxPhotoSizeForCurrentPreset(requestedPhotoDimensions);
-    if (!requestedPhotoDimensions.isEmpty() && [avPhotoSettings respondsToSelector:@selector(setMaxPhotoDimensions:)])
-        [avPhotoSettings setMaxPhotoDimensions: { requestedPhotoDimensions.width(), requestedPhotoDimensions.height() }];
+        if ([avPhotoSettings respondsToSelector:@selector(setMaxPhotoDimensions:)]) {
+            IntSize requestedPhotoDimensions;
+            if (photoSettings.imageHeight && photoSettings.imageWidth)
+                requestedPhotoDimensions = roundedIntSize(FloatSize(*photoSettings.imageWidth, *photoSettings.imageHeight));
+            requestedPhotoDimensions = maxPhotoSizeForCurrentPreset(requestedPhotoDimensions);
+            if (!requestedPhotoDimensions.isEmpty())
+                [avPhotoSettings setMaxPhotoDimensions:toCMVideoDimensions(requestedPhotoDimensions)];
+        }
+    } @catch(NSException *exception) {
+        ERROR_LOG_IF_POSSIBLE(LOGIDENTIFIER, "error configuring photoSettings ", [[exception name] UTF8String], ", reason : ", [exception reason]);
+        return nullptr;
+    }
 
     return avPhotoSettings;
 }
@@ -736,32 +787,93 @@ auto AVVideoCaptureSource::takePhotoInternal(PhotoSettings&& photoSettings) -> R
         promise = static_cast<Ref<TakePhotoNativePromise>>(*m_photoProducer);
     }
 
-    RetainPtr<AVCapturePhotoSettings> avPhotoSettings = photoConfiguration(photoSettings);
+    RetainPtr<AVCapturePhotoSettings> avPhotoSettings = photoConfiguration(photoSettings, photoOutput.get());
     if (!avPhotoSettings) {
         ERROR_LOG_IF_POSSIBLE(LOGIDENTIFIER, "photoConfiguration() failed");
         return TakePhotoNativePromise::createAndReject("Internal error"_s);
     }
 
-    photoQueueSingleton().dispatch([protectedThis = Ref { *this }, this, avPhotoSettings = WTF::move(avPhotoSettings), photoOutput = WTF::move(photoOutput), device = m_device] {
-        ASSERT(!isMainThread());
-
-        if ([avPhotoSettings respondsToSelector:@selector(setMaxPhotoDimensions:)]) {
-            auto *format = [device activeFormat];
-            auto maxDimensions = [avPhotoSettings maxPhotoDimensions];
-
-            auto requestedPhotoDimensions = maxPhotoSizeForActiveFormat(format, toIntSize(maxDimensions));
-            if (!requestedPhotoDimensions.isEmpty())
-                [photoOutput setMaxPhotoDimensions:toCMVideoDimensions(requestedPhotoDimensions)];
+    if ([avPhotoSettings respondsToSelector:@selector(setMaxPhotoDimensions:)]) {
+        auto requestedDims = toIntSize([avPhotoSettings maxPhotoDimensions]);
+        if (!requestedDims.isEmpty()) {
+            auto currentDims = toIntSize([photoOutput maxPhotoDimensions]);
+            if (requestedDims.width() > currentDims.width() || requestedDims.height() > currentDims.height()) {
+                @try {
+                    [photoOutput setMaxPhotoDimensions:toCMVideoDimensions(requestedDims)];
+                } @catch (NSException *exception) {
+                    ERROR_LOG_IF_POSSIBLE(LOGIDENTIFIER, "error calling setMaxPhotoDimensions: ", [[exception name] UTF8String], ", reason: ", [exception reason]);
+                    rejectPendingPhotoRequest("setMaxPhotoDimensions failed"_s);
+                    return promise.releaseNonNull();
+                }
+            }
         }
+    }
 
-        [photoOutput capturePhotoWithSettings:avPhotoSettings.get() delegate:m_objcObserver.get()];
-    });
+#if HAVE(AVCAPTUREPHOTOOUTPUT_READINESS_COORDINATOR)
+    if (m_readinessCoordinator && [m_readinessCoordinator captureReadiness] != AVCapturePhotoOutputCaptureReadinessReady) {
+        m_pendingPhotoSettings = WTF::move(avPhotoSettings);
+        m_pendingCaptureWatchdog = WTF::makeUnique<Timer>([this, protectedThis = Ref { *this }, identifier = LOGIDENTIFIER] {
+            assertIsCurrent(RunLoop::mainSingleton());
+            if (!m_pendingPhotoSettings)
+                return;
 
+            ERROR_LOG_IF_POSSIBLE(identifier, "photo pipeline readiness timeout");
+            m_pendingPhotoSettings = nullptr;
+            rejectPendingPhotoRequest("Photo capture timed out waiting for pipeline readiness"_s);
+        });
+        m_pendingCaptureWatchdog->startOneShot(photoCapturePipelineReadinessTimeout);
+        return promise.releaseNonNull();
+    }
+#endif
+
+    dispatchCaptureOnPhotoQueue(WTF::move(photoOutput), WTF::move(avPhotoSettings));
     return promise.releaseNonNull();
 }
 
+void AVVideoCaptureSource::dispatchCaptureOnPhotoQueue(RetainPtr<AVCapturePhotoOutput> photoOutput, RetainPtr<AVCapturePhotoSettings>&& avPhotoSettings)
+{
+    assertIsCurrent(RunLoop::mainSingleton());
+    auto identifier = LOGIDENTIFIER;
+    photoQueueSingleton().dispatch([protectedThis = Ref { *this }, this,
+        photoOutput = WTF::move(photoOutput), avPhotoSettings = WTF::move(avPhotoSettings), identifier] mutable {
+        assertIsCurrent(photoQueueSingleton());
+        @try {
+            [photoOutput capturePhotoWithSettings:avPhotoSettings.get() delegate:m_objcObserver.get()];
+        } @catch (NSException *exception) {
+            RunLoop::mainSingleton().dispatch([protectedThis = WTF::move(protectedThis), identifier, exception = RetainPtr { exception }] mutable {
+                ERROR_LOG_WITH_THIS_IF_POSSIBLE(protectedThis, identifier, "error taking photo ", [[exception name] UTF8String], ", reason: ", [exception reason]);
+                protectedThis->rejectPendingPhotoRequest("capturePhotoWithSettings failed"_s);
+            });
+        }
+    });
+}
+
+#if HAVE(AVCAPTUREPHOTOOUTPUT_READINESS_COORDINATOR)
+void AVVideoCaptureSource::captureReadinessDidChange()
+{
+    assertIsCurrent(RunLoop::mainSingleton());
+    if (!m_readinessCoordinator || !m_pendingPhotoSettings)
+        return;
+
+    auto readiness = [m_readinessCoordinator captureReadiness];
+    if (readiness == AVCapturePhotoOutputCaptureReadinessSessionNotRunning) {
+        m_pendingPhotoSettings = nullptr;
+        m_pendingCaptureWatchdog = nullptr;
+        rejectPendingPhotoRequest("Session not running"_s);
+        return;
+    }
+    if (readiness != AVCapturePhotoOutputCaptureReadinessReady)
+        return;
+
+    m_pendingCaptureWatchdog = nullptr;
+    auto pendingSettings = std::exchange(m_pendingPhotoSettings, { });
+    dispatchCaptureOnPhotoQueue(m_photoOutput, WTF::move(pendingSettings));
+}
+#endif
+
 auto AVVideoCaptureSource::getPhotoCapabilities() -> Ref<PhotoCapabilitiesNativePromise>
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     if (m_photoCapabilities)
         return PhotoCapabilitiesNativePromise::createAndResolve(*m_photoCapabilities);
 
@@ -842,6 +954,7 @@ double AVVideoCaptureSource::facingModeFitnessScoreAdjustment() const
 
 void AVVideoCaptureSource::applyFrameRateAndZoomWithPreset(double requestedFrameRate, double requestedZoom, std::optional<VideoPreset>&& preset)
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     requestedZoom *= m_zoomScaleFactor;
     bool isSamePresetAndFrameRate = m_currentFrameRate == requestedFrameRate && preset && m_currentPreset && preset->format() == m_currentPreset->format();
     if (isSamePresetAndFrameRate && m_currentZoom == requestedZoom)
@@ -901,6 +1014,7 @@ static bool isFrameRateMatching(double frameRate, AVCaptureDevice* device)
 
 bool AVVideoCaptureSource::areSettingsMatching() const
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     return m_appliedPreset && m_appliedPreset->format() == m_currentPreset->format()
 #if PLATFORM(IOS_FAMILY)
         && device().videoZoomFactor == m_currentZoom
@@ -910,6 +1024,7 @@ bool AVVideoCaptureSource::areSettingsMatching() const
 
 void AVVideoCaptureSource::setSessionSizeFrameRateAndZoom()
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     ASSERT(m_beginConfigurationCount);
     if (!m_session)
         return;
@@ -1035,6 +1150,7 @@ bool AVVideoCaptureSource::lockForConfiguration()
 
 void AVVideoCaptureSource::updateWhiteBalanceMode()
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     if (!m_isRunning) {
         m_needsWhiteBalanceReconfiguration = true;
         return;
@@ -1058,6 +1174,7 @@ void AVVideoCaptureSource::updateWhiteBalanceMode()
 
 void AVVideoCaptureSource::updateTorch()
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     if (!m_isRunning) {
         m_needsTorchReconfiguration = true;
         return;
@@ -1100,6 +1217,7 @@ ALLOW_DEPRECATED_DECLARATIONS_END
 
 bool AVVideoCaptureSource::setupSession()
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     if (m_session)
         return true;
 
@@ -1170,6 +1288,7 @@ AVFrameRateRange* AVVideoCaptureSource::frameDurationForFrameRate(double rate)
 
 bool AVVideoCaptureSource::setupCaptureSession()
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     ALWAYS_LOG_IF_POSSIBLE(LOGIDENTIFIER);
 
     beginConfiguration();
@@ -1368,7 +1487,7 @@ void AVVideoCaptureSource::captureDeviceSuspendedDidChange()
 {
 #if !PLATFORM(IOS_FAMILY)
     scheduleDeferredTask([protectedThis = Ref { *this }, this, logIdentifier = LOGIDENTIFIER] {
-        m_interrupted = [m_device isSuspended];
+        m_interrupted = [device() isSuspended];
         ALWAYS_LOG_WITH_THIS_IF_POSSIBLE(protectedThis, logIdentifier, !!m_interrupted);
 
         updateVerifyCapturingTimer();
@@ -1425,6 +1544,7 @@ void AVVideoCaptureSource::generatePresets()
 #if PLATFORM(IOS_FAMILY)
 void AVVideoCaptureSource::captureSessionRuntimeError(RetainPtr<NSError> error)
 {
+    assertIsCurrent(RunLoop::mainSingleton());
     auto identifier = LOGIDENTIFIER;
     ERROR_LOG_IF_POSSIBLE(identifier, [error code], ", ", error.get());
 
@@ -1434,8 +1554,8 @@ void AVVideoCaptureSource::captureSessionRuntimeError(RetainPtr<NSError> error)
     scheduleDeferredTask([protectedThis = Ref { *this }, this, identifier] {
         // Try to restart the session, but reset m_isRunning immediately so if it fails we won't try again.
         ERROR_LOG_WITH_THIS_IF_POSSIBLE(protectedThis, identifier, "restarting session");
-        [m_session startRunning];
-        m_isRunning = [m_session isRunning];
+        [session() startRunning];
+        m_isRunning = [session() isRunning];
     });
 }
 
@@ -1483,7 +1603,7 @@ void AVVideoCaptureSource::deviceDisconnected(RetainPtr<NSNotification> notifica
 
 - (void)addNotificationObservers
 {
-    auto source = m_captureSource.get();
+    RefPtr source = m_captureSource.get();
     ASSERT(source);
 
     NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
@@ -1505,15 +1625,26 @@ void AVVideoCaptureSource::deviceDisconnected(RetainPtr<NSNotification> notifica
 
 - (void)captureOutput:(AVCaptureOutput*)captureOutput didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection*)connection
 {
-    if (auto source = m_captureSource.get())
+    if (RefPtr source = m_captureSource.get())
         source->captureOutputDidOutputSampleBufferFromConnection(captureOutput, sampleBuffer, connection);
 }
 
 - (void)captureOutput:(AVCapturePhotoOutput *)captureOutput didFinishProcessingPhoto:(AVCapturePhoto *)photo error:(NSError *)error
 {
-    if (auto source = m_captureSource.get())
+    if (RefPtr source = m_captureSource.get())
         source->captureOutputDidFinishProcessingPhoto(captureOutput, photo, error);
 }
+
+#if HAVE(AVCAPTUREPHOTOOUTPUT_READINESS_COORDINATOR)
+- (void)readinessCoordinator:(AVCapturePhotoOutputReadinessCoordinator *)coordinator captureReadinessDidChange:(AVCapturePhotoOutputCaptureReadiness)captureReadiness
+{
+    UNUSED_PARAM(coordinator);
+    UNUSED_PARAM(captureReadiness);
+
+    if (RefPtr source = m_captureSource.get())
+        source->captureReadinessDidChange();
+}
+#endif
 
 - (void)observeValueForKeyPath:keyPath ofObject:(id)object change:(NSDictionary*)change context:(void*)context
 {
@@ -1548,7 +1679,7 @@ void AVVideoCaptureSource::deviceDisconnected(RetainPtr<NSNotification> notifica
 
 - (void)deviceConnectedDidChange:(NSNotification*)notification
 {
-    if (auto source = m_captureSource.get())
+    if (RefPtr source = m_captureSource.get())
         source->deviceDisconnected(notification);
 }
 
@@ -1556,19 +1687,19 @@ void AVVideoCaptureSource::deviceDisconnected(RetainPtr<NSNotification> notifica
 - (void)sessionRuntimeError:(NSNotification*)notification
 {
     NSError *error = notification.userInfo[AVCaptureSessionErrorKey];
-    if (auto source = m_captureSource.get())
+    if (RefPtr source = m_captureSource.get())
         source->captureSessionRuntimeError(error);
 }
 
 - (void)beginSessionInterrupted:(NSNotification*)notification
 {
-    if (auto source = m_captureSource.get())
+    if (RefPtr source = m_captureSource.get())
         source->captureSessionBeginInterruption(notification);
 }
 
 - (void)endSessionInterrupted:(NSNotification*)notification
 {
-    if (auto source = m_captureSource.get())
+    if (RefPtr source = m_captureSource.get())
         source->captureSessionEndInterruption(notification);
 }
 #endif

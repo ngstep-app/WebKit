@@ -176,10 +176,9 @@ JSObject* JSLazyEventListener::initializeJSFunction(ScriptExecutionContext& exec
         }
 
         if (listenerHasEventHandlerScope) {
-            ASSERT(wrapper()->inherits<JSHTMLElement>());
             // Add the event's home element to the scope (and the document, and the form - see JSHTMLElement::eventHandlerScope)
-            JSFunction* listenerAsFunction = jsCast<JSFunction*>(jsFunction);
-            listenerAsFunction->setScope(vm, jsCast<JSHTMLElement*>(wrapper())->pushEventHandlerScope(lexicalGlobalObject, listenerAsFunction->scope()));
+            JSFunction* listenerAsFunction = downcast<JSFunction>(jsFunction);
+            listenerAsFunction->setScope(vm, uncheckedDowncast<JSHTMLElement>(wrapper())->pushEventHandlerScope(lexicalGlobalObject, listenerAsFunction->scope()));
         }
     }
 

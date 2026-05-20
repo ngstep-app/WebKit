@@ -26,11 +26,9 @@
 #ifndef PAS_DEALLOCATE_H
 #define PAS_DEALLOCATE_H
 
-#include "pas_bitfit_page_inlines.h"
 #include "pas_deallocation_mode.h"
 #include "pas_get_page_base_and_kind_for_small_other_in_fast_megapage.h"
 #include "pas_heap_config.h"
-#include "pas_heap_lock.h"
 #include "pas_heap_ref.h"
 #include "pas_large_heap.h"
 #include "pas_malloc_stack_logging.h"
@@ -53,8 +51,7 @@ PAS_API bool pas_try_deallocate_slow_no_cache(void* ptr,
 
 static PAS_ALWAYS_INLINE void
 pas_deallocate_known_segregated(void* ptr,
-                                pas_segregated_page_config page_config,
-                                pas_segregated_page_role role)
+                                pas_segregated_page_config page_config)
 {
     pas_thread_local_cache* thread_local_cache;
 
@@ -63,8 +60,8 @@ pas_deallocate_known_segregated(void* ptr,
         pas_try_deallocate_slow_no_cache(ptr, page_config.base.heap_config_ptr, pas_deallocate_mode);
         return;
     }
-    
-    pas_segregated_page_log_or_deallocate((uintptr_t)ptr, thread_local_cache, page_config, role);
+
+    pas_segregated_page_log_or_deallocate((uintptr_t)ptr, thread_local_cache, page_config);
 }
 
 PAS_API bool pas_try_deallocate_known_large(void* ptr,
@@ -90,10 +87,6 @@ static PAS_ALWAYS_INLINE bool pas_try_deallocate_not_small_exclusive_segregated(
         pas_page_base_and_kind page_and_kind;
         page_and_kind = pas_get_page_base_and_kind_for_small_other_in_fast_megapage(begin, config);
         switch (page_and_kind.page_kind) {
-        case pas_small_shared_segregated_page_kind:
-            pas_segregated_page_log_or_deallocate(
-                begin, thread_local_cache, config.small_segregated_config, pas_segregated_page_shared_role);
-            return true;
         case pas_small_bitfit_page_kind:
             config.small_bitfit_config.specialized_page_deallocate_with_page(
                 pas_page_base_get_bitfit(page_and_kind.page_base),
@@ -114,15 +107,10 @@ static PAS_ALWAYS_INLINE bool pas_try_deallocate_not_small_exclusive_segregated(
     page_base = config.page_header_func(begin);
     if (page_base) {
         switch (pas_page_base_get_kind(page_base)) {
-        case pas_small_shared_segregated_page_kind:
-            PAS_ASSERT(!config.small_segregated_is_in_megapage);
-            pas_segregated_page_log_or_deallocate(
-                begin, thread_local_cache, config.small_segregated_config, pas_segregated_page_shared_role);
-            return true;
         case pas_small_exclusive_segregated_page_kind:
             PAS_ASSERT(!config.small_segregated_is_in_megapage);
             pas_segregated_page_log_or_deallocate(
-                begin, thread_local_cache, config.small_segregated_config, pas_segregated_page_exclusive_role);
+                begin, thread_local_cache, config.small_segregated_config);
             return true;
         case pas_small_bitfit_page_kind:
             PAS_ASSERT(!config.small_bitfit_is_in_megapage);
@@ -130,13 +118,9 @@ static PAS_ALWAYS_INLINE bool pas_try_deallocate_not_small_exclusive_segregated(
                 pas_page_base_get_bitfit(page_base),
                 begin);
             return true;
-        case pas_medium_shared_segregated_page_kind:
-            pas_segregated_page_log_or_deallocate(
-                begin, thread_local_cache, config.medium_segregated_config, pas_segregated_page_shared_role);
-            return true;
         case pas_medium_exclusive_segregated_page_kind:
             pas_segregated_page_log_or_deallocate(
-                begin, thread_local_cache, config.medium_segregated_config, pas_segregated_page_exclusive_role);
+                begin, thread_local_cache, config.medium_segregated_config);
             return true;
         case pas_medium_bitfit_page_kind:
             config.medium_bitfit_config.specialized_page_deallocate_with_page(
@@ -169,7 +153,7 @@ static PAS_ALWAYS_INLINE bool pas_try_deallocate_impl(pas_thread_local_cache* th
     megapage_kind = config.fast_megapage_kind_func(begin);
     if (PAS_LIKELY(megapage_kind == pas_small_exclusive_segregated_fast_megapage_kind)) {
         pas_segregated_page_log_or_deallocate(
-            begin, thread_local_cache, config.small_segregated_config, pas_segregated_page_exclusive_role);
+            begin, thread_local_cache, config.small_segregated_config);
         return true;
     }
 

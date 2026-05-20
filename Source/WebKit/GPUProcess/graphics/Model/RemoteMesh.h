@@ -91,17 +91,19 @@ private:
     void destruct();
 
     void setLabel(String&&);
-    void update(const WebModel::UpdateMeshDescriptor&, CompletionHandler<void(bool)>&&);
-    void updateTexture(const WebModel::UpdateTextureDescriptor&, CompletionHandler<void(bool)>&&);
-    void updateMaterial(const WebModel::UpdateMaterialDescriptor&, CompletionHandler<void(bool)>&&);
+    void update(Vector<WebModel::UpdateMeshDescriptor>&&, CompletionHandler<void(bool)>&&);
+    void updateTexture(Vector<WebModel::UpdateTextureDescriptor>&&, CompletionHandler<void(bool)>&&);
+    void updateMaterial(Vector<WebModel::UpdateMaterialDescriptor>&&, CompletionHandler<void(bool)>&&);
     void updateTransform(const WebModel::Float4x4& transform);
     void setFOV(float fovY);
     void setBackgroundColor(const WebModel::Float3&);
     void play(bool);
-    void setEnvironmentMap(const WebModel::ImageAsset&);
+    void setEnvironmentMap(const WebModel::UpdateTextureDescriptor&);
+    void updateContentsHeadroom(float);
     void updateRenderBuffers(unsigned, unsigned, CompletionHandler<void(Vector<MachSendRight>&&)>&&);
 
-    void render();
+    void render(uint32_t textureIndex, CompletionHandler<void(bool)>&&);
+    void processRemovals(Vector<WebModel::TypedResourceId>&& meshRemovals, Vector<WebModel::TypedResourceId>&& materialRemovals, Vector<WebModel::TypedResourceId>&& textureRemovals, CompletionHandler<void(bool)>&&);
 
     const Ref<WebKit::Mesh> m_backing;
     WeakRef<ModelObjectHeap> m_objectHeap;

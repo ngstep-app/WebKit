@@ -34,7 +34,6 @@
 
 typedef struct __IOSurface* IOSurfaceRef;
 
-WTF_DECLARE_CF_TYPE_TRAIT(CVPixelBuffer);
 WTF_DECLARE_CF_TYPE_TRAIT(CVPixelBufferPool);
 
 SOFT_LINK_FRAMEWORK_FOR_HEADER(WebCore, CoreVideo)
@@ -54,6 +53,11 @@ SOFT_LINK_FUNCTION_FOR_HEADER(WebCore, CoreVideo, CVBufferSetAttachment, void, (
 #define CVBufferGetAttachments softLink_CoreVideo_CVBufferGetAttachments
 SOFT_LINK_FUNCTION_FOR_HEADER(WebCore, CoreVideo, CVPixelBufferGetTypeID, CFTypeID, (), ())
 #define CVPixelBufferGetTypeID softLink_CoreVideo_CVPixelBufferGetTypeID
+// Manual equivalent of WTF_DECLARE_CF_TYPE_TRAIT(CVPixelBuffer) because the
+// soft-linked function CVPixelBufferGetTypeID lives in the WebCore namespace.
+template <> struct WTF::CFTypeTrait<CVPixelBufferRef> {
+    static inline CFTypeID typeID() { return WebCore::CVPixelBufferGetTypeID(); }
+};
 SOFT_LINK_FUNCTION_FOR_HEADER(WebCore, CoreVideo, CVPixelBufferGetDataSize, size_t, (CVPixelBufferRef pixelBuffer), (pixelBuffer))
 #define CVPixelBufferGetDataSize softLink_CoreVideo_CVPixelBufferGetDataSize
 SOFT_LINK_FUNCTION_FOR_HEADER(WebCore, CoreVideo, CVPixelBufferGetWidth, size_t, (CVPixelBufferRef pixelBuffer), (pixelBuffer))
@@ -107,6 +111,8 @@ SOFT_LINK_CONSTANT_FOR_HEADER(WebCore, CoreVideo, kCVPixelFormatOpenGLESCompatib
 #define kCVPixelFormatOpenGLESCompatibility get_CoreVideo_kCVPixelFormatOpenGLESCompatibilitySingleton()
 SOFT_LINK_CONSTANT_FOR_HEADER(WebCore, CoreVideo, kCVPixelBufferIOSurfaceCoreAnimationCompatibilityKey, CFStringRef)
 #define kCVPixelBufferIOSurfaceCoreAnimationCompatibilityKey get_CoreVideo_kCVPixelBufferIOSurfaceCoreAnimationCompatibilityKeySingleton()
+SOFT_LINK_CONSTANT_FOR_HEADER(WebCore, CoreVideo, kCVPixelBufferMetalCompatibilityKey, CFStringRef)
+#define kCVPixelBufferMetalCompatibilityKey get_CoreVideo_kCVPixelBufferMetalCompatibilityKeySingleton()
 SOFT_LINK_CONSTANT_FOR_HEADER(WebCore, CoreVideo, kCVPixelBufferIOSurfacePropertiesKey, CFStringRef)
 #define kCVPixelBufferIOSurfacePropertiesKey get_CoreVideo_kCVPixelBufferIOSurfacePropertiesKeySingleton()
 SOFT_LINK_CONSTANT_FOR_HEADER(WebCore, CoreVideo, kCVPixelBufferPoolMinimumBufferCountKey, CFStringRef)
@@ -202,6 +208,9 @@ SOFT_LINK_FUNCTION_FOR_HEADER(WebCore, CoreVideo, CVPixelBufferCreateWithBytes, 
 // FIXME: The system header does not have CV_RETURNS_RETAINED_PARAMETER specified for pixelBufferOut. See rdar://148084567.
 SOFT_LINK_FUNCTION_FOR_HEADER(WebCore, CoreVideo, CVPixelBufferCreateWithIOSurface, CVReturn, (CFAllocatorRef allocator, IOSurfaceRef surface, CFDictionaryRef pixelBufferAttributes, CF_RETURNS_RETAINED CVPixelBufferRef * pixelBufferOut), (allocator, surface, pixelBufferAttributes, pixelBufferOut))
 #define CVPixelBufferCreateWithIOSurface softLink_CoreVideo_CVPixelBufferCreateWithIOSurface
+
+SOFT_LINK_FUNCTION_FOR_HEADER(WebCore, CoreVideo, CVPixelBufferIsPlanar, Boolean, (CVPixelBufferRef pixelBuffer), (pixelBuffer))
+#define CVPixelBufferIsPlanar softLink_CoreVideo_CVPixelBufferIsPlanar
 
 namespace WebCore {
 inline std::span<uint8_t> CVPixelBufferGetSpanOfPlane(CVPixelBufferRef pixelBuffer, size_t planeIndex)

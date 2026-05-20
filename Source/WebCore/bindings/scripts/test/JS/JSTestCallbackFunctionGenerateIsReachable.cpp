@@ -22,10 +22,13 @@
 #include "JSTestCallbackFunctionGenerateIsReachable.h"
 
 #include "ContextDestructionObserverInlines.h"
+#include "JSDOMBindingFacade.h"
 #include "JSDOMConvertNumbers.h"
 #include "JSDOMConvertStrings.h"
 #include "JSDOMExceptionHandling.h"
+#include "JSDOMGlobalObject.h"
 #include "ScriptExecutionContext.h"
+#include <JavaScriptCore/MarkedVector.h>
 
 
 namespace WebCore {

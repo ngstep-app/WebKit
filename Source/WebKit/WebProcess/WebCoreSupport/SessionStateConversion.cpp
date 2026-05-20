@@ -30,6 +30,7 @@
 #include <WebCore/BlobData.h>
 #include <WebCore/FormData.h>
 #include <WebCore/HistoryItem.h>
+#include <WebCore/SerializedScriptValue.h>
 #include <wtf/FileSystem.h>
 
 namespace WebKit {
@@ -80,6 +81,8 @@ Ref<FrameState> toFrameState(const HistoryItem& historyItem)
 
     frameState->documentSequenceNumber = historyItem.documentSequenceNumber();
     frameState->itemSequenceNumber = historyItem.itemSequenceNumber();
+
+    frameState->navigationAPIKey = historyItem.navigationAPIKey();
 
     frameState->scrollPosition = historyItem.scrollPosition();
     frameState->shouldRestoreScrollPosition = historyItem.shouldRestoreScrollPosition();
@@ -153,6 +156,9 @@ static void applyFrameState(HistoryItemClient& client, HistoryItem& historyItem,
 
     historyItem.setDocumentSequenceNumber(frameState.documentSequenceNumber);
     historyItem.setItemSequenceNumber(frameState.itemSequenceNumber);
+
+    if (frameState.navigationAPIKey)
+        historyItem.setNavigationAPIKey(*frameState.navigationAPIKey);
 
     historyItem.setScrollPosition(frameState.scrollPosition);
     historyItem.setShouldRestoreScrollPosition(frameState.shouldRestoreScrollPosition);

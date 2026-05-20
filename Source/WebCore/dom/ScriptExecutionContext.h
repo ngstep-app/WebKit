@@ -27,14 +27,14 @@
 
 #pragma once
 
+#include <WebCore/MessagePortIdentifier.h>
 #include <WebCore/ScriptExecutionContextIdentifier.h>
 #include <WebCore/SecurityContext.h>
 #include <WebCore/ServiceWorkerIdentifier.h>
 #include <WebCore/Timer.h>
-#include <wtf/Forward.h>
 #include <wtf/Function.h>
 #include <wtf/HashSet.h>
-#include <wtf/ObjectIdentifier.h>
+#include <wtf/ListHashSet.h>
 #include <wtf/ThreadSafeWeakHashSet.h>
 #include <wtf/WeakHashSet.h>
 #include <wtf/text/WTFString.h>
@@ -152,8 +152,8 @@ public:
     virtual EventLoopTaskGroup& eventLoop() = 0;
 
     virtual const URL& url() const = 0;
-    enum class ForceUTF8 : bool { No, Yes };
-    virtual URL completeURL(const String& url, ForceUTF8 = ForceUTF8::No) const = 0;
+    virtual URL parseURL(const String& url) const = 0;
+    virtual URL encodingParseURL(const String& url) const;
 
     virtual const URL& cookieURL() const = 0;
 
@@ -184,7 +184,7 @@ public:
 
     bool canIncludeErrorDetails(CachedScript*, const String& sourceURL, bool = false);
     void reportException(const String& errorMessage, int lineNumber, int columnNumber, const String& sourceURL, JSC::Exception*, RefPtr<Inspector::ScriptCallStack>&&, CachedScript* = nullptr, bool = false);
-    void reportUnhandledPromiseRejection(JSC::JSGlobalObject&, JSC::JSPromise&, RefPtr<Inspector::ScriptCallStack>&&);
+    void reportUnhandledPromiseRejection(JSC::JSGlobalObject&, JSC::JSPromise&, RefPtr<Inspector::ScriptCallStack>&&, const String& unmaskedSourceURL = { });
 
     virtual void addConsoleMessage(std::unique_ptr<Inspector::ConsoleMessage>&&) = 0;
 
@@ -222,7 +222,8 @@ public:
     void willDestroyDestructionObserver(ContextDestructionObserver&);
 
     // MessagePort is conceptually a kind of ActiveDOMObject, but it needs to be tracked separately for message dispatch.
-    void processMessageWithMessagePortsSoon(CompletionHandler<void()>&&);
+    void resumeAllMessagePortsSoon();
+    void processMessageForPortSoon(const MessagePortIdentifier&, CompletionHandler<void()>&&);
     void createdMessagePort(MessagePort&);
     void destroyedMessagePort(MessagePort&);
 
@@ -235,6 +236,9 @@ public:
 
     WEBCORE_EXPORT static void NODELETE setCrossOriginMode(CrossOriginMode);
     static CrossOriginMode NODELETE crossOriginMode();
+
+    virtual bool NODELETE crossOriginIsolated() const { return false; }
+    virtual String agentClusterID() const = 0;
 
     WEBCORE_EXPORT void NODELETE ref();
     WEBCORE_EXPORT void deref();
@@ -450,6 +454,8 @@ private:
     int m_timerNestingLevel { 0 };
 
     Vector<CompletionHandler<void()>> m_processMessageWithMessagePortsSoonHandlers;
+    ListHashSet<MessagePortIdentifier> m_portsWithAvailableMessages;
+    bool m_dispatchAllPorts { false };
 
 #if ASSERT_ENABLED
     bool m_inScriptExecutionContextDestructor { false };

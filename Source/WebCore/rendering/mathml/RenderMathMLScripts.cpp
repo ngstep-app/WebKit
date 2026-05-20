@@ -27,6 +27,7 @@
 
 #include "config.h"
 #include "RenderMathMLScripts.h"
+#include "RenderBlockInlines.h"
 
 #if ENABLE(MATHML)
 
@@ -505,6 +506,8 @@ void RenderMathMLScripts::layoutBlock(RelayoutChildren relayoutChildren, LayoutU
     shiftInFlowChildren(shift, 0);
 
     adjustLayoutForBorderAndPadding();
+
+    updateLogicalHeight();
 
     layoutOutOfFlowBoxes(relayoutChildren);
 }

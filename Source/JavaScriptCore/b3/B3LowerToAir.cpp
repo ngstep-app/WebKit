@@ -2901,6 +2901,14 @@ private:
     {
         using namespace Air;
         auto createSelectInstruction = [&] (Air::Opcode opcode, const Arg& condition, ArgPromise& left, ArgPromise& right) -> Inst {
+            if (m_value->child(2)->isInt(0)) {
+                if (isValidForm(opcode, condition.kind(), left.kind(), right.kind(), Arg::Tmp, Arg::ZeroReg, Arg::Tmp)) {
+                    Tmp result = tmp(m_value);
+                    Tmp thenCase = tmp(m_value->child(1));
+                    return left.inst(right.inst(opcode, m_value, condition, left.consume(*this), right.consume(*this), thenCase, zeroReg(), result));
+                }
+            }
+
             if (isValidForm(opcode, condition.kind(), left.kind(), right.kind(), Arg::Tmp, Arg::Tmp, Arg::Tmp)) {
                 Tmp result = tmp(m_value);
                 Tmp thenCase = tmp(m_value->child(1));
@@ -2909,6 +2917,7 @@ private:
                     opcode, m_value, condition,
                     left.consume(*this), right.consume(*this), thenCase, elseCase, result));
             }
+
             if (isValidForm(opcode, condition.kind(), left.kind(), right.kind(), Arg::Tmp, Arg::Tmp)) {
                 Tmp result = tmp(m_value);
                 Tmp source = tmp(m_value->child(1));
@@ -3948,28 +3957,13 @@ private:
             Value* left = m_value->child(0);
             Value* right = m_value->child(1);
 
-            if (right->isInt(0xff)) {
-                appendUnOp<ZeroExtend8To32, ZeroExtend8To32>(left);
-                return;
-            }
-
-            if (right->isInt(0xffff)) {
-                appendUnOp<ZeroExtend16To32, ZeroExtend16To32>(left);
-                return;
-            }
-
-            if (right->isInt64(0xffffffff) || right->isInt32(0xffffffff)) {
-                appendUnOp<Move32, Move32>(left);
-                return;
-            }
-
-            // UBFX Pattern: dest = (src >> lsb) & mask 
+            // UBFX Pattern: dest = (src >> lsb) & mask
             // Where: mask = (1 << width) - 1
             auto tryAppendUBFX = [&] () -> bool {
                 Air::Opcode opcode = opcodeForType(ExtractUnsignedBitfield32, ExtractUnsignedBitfield64, m_value->type());
-                if (!isValidForm(opcode, Arg::Tmp, Arg::Imm, Arg::Imm, Arg::Tmp)) 
+                if (!isValidForm(opcode, Arg::Tmp, Arg::Imm, Arg::Imm, Arg::Tmp))
                     return false;
-                if (left->opcode() != ZShr)
+                if (left->opcode() != ZShr && left->opcode() != SShr)
                     return false;
 
                 Value* srcValue = left->child(0);
@@ -3993,6 +3987,21 @@ private:
 
             if (tryAppendUBFX())
                 return;
+
+            if (right->isInt(0xff)) {
+                appendUnOp<ZeroExtend8To32, ZeroExtend8To32>(left);
+                return;
+            }
+
+            if (right->isInt(0xffff)) {
+                appendUnOp<ZeroExtend16To32, ZeroExtend16To32>(left);
+                return;
+            }
+
+            if (right->isInt64(0xffffffff) || right->isInt32(0xffffffff)) {
+                appendUnOp<Move32, Move32>(left);
+                return;
+            }
 
             // BIC Pattern: d = n & (m ^ -1)
             auto tryAppendBIC = [&] (Value* left, Value* right) -> bool {
@@ -4999,6 +5008,108 @@ private:
             emitSIMDCompare(Air::Arg::relCond(MacroAssembler::AboveOrEqual));
             return;
         case B3::VectorAdd:
+            if (isARM64()) {
+                // Try to fuse integer multiply-accumulate patterns into UMLAL/SMLAL
+                // and UMLAL2/SMLAL2. These compute `Vd = Vd + (Vn * Vm) widened` on
+                // the low (UMLAL/SMLAL) or upper (UMLAL2/SMLAL2) half of each input,
+                // with the accumulator forwarded inside the multiplier pipeline, so
+                // strictly at least as fast as UMULL/UMULL2 + ADD. We match:
+                //
+                //   A) VectorAdd(acc, M)                      -> 1 widening MAC
+                //   B) VectorAdd(acc, VectorAdd(M, M))        -> 2 widening MACs (same operands)
+                //   C) VectorAdd(acc, VectorAdd(M1, M2))      -> 2 widening MACs (distinct muls)
+                //
+                // where each M is VectorMulLow or VectorMulHigh with
+                // signMode in {Signed, Unsigned} and `simdLane` matching the outer
+                // VectorAdd's lane. Output lane must be one of i16x8 / i32x4 / i64x2
+                // (i8x16 has no widening MLAL form). In case C the two operands can
+                // mix Low and High freely. This is the quantized-matmul pattern
+                // where a 16-byte load is consumed as extmul_low + extmul_high.
+                auto* outerValue = m_value->as<SIMDValue>();
+                SIMDLane outerLane = outerValue->simdLane();
+                if (outerLane == SIMDLane::i16x8 || outerLane == SIMDLane::i32x4 || outerLane == SIMDLane::i64x2) {
+                    enum class MulKind : uint8_t { Low, High };
+
+                    auto fusableMul = [&](Value* v) -> std::pair<SIMDValue*, MulKind> {
+                        if (v->opcode() != B3::VectorMulLow && v->opcode() != B3::VectorMulHigh)
+                            return { nullptr, MulKind::Low };
+                        SIMDValue* s = v->as<SIMDValue>();
+                        if (s->simdLane() != outerLane)
+                            return { nullptr, MulKind::Low };
+                        if (s->signMode() != SIMDSignMode::Unsigned && s->signMode() != SIMDSignMode::Signed)
+                            return { nullptr, MulKind::Low };
+                        MulKind kind = v->opcode() == B3::VectorMulHigh ? MulKind::High : MulKind::Low;
+                        return { s, kind };
+                    };
+
+                    auto emitMulAdd = [&](SIMDValue* mul, MulKind kind, Tmp result) {
+                        Air::Opcode op = kind == MulKind::High ? Air::VectorMulAddHigh : Air::VectorMulAddLow;
+                        append(op, Arg::simdInfo(mul->simdInfo()), tmp(mul->child(0)), tmp(mul->child(1)), result);
+                    };
+
+                    auto tryMatchMulAccumulate = [&](Value* mulSide, Value* accumulator) -> bool {
+                        if (!canBeInternal(mulSide))
+                            return false;
+
+                        // Case A: direct MulLow/MulHigh on one side.
+                        auto [directMul, directKind] = fusableMul(mulSide);
+                        if (directMul) {
+                            commitInternal(mulSide);
+                            auto result = tmp(m_value);
+                            append(Air::MoveVector, tmp(accumulator), result);
+                            emitMulAdd(directMul, directKind, result);
+                            return true;
+                        }
+
+                        // Cases B & C: mulSide is an inner VectorAdd combining either two copies of one Mul or two distinct Muls.
+                        if (mulSide->opcode() != B3::VectorAdd)
+                            return false;
+                        if (mulSide->as<SIMDValue>()->simdLane() != outerLane)
+                            return false;
+
+                        auto* p = mulSide->child(0);
+                        auto* q = mulSide->child(1);
+
+                        // Case B: p and q are the same Mul node (from shl-by-1 strength reduction). M has exactly 2 uses (both here).
+                        if (p == q) {
+                            auto [mulSimd, kind] = fusableMul(p);
+                            if (!mulSimd)
+                                return false;
+                            if (m_useCounts.numUses(p) != 2 || m_valueToTmp[p])
+                                return false;
+                            commitInternal(mulSide);
+                            commitInternal(p);
+                            auto result = tmp(m_value);
+                            append(Air::MoveVector, tmp(accumulator), result);
+                            emitMulAdd(mulSimd, kind, result);
+                            emitMulAdd(mulSimd, kind, result);
+                            return true;
+                        }
+
+                        // Case C: p and q are distinct, both fusable Muls. Each side may independently be Low or High.
+                        auto [pSimd, pKind] = fusableMul(p);
+                        auto [qSimd, qKind] = fusableMul(q);
+                        if (pSimd && qSimd && canBeInternal(p) && canBeInternal(q)) {
+                            commitInternal(mulSide);
+                            commitInternal(p);
+                            commitInternal(q);
+                            auto result = tmp(m_value);
+                            append(Air::MoveVector, tmp(accumulator), result);
+                            emitMulAdd(pSimd, pKind, result);
+                            emitMulAdd(qSimd, qKind, result);
+                            return true;
+                        }
+
+                        return false;
+                    };
+
+                    auto* left = m_value->child(0);
+                    auto* right = m_value->child(1);
+                    if (tryMatchMulAccumulate(left, right) || tryMatchMulAccumulate(right, left))
+                        return;
+                }
+            }
+
             emitSIMDBinaryOp(Air::VectorAdd);
             return;
         case B3::VectorSub:
@@ -5358,6 +5469,30 @@ private:
             append(Air::VectorFusedNegMulAdd, Arg::simdInfo(value->simdInfo()), tmp(m_value->child(0)), tmp(m_value->child(1)), tmp(m_value->child(2)), tmp(m_value), m_code.newTmp(FP));
             return;
         }
+
+        case B3::VectorRelaxedMin: {
+            SIMDValue* value = m_value->as<SIMDValue>();
+            append(Air::VectorRelaxedMin, Arg::simdInfo(value->simdInfo()), tmp(m_value->child(0)), tmp(m_value->child(1)), tmp(m_value));
+            return;
+        }
+
+        case B3::VectorRelaxedMax: {
+            SIMDValue* value = m_value->as<SIMDValue>();
+            append(Air::VectorRelaxedMax, Arg::simdInfo(value->simdInfo()), tmp(m_value->child(0)), tmp(m_value->child(1)), tmp(m_value));
+            return;
+        }
+
+        case B3::VectorRelaxedQ15Mulr:
+            emitSIMDMonomorphicBinaryOp(Air::VectorRelaxedQ15Mulr);
+            return;
+
+        case B3::VectorRelaxedDotI8x16I7x16:
+            append(Air::VectorRelaxedDotI8x16I7x16, tmp(m_value->child(0)), tmp(m_value->child(1)), tmp(m_value), m_code.newTmp(FP));
+            return;
+
+        case B3::VectorRelaxedDotI8x16I7x16Add:
+            append(Air::VectorRelaxedDotI8x16I7x16Add, tmp(m_value->child(0)), tmp(m_value->child(1)), tmp(m_value->child(2)), tmp(m_value), m_code.newTmp(FP), m_code.newTmp(FP));
+            return;
 
         case Fence: {
             FenceValue* fence = m_value->as<FenceValue>();
@@ -5876,7 +6011,7 @@ private:
             Tmp pointer = tmp(ptr);
 
             Arg ptrPlusImm = m_code.newTmp(GP);
-            append(Inst(Move32, value, pointer, ptrPlusImm));
+            append(Inst(moveForType(ptr->type()), value, pointer, ptrPlusImm));
             if (value->offset()) {
                 if (imm(value->offset()))
                     append(Add64, imm(value->offset()), ptrPlusImm);
@@ -5902,7 +6037,10 @@ private:
                 break;
             }
 
-            append(Inst(Air::WasmBoundsCheck, value, ptrPlusImm, limit));
+            if (value->offset() && ptr->type() == Int64)
+                append(Inst(Air::WasmBoundsCheck, value, ptrPlusImm, limit, pointer));
+            else
+                append(Inst(Air::WasmBoundsCheck, value, ptrPlusImm, limit));
             return;
         }
 

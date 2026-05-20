@@ -683,7 +683,7 @@ void NavigationScheduler::scheduleLocationChange(Document& initiatingDocument, S
     if (url.hasFragmentIdentifier()
         && localFrame
         && equalIgnoringFragmentIdentifier(localFrame->document()->url(), url)) {
-        ResourceRequest resourceRequest { protect(localFrame->document())->completeURL(url.string()), referrer, ResourceRequestCachePolicy::UseProtocolCachePolicy };
+        ResourceRequest resourceRequest { protect(localFrame->document())->encodingParseURL(url.string()), referrer, ResourceRequestCachePolicy::UseProtocolCachePolicy };
         RefPtr frame = lexicalFrameFromCommonVM();
         auto initiatedByMainFrame = frame && frame->isMainFrame() ? InitiatedByMainFrame::Yes : InitiatedByMainFrame::Unknown;
         
@@ -719,6 +719,11 @@ void NavigationScheduler::scheduleLocationChange(Document& initiatingDocument, S
             }
         }
     }
+
+    // The frame's page may have been nulled if the navigate event handler
+    // detached the frame (e.g., iframe.remove() inside intercept handler).
+    if (!m_frame->page())
+        return completionHandler(ScheduleLocationChangeResult::Stopped);
 
     // Handle a location change of a page with no document as a special case.
     // This may happen when a frame changes the location of another frame.

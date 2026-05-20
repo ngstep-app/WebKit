@@ -38,6 +38,7 @@
 #include <WebCore/MockMediaDevice.h>
 #include <WebCore/RealtimeMediaSourceFactory.h>
 #include <WebCore/RealtimeVideoCaptureSource.h>
+#include <atomic>
 #include <wtf/Lock.h>
 #include <wtf/RunLoop.h>
 
@@ -160,7 +161,7 @@ private:
 
     unsigned m_frameNumber { 0 };
     const Ref<RunLoop> m_runLoop;
-    RunLoop::Timer m_emitFrameTimer;
+    std::unique_ptr<RunLoop::Timer> m_emitFrameTimer;
     std::optional<RealtimeMediaSourceCapabilities> m_capabilities;
     std::optional<RealtimeMediaSourceSettings> m_currentSettings;
     RealtimeMediaSourceSupportedConstraints m_supportedConstraints;
@@ -175,6 +176,8 @@ private:
     std::optional<PhotoSettings> m_photoSettings;
     bool m_beingConfigured { false };
     bool m_isUsingRotationAngleForHorizonLevelDisplayChanged { false };
+    bool m_isTakingPhoto { false };
+    std::atomic<bool> m_captureWasInterrupted { false };
 };
 
 } // namespace WebCore

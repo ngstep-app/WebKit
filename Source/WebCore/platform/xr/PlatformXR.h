@@ -53,6 +53,10 @@
 #include <WebCore/ExceptionOr.h>
 #endif
 
+#if ENABLE(WEBXR_LAYERS)
+#include <WebCore/FloatSize.h>
+#endif
+
 namespace PlatformXR {
 class TrackingAndRenderingClient;
 }
@@ -283,6 +287,7 @@ struct DepthRange {
 struct RequestData {
     bool isPassthroughFullyObscured;
     DepthRange depthRange;
+    Vector<LayerHandle> activeLayerHandles;
 };
 
 struct RateMapDescription {
@@ -292,6 +297,12 @@ struct RateMapDescription {
     // Vertical samples is shared by both horizontalSamples
     Vector<float> verticalSamples;
 };
+
+struct LayerInfo {
+    LayerHandle handle;
+    size_t numImages { 1 };
+};
+
 
 #if ENABLE(WEBXR_HIT_TEST)
 struct Ray {
@@ -475,6 +486,20 @@ struct FrameData {
     FrameData copy() const;
 };
 
+#if ENABLE(WEBXR_LAYERS)
+enum class CompositionLayerType : uint8_t {
+    Quad,
+    Equirect,
+    Cylinder,
+};
+
+enum class LayerLayout : uint8_t {
+    Mono,
+    StereoLeftRight,
+    StereoTopBottom,
+};
+#endif
+
 struct DeviceLayer {
     struct LayerView {
         Eye eye { Eye::None };
@@ -485,6 +510,30 @@ struct DeviceLayer {
     Vector<LayerView> views;
 #if USE(OPENXR)
     WTF::UnixFileDescriptor fenceFD;
+#endif
+#if ENABLE(WEBXR_LAYERS)
+    bool blendTextureSourceAlpha { false };
+    bool forceMonoPresentation { false };
+    struct QuadLayerData {
+        WebCore::FloatSize worldSize;
+        FrameData::Pose poseInLocalSpace;
+    };
+    std::optional<QuadLayerData> quadLayerData;
+    struct EquirectLayerData {
+        float radius;
+        float centralHorizontalAngle;
+        float upperVerticalAngle;
+        float lowerVerticalAngle;
+        FrameData::Pose poseInLocalSpace;
+    };
+    std::optional<EquirectLayerData> equirectLayerData;
+    struct CylinderLayerData {
+        float radius;
+        float centralAngle;
+        float aspectRatio;
+        FrameData::Pose poseInLocalSpace;
+    };
+    std::optional<CylinderLayerData> cylinderLayerData;
 #endif
 };
 
@@ -525,7 +574,10 @@ public:
     // when the platform has completed all steps to shut down the XR session.
     virtual bool supportsSessionShutdownNotification() const { return false; }
     virtual void initializeReferenceSpace(ReferenceSpaceType) = 0;
-    virtual std::optional<LayerHandle> createLayerProjection(uint32_t width, uint32_t height, bool alpha) = 0;
+    virtual std::optional<LayerInfo> createLayerProjection(uint32_t width, uint32_t height, bool alpha) = 0;
+#if ENABLE(WEBXR_LAYERS)
+    virtual std::optional<LayerInfo> createCompositionLayer(CompositionLayerType, WebCore::IntSize, LayerLayout) = 0;
+#endif
     virtual void deleteLayer(LayerHandle) = 0;
 
 #if ENABLE(WEBXR_HIT_TEST)
@@ -545,6 +597,11 @@ public:
     using RequestFrameCallback = Function<void(FrameData&&)>;
     virtual void requestFrame(std::optional<RequestData>&&, RequestFrameCallback&&) = 0;
     virtual void submitFrame(Vector<DeviceLayer>&&) { };
+
+#if ENABLE(WEBXR_LAYERS)
+    unsigned maxRenderLayers() const { return m_maxRenderLayers; }
+#endif
+
 protected:
     Device() = default;
 
@@ -558,6 +615,10 @@ protected:
     bool m_supportsOrientationTracking { false };
     bool m_supportsViewportScaling { false };
     WeakPtr<TrackingAndRenderingClient> m_trackingAndRenderingClient;
+
+#if ENABLE(WEBXR_LAYERS)
+    unsigned m_maxRenderLayers { 1 };
+#endif
 };
 
 using DeviceList = Vector<Ref<Device>>;

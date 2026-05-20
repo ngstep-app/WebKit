@@ -165,7 +165,7 @@ class TextureMtl : public TextureImpl
     // of images through glTexImage*/glCopyTex* calls. During draw calls, the caller must make sure
     // the actual texture is created by calling this method to transfer the stored images data
     // to the actual texture.
-    angle::Result ensureNativeStorageCreated(const gl::Context *context);
+    angle::Result ensureNativeStorageCreated(const gl::Context *context, bool keepImages);
 
     angle::Result bindToShader(const gl::Context *context,
                                mtl::RenderCommandEncoder *cmdEncoder,
@@ -182,15 +182,14 @@ class TextureMtl : public TextureImpl
                                     int layer,
                                     GLenum format);
 
-    const mtl::Format &getFormat() const { return mFormat; }
-
   private:
     void deallocateNativeStorage(bool keepImages, bool keepSamplerStateAndFormat = false);
     angle::Result createNativeStorage(const gl::Context *context,
                                       gl::TextureType type,
                                       GLuint mips,
                                       GLuint samples,
-                                      const gl::Extents &size);
+                                      const gl::Extents &size,
+                                      const mtl::Format &format);
     angle::Result onBaseMaxLevelsChanged(const gl::Context *context);
     angle::Result ensureSamplerStateCreated(const gl::Context *context);
     // Ensure image at given index is created:
@@ -328,10 +327,10 @@ class TextureMtl : public TextureImpl
 
     angle::Result generateMipmapCPU(const gl::Context *context);
 
-    bool needsFormatViewForPixelLocalStorage(const ShPixelLocalStorageOptions &) const;
+    bool needsFormatViewForPixelLocalStorage(const ShPixelLocalStorageOptions &,
+                                             const mtl::Format &format) const;
     bool isImmutableOrPBuffer() const;
 
-    mtl::Format mFormat;
     egl::Surface *mBoundSurface = nullptr;
     class NativeTextureWrapper;
     class NativeTextureWrapperWithViewSupport;

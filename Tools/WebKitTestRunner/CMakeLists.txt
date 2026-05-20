@@ -86,7 +86,13 @@ set(TestRunnerInjectedBundle_PRIVATE_INCLUDE_DIRECTORIES
     ${WebKitTestRunner_DIR}/InjectedBundle
 )
 
-set(TestRunnerInjectedBundle_LIBRARY_TYPE SHARED)
+# macOS: MODULE + BUNDLE TRUE (PlatformMac) emits a CFBundle matching Xcode's MH_BUNDLE output.
+# Other ports: SHARED dylib/so.
+if (APPLE)
+    set(TestRunnerInjectedBundle_LIBRARY_TYPE MODULE)
+else ()
+    set(TestRunnerInjectedBundle_LIBRARY_TYPE SHARED)
+endif ()
 set(TestRunnerInjectedBundle_PRIVATE_LIBRARIES
     WebKit::TestRunnerShared
     WebKit::WebCoreTestSupport
@@ -122,7 +128,9 @@ WEBKIT_LIBRARY_DECLARE(TestRunnerInjectedBundle)
 WEBKIT_INCLUDE_CONFIG_FILES_IF_EXISTS()
 
 WEBKIT_LIBRARY(TestRunnerInjectedBundle)
+WEBKIT_ADD_PREFIX_HEADER(TestRunnerInjectedBundle WebKitTestRunnerPrefix.h PREFIX_LANGUAGES CXX OBJCXX)
 WEBKIT_EXECUTABLE(WebKitTestRunner)
+WEBKIT_ADD_PREFIX_HEADER(WebKitTestRunner WebKitTestRunnerPrefix.h PREFIX_LANGUAGES CXX OBJCXX)
 
 if (COMPILER_IS_GCC_OR_CLANG)
     WEBKIT_ADD_TARGET_CXX_FLAGS(TestRunnerInjectedBundle -Wno-unused-parameter)

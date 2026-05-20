@@ -68,6 +68,8 @@ struct InteractionInformationAtPosition {
         Selectability&&,
         bool isSelected,
         bool prefersDraggingOverTextSelection,
+        bool isDHTMLDraggable,
+        bool isColorInput,
         bool isNearMarkedText,
 #if PLATFORM(IOS_FAMILY)
         bool touchCalloutEnabled,
@@ -100,6 +102,7 @@ struct InteractionInformationAtPosition {
         WebCore::FloatPoint&& adjustedPointForNodeRespondingToClickEvents,
         URL&&,
         URL&& imageURL,
+        URL&& modelURL,
         String&& imageMIMEType,
         String&& title,
         String&& idAttribute,
@@ -133,6 +136,8 @@ struct InteractionInformationAtPosition {
 
     bool isSelected { false };
     bool prefersDraggingOverTextSelection { false };
+    bool isDHTMLDraggable { false };
+    bool isColorInput { false };
     bool isNearMarkedText { false };
 #if PLATFORM(IOS_FAMILY)
     bool touchCalloutEnabled { true };
@@ -165,6 +170,7 @@ struct InteractionInformationAtPosition {
     WebCore::FloatPoint adjustedPointForNodeRespondingToClickEvents;
     URL url;
     URL imageURL;
+    URL modelURL;
     String imageMIMEType;
     String title;
     String idAttribute;

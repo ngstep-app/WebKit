@@ -100,6 +100,7 @@ public:
     RefPtr<GPUConnectionToWebProcess> gpuConnectionToWebProcess() const;
 
     static Vector<UniqueRef<WebCore::IOSurface>> createRenderBuffers(unsigned width, unsigned height, const WebCore::ProcessIdentity&);
+    IPC::StreamConnectionWorkQueue& workQueue() const { return m_workQueue; }
 
 private:
     friend class WebGPU::ObjectHeap;
@@ -112,14 +113,13 @@ private:
     RemoteGPU& operator=(RemoteGPU&&) = delete;
 
     void initialize();
-    IPC::StreamConnectionWorkQueue& workQueue() const { return m_workQueue; }
     void workQueueInitialize();
     void workQueueUninitialize();
 
     template<typename T>
     IPC::Error send(T&& message) const
     {
-        return Ref { *m_streamConnection }->send(std::forward<T>(message), m_identifier);
+        return protect(*m_streamConnection)->send(std::forward<T>(message), m_identifier);
     }
 
     // IPC::StreamMessageReceiver overrides.

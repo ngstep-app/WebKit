@@ -179,6 +179,9 @@ public:
     void setPitchCorrectionAlgorithm(WebCore::MediaPlayer::PitchCorrectionAlgorithm);
 
     void setPageIsVisible(bool);
+
+    using ViewportVisibility = WebCore::MediaPlayer::ViewportVisibility;
+    void setViewportVisibility(ViewportVisibility);
     void setShouldMaintainAspectRatio(bool);
 #if ENABLE(VIDEO_PRESENTATION_MODE)
     void setVideoFullscreenGravity(WebCore::MediaPlayerEnums::VideoGravity);
@@ -399,6 +402,10 @@ private:
 
     void setHasMessageClientForTesting(bool);
     void sendInternalMessage(const WebCore::MessageForTesting&) final;
+
+#if PLATFORM(MAC)
+    void screenReservedChanged(bool);
+#endif
 
 #if !RELEASE_LOG_DISABLED
     const Logger& mediaPlayerLogger() final { return m_logger; }

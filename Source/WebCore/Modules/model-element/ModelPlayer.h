@@ -45,6 +45,10 @@
 #include <WebCore/StageModeOperations.h>
 #endif
 
+#if HAVE(SUPPORT_HDR_DISPLAY) && ENABLE(PIXEL_FORMAT_RGBA16F)
+#include <WebCore/PlatformDynamicRangeLimit.h>
+#endif
+
 namespace WebCore {
 
 class FloatPoint3D;
@@ -119,12 +123,6 @@ public:
     virtual void animationCurrentTime(CompletionHandler<void(std::optional<Seconds>&&)>&&) = 0;
     virtual void setAnimationCurrentTime(Seconds, CompletionHandler<void(bool success)>&&) = 0;
 
-    virtual void hasAudio(CompletionHandler<void(std::optional<bool>&&)>&&) = 0;
-    virtual void isMuted(CompletionHandler<void(std::optional<bool>&&)>&&) = 0;
-    virtual void setIsMuted(bool, CompletionHandler<void(bool success)>&&) = 0;
-
-    virtual String inlinePreviewUUIDForTesting() const;
-
 #if ENABLE(MODEL_ELEMENT_ACCESSIBILITY)
     virtual ModelPlayerAccessibilityChildren accessibilityChildren() = 0;
 #endif
@@ -155,6 +153,11 @@ public:
 #if ENABLE(MODEL_ELEMENT_IMMERSIVE)
     virtual void ensureImmersivePresentation(CompletionHandler<void(std::optional<LayerHostingContextIdentifier>)>&&);
     virtual void exitImmersivePresentation(CompletionHandler<void()>&&);
+#endif
+
+#if HAVE(SUPPORT_HDR_DISPLAY) && ENABLE(PIXEL_FORMAT_RGBA16F)
+    virtual void setDynamicRangeLimit(PlatformDynamicRangeLimit, float, bool);
+    virtual std::optional<double> getEffectiveDynamicRangeLimitValue() const;
 #endif
 };
 

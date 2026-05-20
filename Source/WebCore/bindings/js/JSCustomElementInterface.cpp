@@ -47,6 +47,7 @@
 #include "JSExecStateInstrumentation.h"
 #include "JSHTMLElement.h"
 #include "ScriptExecutionContext.h"
+#include <JavaScriptCore/JSCInlines.h>
 #include <JavaScriptCore/JSLock.h>
 #include <JavaScriptCore/WeakInlines.h>
 
@@ -344,6 +345,16 @@ void JSCustomElementInterface::setDisconnectedCallback(JSC::JSObject* callback)
 void JSCustomElementInterface::invokeDisconnectedCallback(Element& element)
 {
     invokeCallback(element, m_disconnectedCallback.get(), [](JSC::JSGlobalObject*, JSDOMGlobalObject*, JSC::MarkedArgumentBuffer&) { });
+}
+
+void JSCustomElementInterface::setConnectedMoveCallback(JSC::JSObject* callback)
+{
+    m_connectedMoveCallback = callback;
+}
+
+void JSCustomElementInterface::invokeConnectedMoveCallback(Element& element)
+{
+    invokeCallback(element, m_connectedMoveCallback.get(), [](JSC::JSGlobalObject*, JSDOMGlobalObject*, JSC::MarkedArgumentBuffer&) { });
 }
 
 void JSCustomElementInterface::setAdoptedCallback(JSC::JSObject* callback)

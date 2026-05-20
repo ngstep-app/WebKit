@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010-2024 Apple Inc. All rights reserved.
+ * Copyright (C) 2010-2026 Apple Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -42,11 +42,11 @@
 #if defined(BUILDING_WITH_CMAKE)
 
 // CMake path
-#if defined(BUILDING_TestJSC) || defined(BUILDING_TestJavaScriptCore)
+#if defined(BUILDING_TestJSC) || defined(BUILDING_TestJavaScriptCore) || defined(BUILDING_TEST_WGSL)
 #include <JavaScriptCore/JSExportMacros.h>
 #endif
 
-#if defined(BUILDING_TestWebCore)
+#if defined(BUILDING_TestWebCore) || defined(BUILDING_TEST_IPC)
 #include <JavaScriptCore/JSExportMacros.h>
 #include <WebCore/PlatformExportMacros.h>
 #include <pal/ExportMacros.h>
@@ -59,13 +59,18 @@
 #include <WebKit/WebKit2_C.h>
 #endif
 
+#if defined(BUILDING_TestWebKit) && !defined(TestWebKitAPIInjectedBundle_EXPORTS) && PLATFORM(COCOA) && defined(__OBJC__)
+#import <WebKit/WebKit.h>
+#endif
+
 #else
 
 // XCode path
 #include <JavaScriptCore/JSExportMacros.h>
+#if !defined(BUILDING_TEST_WGSL) && !defined(BUILDING_TEST_WTF)
 #include <WebCore/PlatformExportMacros.h>
 #include <pal/ExportMacros.h>
-#if !PLATFORM(IOS_FAMILY)
+#if !PLATFORM(IOS_FAMILY) && !defined(BUILDING_TEST_IPC)
 #include <WebKit/WebKit2_C.h>
 #endif
 #if PLATFORM(COCOA) && defined(__OBJC__)
@@ -75,8 +80,9 @@
 // on macCatalyst, WebKit.h does not include WebKitLegacy.h, so we need
 // to do it explicitly here.
 #import <WebKit/WebKitLegacy.h>
-#endif
-#endif
+#endif // PLATFORM(MACCATALYST)
+#endif // PLATFORM(COCOA) && defined(__OBJC__)
+#endif // !defined(BUILDING_TEST_WGSL) && !defined(BUILDING_TEST_WTF)
 
 #endif
 
@@ -117,11 +123,11 @@
 #endif
 
 // FIXME: Move this to PlatformHave.h.
-#if PLATFORM(IOS_FAMILY) && !(PLATFORM(MACCATALYST) && __MAC_OS_X_VERSION_MIN_REQUIRED < 110000)
+#if PLATFORM(IOS_FAMILY)
 #define HAVE_UIWEBVIEW 1
 #endif
 
 // FIXME: Move this to PlatformHave.h.
-#if (PLATFORM(MAC) && __MAC_OS_X_VERSION_MIN_REQUIRED >= 110000) || (PLATFORM(IOS_FAMILY) && __IPHONE_OS_VERSION_MIN_REQUIRED >= 140000)
+#if PLATFORM(MAC) || PLATFORM(IOS_FAMILY)
 #define HAVE_TLS_VERSION_DURING_CHALLENGE 1
 #endif

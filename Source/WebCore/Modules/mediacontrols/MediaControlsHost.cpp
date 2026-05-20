@@ -49,6 +49,7 @@
 #include "HTMLElement.h"
 #include "HTMLMediaElement.h"
 #include "HTMLVideoElement.h"
+#include "JSValueInWrappedObjectInlines.h"
 #include "LocalDOMWindow.h"
 #include "LocalizedStrings.h"
 #include "Logging.h"
@@ -60,6 +61,7 @@
 #include "NodeDocument.h"
 #include "Page.h"
 #include "PageGroup.h"
+#include "PlatformRenderTheme.h"
 #include "RenderTheme.h"
 #include "ShadowRoot.h"
 #include "Settings.h"
@@ -346,7 +348,7 @@ bool MediaControlsHost::needsChromeMediaControlsPseudoElement() const
 bool MediaControlsHost::isMediaControlsMacInlineSizeSpecsEnabled() const
 {
 #if HAVE(MATERIAL_HOSTING)
-    return protect(m_mediaElement)->document().settings().mediaControlsMacInlineSizeSpecsEnabled();
+    return m_mediaElement->document().settings().mediaControlsMacInlineSizeSpecsEnabled();
 #else
     return false;
 #endif

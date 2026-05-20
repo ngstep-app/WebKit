@@ -508,7 +508,7 @@ bool TypingCommand::willAddTypingToOpenCommand(Type commandType, TextGranularity
     if (!range || isEditingTextAreaOrTextInput())
         return document().editor().willApplyEditing(*this, CompositeEditCommand::targetRangesForBindings());
 
-    return document().editor().willApplyEditing(*this, { 1, StaticRange::create(*range) });
+    return document().editor().willApplyEditing(*this, { FillWith { }, 1, StaticRange::create(*range) });
 }
 
 void TypingCommand::typingAddedToOpenCommand(Type commandTypeForAddedTyping)
@@ -558,9 +558,13 @@ void TypingCommand::insertTextRunWithoutNewlines(const String& text, bool select
     auto allowPasswordEcho = triggeringEventIsUntrusted() ? AllowPasswordEcho::No : AllowPasswordEcho::Yes;
     auto rebalanceWhitespaces = m_compositionType == TextCompositionType::None ? InsertTextCommand::RebalanceLeadingAndTrailingWhitespaces : InsertTextCommand::RebalanceAllWhitespaces;
     auto command = InsertTextCommand::create(document(), text, allowPasswordEcho, selectInsertedText, rebalanceWhitespaces, EditAction::TypingInsertText);
+    Ref insertTextCommand = command.get();
 
     applyCommandToComposite(WTF::move(command), endingSelection());
     typingAddedToOpenCommand(Type::InsertText);
+
+    if (insertTextCommand->m_styleToPreserveForSmartList)
+        document().selection().setTypingStyle(WTF::move(insertTextCommand->m_styleToPreserveForSmartList));
 }
 
 void TypingCommand::insertLineBreak()
@@ -682,11 +686,11 @@ void TypingCommand::deleteKeyPressed(TextGranularity granularity, bool shouldAdd
         const VisiblePosition& previousPosition = visibleStart.previous(CannotCrossEditingBoundary);
         RefPtr enclosingTableCell = enclosingNodeOfType(visibleStart.deepEquivalent(), &isTableCell);
         RefPtr enclosingTableCellForPreviousPosition = enclosingNodeOfType(previousPosition.deepEquivalent(), &isTableCell);
-        if (previousPosition.isNull() || enclosingTableCell != enclosingTableCellForPreviousPosition || hasSmartListMarkerAttribute()) {
+        if (previousPosition.isNull() || enclosingTableCell != enclosingTableCellForPreviousPosition) {
             // When the caret is at the start of the editable area in an empty list item, break out of the list item.
             if (auto deleteListSelection = shouldBreakOutOfEmptyListItem(); !deleteListSelection.isNone()) {
                 if (willAddTypingToOpenCommand(Type::DeleteKey, granularity, { }, deleteListSelection.firstRange())) {
-                    breakOutOfEmptyListItem(ReconstitutePlainTextListIfNeeded::Yes);
+                    breakOutOfEmptyListItem();
                     typingAddedToOpenCommand(Type::DeleteKey);
                 }
                 return;

@@ -55,6 +55,7 @@
 #include "UnlinkedMetadataTableInlines.h"
 #include "YarrFlags.h"
 #include <wtf/Assertions.h>
+#include <wtf/MathExtras.h>
 #include <wtf/text/StringBuilder.h>
 
 namespace JSC {
@@ -151,6 +152,8 @@ JSValue BigIntNode::jsValue(BytecodeGenerator& generator) const
 
 // ------------------------------ NumberNode ----------------------------------
 
+JSValue NumberNode::jsValue(BytecodeGenerator&) const { return jsNumber(m_value); }
+
 RegisterID* NumberNode::emitBytecode(BytecodeGenerator& generator, RegisterID* dst)
 {
     if (dst == generator.ignoredResult())
@@ -231,11 +234,16 @@ RegisterID* SuperNode::emitBytecode(BytecodeGenerator& generator, RegisterID* ds
 RegisterID* ImportNode::emitBytecode(BytecodeGenerator& generator, RegisterID* dst)
 {
     RefPtr<RegisterID> importModule = generator.moveLinkTimeConstant(nullptr, LinkTimeConstant::importModule);
-    CallArguments arguments(generator, nullptr, m_option ? 2 : 1);
+    unsigned argumentCount = m_deferred ? 3 : (m_option ? 2 : 1);
+    CallArguments arguments(generator, nullptr, argumentCount);
     generator.emitLoad(arguments.thisRegister(), jsUndefined());
     generator.emitNode(arguments.argumentRegister(0), m_expr);
     if (m_option)
         generator.emitNode(arguments.argumentRegister(1), m_option);
+    else if (m_deferred)
+        generator.emitLoad(arguments.argumentRegister(1), jsUndefined());
+    if (m_deferred)
+        generator.emitLoad(arguments.argumentRegister(2), jsBoolean(true));
     return generator.emitCall(generator.finalDestination(dst, importModule.get()), importModule.get(), NoExpectedFunction, arguments, divot(), divotStart(), divotEnd(), DebuggableCall::No);
 }
 
@@ -1344,11 +1352,13 @@ RegisterID* FunctionCallValueNode::emitBytecode(BytecodeGenerator& generator, Re
     if (m_expr->isSuperNode()) {
         RefPtr<RegisterID> func = emitGetSuperFunctionForConstruct(generator);
         RefPtr<RegisterID> returnValue = generator.finalDestination(dst, func.get());
+
+        bool isDefaultDerivedConstructorCall = generator.isBuiltinDefaultClassConstructor() && generator.constructorKind() == ConstructorKind::Extends;
         CallArguments callArguments(generator, m_args);
 
         ASSERT(generator.isConstructor() || generator.derivedContextType() == DerivedContextType::DerivedConstructorContext);
         ASSERT(generator.constructorKind() == ConstructorKind::Extends || generator.derivedContextType() == DerivedContextType::DerivedConstructorContext);
-        RegisterID* ret = generator.emitSuperConstruct(returnValue.get(), func.get(), generator.newTarget(), NoExpectedFunction, callArguments, divot(), divotStart(), divotEnd());
+        RegisterID* ret = generator.emitSuperConstruct(returnValue.get(), func.get(), generator.newTarget(), NoExpectedFunction, callArguments, divot(), divotStart(), divotEnd(), isDefaultDerivedConstructorCall);
 
         bool isConstructorKindDerived = generator.constructorKind() == ConstructorKind::Extends;
         bool doWeUseArrowFunctionInConstructor = isConstructorKindDerived && generator.needsToUpdateArrowFunctionContext();
@@ -1544,17 +1554,6 @@ RegisterID* BytecodeIntrinsicNode::emit_intrinsic_getPrototypeOf(BytecodeGenerat
     return generator.emitGetPrototypeOf(generator.finalDestination(dst), value.get());
 }
 
-static JSPromise::Field NODELETE promiseInternalFieldIndex(BytecodeIntrinsicNode* node)
-{
-    ASSERT(node->entry().type() == BytecodeIntrinsicRegistry::Type::Emitter);
-    if (node->entry().emitter() == &BytecodeIntrinsicNode::emit_intrinsic_promiseFieldFlags)
-        return JSPromise::Field::Flags;
-    if (node->entry().emitter() == &BytecodeIntrinsicNode::emit_intrinsic_promiseFieldReactionsOrResult)
-        return JSPromise::Field::ReactionsOrResult;
-    RELEASE_ASSERT_NOT_REACHED();
-    return JSPromise::Field::Flags;
-}
-
 static JSGenerator::Field NODELETE generatorInternalFieldIndex(BytecodeIntrinsicNode* node)
 {
     ASSERT(node->entry().type() == BytecodeIntrinsicRegistry::Type::Emitter);
@@ -1566,8 +1565,6 @@ static JSGenerator::Field NODELETE generatorInternalFieldIndex(BytecodeIntrinsic
         return JSGenerator::Field::This;
     if (node->entry().emitter() == &BytecodeIntrinsicNode::emit_intrinsic_generatorFieldFrame)
         return JSGenerator::Field::Frame;
-    if (node->entry().emitter() == &BytecodeIntrinsicNode::emit_intrinsic_generatorFieldContext)
-        return JSGenerator::Field::Context;
     RELEASE_ASSERT_NOT_REACHED();
     return JSGenerator::Field::State;
 }
@@ -1735,19 +1732,6 @@ static JSRegExpStringIterator::Field NODELETE regExpStringIteratorInternalFieldI
         return JSRegExpStringIterator::Field::Flags;
     RELEASE_ASSERT_NOT_REACHED();
     return JSRegExpStringIterator::Field::RegExp;
-}
-
-RegisterID* BytecodeIntrinsicNode::emit_intrinsic_getPromiseInternalField(BytecodeGenerator& generator, RegisterID* dst)
-{
-    ArgumentListNode* node = m_args->m_listNode;
-    RefPtr<RegisterID> base = generator.emitNode(node);
-    node = node->m_next;
-    RELEASE_ASSERT(node->m_expr->isBytecodeIntrinsicNode());
-    unsigned index = static_cast<unsigned>(promiseInternalFieldIndex(static_cast<BytecodeIntrinsicNode*>(node->m_expr)));
-    ASSERT(index < JSPromise::numberOfInternalFields);
-    ASSERT(!node->m_next);
-
-    return generator.emitGetInternalField(generator.finalDestination(dst), base.get(), index);
 }
 
 RegisterID* BytecodeIntrinsicNode::emit_intrinsic_getGeneratorInternalField(BytecodeGenerator& generator, RegisterID* dst)
@@ -2012,22 +1996,6 @@ RegisterID* BytecodeIntrinsicNode::emit_intrinsic_putByValDirect(BytecodeGenerat
     ASSERT(!node->m_next);
 
     return generator.move(dst, generator.emitDirectPutByVal(base.get(), index.get(), value.get()));
-}
-
-RegisterID* BytecodeIntrinsicNode::emit_intrinsic_putPromiseInternalField(BytecodeGenerator& generator, RegisterID* dst)
-{
-    ArgumentListNode* node = m_args->m_listNode;
-    RefPtr<RegisterID> base = generator.emitNode(node);
-    node = node->m_next;
-    RELEASE_ASSERT(node->m_expr->isBytecodeIntrinsicNode());
-    unsigned index = static_cast<unsigned>(promiseInternalFieldIndex(static_cast<BytecodeIntrinsicNode*>(node->m_expr)));
-    ASSERT(index < JSPromise::numberOfInternalFields);
-    node = node->m_next;
-    RefPtr<RegisterID> value = generator.emitNode(node);
-
-    ASSERT(!node->m_next);
-
-    return generator.move(dst, generator.emitPutInternalField(base.get(), index, value.get()));
 }
 
 RegisterID* BytecodeIntrinsicNode::emit_intrinsic_putGeneratorInternalField(BytecodeGenerator& generator, RegisterID* dst)
@@ -2408,19 +2376,16 @@ RegisterID* BytecodeIntrinsicNode::emit_intrinsic_createPromise(JSC::BytecodeGen
 {
     ArgumentListNode* node = m_args->m_listNode;
     RefPtr<RegisterID> newTarget = generator.emitNode(node);
-    node = node->m_next;
-    bool isInternalPromise = static_cast<BooleanNode*>(node->m_expr)->value();
     ASSERT(!node->m_next);
 
-    return generator.emitCreatePromise(generator.finalDestination(dst), newTarget.get(), isInternalPromise);
+    return generator.emitCreatePromise(generator.finalDestination(dst), newTarget.get());
 }
 
 RegisterID* BytecodeIntrinsicNode::emit_intrinsic_newPromise(JSC::BytecodeGenerator& generator, JSC::RegisterID* dst)
 {
     ASSERT(!m_args->m_listNode);
     RefPtr<RegisterID> finalDestination = generator.finalDestination(dst);
-    bool isInternalPromise = false;
-    generator.emitNewPromise(finalDestination.get(), isInternalPromise);
+    generator.emitNewPromise(finalDestination.get());
     return finalDestination.unsafeGet();
 }
 
@@ -3850,6 +3815,25 @@ RegisterID* OptionalChainNode::emitBytecode(BytecodeGenerator& generator, Regist
     return finalDest.unsafeGet();
 }
 
+void OptionalChainNode::emitBytecodeInConditionContext(BytecodeGenerator& generator, Label& trueTarget, Label& falseTarget, FallThroughMode fallThroughMode)
+{
+    if (needsDebugHook()) [[unlikely]]
+        generator.emitDebugHook(this);
+
+    if (m_expr->isDeleteNode()) {
+        ExpressionNode::emitBytecodeInConditionContext(generator, trueTarget, falseTarget, fallThroughMode);
+        return;
+    }
+
+    // Short-circuiting produces undefined, which is falsy. Route the optional
+    // chain bail-out straight to falseTarget instead of materializing undefined.
+    if (m_isOutermost)
+        generator.pushOptionalChainTarget(falseTarget);
+    generator.emitNodeInConditionContext(m_expr, trueTarget, falseTarget, fallThroughMode);
+    if (m_isOutermost)
+        generator.discardOptionalChainTarget();
+}
+
 // ------------------------------ ConditionalNode ------------------------------
 
 RegisterID* ConditionalNode::emitBytecode(BytecodeGenerator& generator, RegisterID* dst)
@@ -4045,7 +4029,8 @@ RegisterID* ShortCircuitReadModifyResolveNode::emitBytecode(BytecodeGenerator& g
         generator.emitTDZCheckIfNecessary(var, local.get(), nullptr);
 
         if (isReadOnly) {
-            RefPtr<RegisterID> result = local;
+            RefPtr<RegisterID> result = generator.tempDestination(dst);
+            generator.move(result.get(), local.get());
 
             Ref<Label> afterAssignment = generator.newLabel();
             emitShortCircuitAssignment(generator, result.get(), m_operator, afterAssignment.get());
@@ -4398,6 +4383,17 @@ RegisterID* CommaNode::emitBytecode(BytecodeGenerator& generator, RegisterID* ds
     for (; node->next(); node = node->next())
         generator.emitNodeInIgnoreResultPosition(node->m_expr);
     return generator.emitNodeInTailPosition(dst, node->m_expr);
+}
+
+void CommaNode::emitBytecodeInConditionContext(BytecodeGenerator& generator, Label& trueTarget, Label& falseTarget, FallThroughMode fallThroughMode)
+{
+    if (needsDebugHook()) [[unlikely]]
+        generator.emitDebugHook(this);
+
+    CommaNode* node = this;
+    for (; node->next(); node = node->next())
+        generator.emitNodeInIgnoreResultPosition(node->m_expr);
+    generator.emitNodeInConditionContext(node->m_expr, trueTarget, falseTarget, fallThroughMode);
 }
 
 // ------------------------------ SourceElements -------------------------------
@@ -5068,7 +5064,7 @@ static void processClauseList(ClauseListNode* list, Vector<ExpressionNode*, 8>& 
         literalVector.append(clauseExpression);
         if (clauseExpression->isNumber()) {
             double value = static_cast<NumberNode*>(clauseExpression)->value();
-            int32_t intVal = static_cast<int32_t>(value);
+            int32_t intVal = truncateDoubleToInt32(value);
             if ((typeForTable & ~SwitchNumber) || (intVal != value)) {
                 typeForTable = SwitchNeither;
                 break;
@@ -5518,12 +5514,38 @@ void FunctionNode::emitBytecode(BytecodeGenerator& generator, RegisterID*)
             // - catch: Reject promise with the exception
             // - finally: Resolve promise with completion value and return promise
             //
-            // The finally block always resolves and returns the promise. Since promise
-            // resolution only takes effect on the first call, calling resolve after
-            // reject (from the catch block) is a no-op.
-
+            // try {
+            //     body
+            //     transfer completion-value with completion-type = normal / return
+            // } catch (error) {
+            //     transfer error with completion-type = throw
+            // } finally {
+            //     get value with completion-type
+            //     if (completion-type === throw)
+            //         return @newRejectedPromise(completion-value);
+            //     return @newResolvedPromise(completion-value);
+            // }
             if (generator.parseMode() == SourceParseMode::AsyncArrowFunctionMode && generator.isThisUsedInInnerArrowFunction())
                 generator.emitLoadThisFromArrowFunctionLexicalEnvironment();
+
+            // If async function is just used for a signaling, not having a body, then just convert it to @newResolvedPromise(undefined).
+            //
+            //     Turn this: async function empty() { }
+            //     Into this: function empty() { return @newResolvedPromise(undefined); }
+            //
+            if (isEmptyBody()) {
+                ASSERT(!usingDeclarationCount());
+                ASSERT(!hasAwaitUsingDeclaration());
+                RefPtr<RegisterID> newResolvedPromise = generator.moveLinkTimeConstant(nullptr, LinkTimeConstant::newResolvedPromise);
+                CallArguments resolveArgs(generator, nullptr, 1);
+                generator.emitLoad(resolveArgs.thisRegister(), jsUndefined());
+                generator.emitLoad(resolveArgs.argumentRegister(0), jsUndefined());
+                RefPtr<RegisterID> result = generator.newTemporary();
+                generator.emitCall(result.get(), newResolvedPromise.get(), NoExpectedFunction, resolveArgs, divot, divot, divot, DebuggableCall::No);
+                generator.emitWillLeaveCallFrameDebugHook();
+                generator.emitReturn(result.get());
+                break;
+            }
 
             // Set up finally context to capture return values from the body.
             // When a return statement is hit, it stores the value in completionValueRegister
@@ -5533,10 +5555,11 @@ void FunctionNode::emitBytecode(BytecodeGenerator& generator, RegisterID*)
             generator.pushFinallyControlFlowScope(finallyContext);
             generator.emitLoad(finallyContext.completionValueRegister(), jsUndefined());
 
-            // Try block. Finally handler puts return value to completionValueRegister.
+            // Try block. FinallyContext routes `return V` to finally with completionType=Return
+            // and completionValue=V. Normal fallthrough keeps completionType=Normal (its initial value).
             Ref<Label> catchLabel = generator.newLabel();
             Ref<Label> tryStartLabel = generator.newEmittedLabel();
-            TryData* tryData = generator.pushTry(tryStartLabel.get(), catchLabel.get(), HandlerType::Catch);
+            TryData* tryData = generator.pushTry(tryStartLabel.get(), catchLabel.get(), HandlerType::Finally);
             generator.emitBodyWithUsingIfNeeded(usingDeclarationCount(), hasAwaitUsingDeclaration(),
                 scopedLambda<void(BytecodeGenerator&)>([&](BytecodeGenerator& generator) {
                     emitStatementsBytecode(generator, generator.ignoredResult());
@@ -5546,43 +5569,43 @@ void FunctionNode::emitBytecode(BytecodeGenerator& generator, RegisterID*)
             Ref<Label> tryEndLabel = generator.newEmittedLabel();
             generator.popTry(tryData, tryEndLabel.get());
 
-            // Catch block. Reject promise with the exception.
+            // Catch handler. Runtime populates completionValueRegister with the thrown value
+            // and completionTypeRegister with CompletionType::Throw.
             generator.emitLabel(catchLabel.get());
-            RefPtr<RegisterID> thrownValue = generator.newTemporary();
-            generator.emitOutOfLineCatchHandler(thrownValue.get(), finallyContext.completionTypeRegister(), tryData);
-
-            // Push try for catch block pointing to finally (for exceptions in catch).
-            TryData* catchTryData = generator.pushTry(catchLabel.get(), finallyLabel.get(), HandlerType::Finally);
-            {
-                RefPtr<RegisterID> rejectPromise = generator.moveLinkTimeConstant(nullptr, LinkTimeConstant::rejectPromiseWithFirstResolvingFunctionCallCheck);
-                CallArguments rejectArgs(generator, nullptr, 2);
-                generator.emitLoad(rejectArgs.thisRegister(), jsUndefined());
-                generator.move(rejectArgs.argumentRegister(0), generator.promiseRegister());
-                generator.move(rejectArgs.argumentRegister(1), thrownValue.get());
-                generator.emitCallIgnoreResult(generator.newTemporary(), rejectPromise.get(), NoExpectedFunction, rejectArgs, divot, divot, divot, DebuggableCall::No);
-            }
-
-            // Catch handled the exception, set completion type to Normal.
-            generator.emitLoad(finallyContext.completionTypeRegister(), CompletionType::Normal);
-            generator.popTry(catchTryData, finallyLabel.get());
+            generator.emitOutOfLineCatchHandler(finallyContext.completionValueRegister(), finallyContext.completionTypeRegister(), tryData);
 
             generator.popFinallyControlFlowScope();
 
-            // Emit out-of-line finally handler for exceptions thrown in catch block.
-            generator.emitOutOfLineFinallyHandler(finallyContext.completionValueRegister(), finallyContext.completionTypeRegister(), catchTryData);
-
-            // Finally block. Resolve promise with completion value and return promise.
+            // Dispatch on completionType: Throw -> rejected, else -> resolved.
             generator.emitLabel(finallyLabel.get());
             {
-                RefPtr<RegisterID> resolvePromise = generator.moveLinkTimeConstant(nullptr, LinkTimeConstant::resolvePromiseWithFirstResolvingFunctionCallCheck);
-                CallArguments resolveArgs(generator, nullptr, 2);
-                generator.emitLoad(resolveArgs.thisRegister(), jsUndefined());
-                generator.move(resolveArgs.argumentRegister(0), generator.promiseRegister());
-                generator.move(resolveArgs.argumentRegister(1), finallyContext.completionValueRegister());
-                generator.emitCallIgnoreResult(generator.newTemporary(), resolvePromise.get(), NoExpectedFunction, resolveArgs, divot, divot, divot, DebuggableCall::No);
+                Ref<Label> resolveCase = generator.newLabel();
+                RefPtr<RegisterID> throwType = generator.emitLoad(nullptr, jsNumber(static_cast<int32_t>(CompletionType::Throw)));
+                generator.emitJumpIfFalse(generator.emitEqualityOp<OpStricteq>(generator.newTemporary(), finallyContext.completionTypeRegister(), throwType.get()), resolveCase.get());
+
+                {
+                    RefPtr<RegisterID> newRejectedPromise = generator.moveLinkTimeConstant(nullptr, LinkTimeConstant::newRejectedPromise);
+                    CallArguments rejectArgs(generator, nullptr, 1);
+                    generator.emitLoad(rejectArgs.thisRegister(), jsUndefined());
+                    generator.move(rejectArgs.argumentRegister(0), finallyContext.completionValueRegister());
+                    RefPtr<RegisterID> result = generator.newTemporary();
+                    generator.emitCall(result.get(), newRejectedPromise.get(), NoExpectedFunction, rejectArgs, divot, divot, divot, DebuggableCall::No);
+                    generator.emitWillLeaveCallFrameDebugHook();
+                    generator.emitReturn(result.get());
+                }
+
+                generator.emitLabel(resolveCase.get());
+                {
+                    RefPtr<RegisterID> newResolvedPromise = generator.moveLinkTimeConstant(nullptr, LinkTimeConstant::newResolvedPromise);
+                    CallArguments resolveArgs(generator, nullptr, 1);
+                    generator.emitLoad(resolveArgs.thisRegister(), jsUndefined());
+                    generator.move(resolveArgs.argumentRegister(0), finallyContext.completionValueRegister());
+                    RefPtr<RegisterID> result = generator.newTemporary();
+                    generator.emitCall(result.get(), newResolvedPromise.get(), NoExpectedFunction, resolveArgs, divot, divot, divot, DebuggableCall::No);
+                    generator.emitWillLeaveCallFrameDebugHook();
+                    generator.emitReturn(result.get());
+                }
             }
-            generator.emitDebugHook(WillLeaveCallFrame, JSTextPosition(lastLine(), startOffset(), lineStartOffset()));
-            generator.emitReturn(generator.promiseRegister());
             break;
         }
 
@@ -5788,18 +5811,16 @@ RegisterID* YieldExprNode::emitBytecode(BytecodeGenerator& generator, RegisterID
 {
     if (!delegate()) {
         RefPtr<RegisterID> arg = nullptr;
-        if (argument()) {
-            arg = generator.newTemporary();
-            generator.emitNode(arg.get(), argument());
-        } else
+        if (argument())
+            arg = generator.emitNode(argument());
+        else
             arg = generator.emitLoad(nullptr, jsUndefined());
         RefPtr<RegisterID> value = generator.emitYield(arg.get());
         if (dst == generator.ignoredResult())
             return nullptr;
         return generator.move(generator.finalDestination(dst), value.get());
     }
-    RefPtr<RegisterID> arg = generator.newTemporary();
-    generator.emitNode(arg.get(), argument());
+    RefPtr<RegisterID> arg = generator.emitNode(argument());
     RefPtr<RegisterID> value = generator.emitDelegateYield(arg.get(), this);
     if (dst == generator.ignoredResult())
         return nullptr;
@@ -5810,8 +5831,7 @@ RegisterID* YieldExprNode::emitBytecode(BytecodeGenerator& generator, RegisterID
 
 RegisterID* AwaitExprNode::emitBytecode(BytecodeGenerator& generator, RegisterID* dst)
 {
-    RefPtr<RegisterID> arg = generator.newTemporary();
-    generator.emitNode(arg.get(), argument());
+    RefPtr<RegisterID> arg = generator.emitNode(argument());
     return generator.emitAwait(dst ? dst : generator.newTemporary(), arg.get(), position());
 }
 

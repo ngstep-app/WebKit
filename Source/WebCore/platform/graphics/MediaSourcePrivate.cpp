@@ -99,21 +99,34 @@ MediaTime MediaSourcePrivate::duration() const
 
 Ref<MediaTimePromise> MediaSourcePrivate::waitForTarget(const SeekTarget& target)
 {
-    if (RefPtr client = this->client())
-        return client->waitForTarget(target);
+    assertIsMainThread();
+    if (RefPtr client = this->client()) {
+        m_reenqueuePending = true;
+        return client->waitForTarget(target)->whenSettled(RunLoop::currentSingleton(), [weakThis = ThreadSafeWeakPtr { *this }](auto&& result) {
+            RefPtr protectedThis = weakThis.get();
+            if (!result && protectedThis)
+                protectedThis->m_reenqueuePending = false;
+            return MediaTimePromise::createAndSettle(WTF::move(result));
+        });
+    }
     return MediaTimePromise::createAndReject(PlatformMediaError::ClientDisconnected);
 }
 
-void MediaSourcePrivate::seekToTime(const MediaTime& seekTime)
+Ref<GenericPromise> MediaSourcePrivate::reenqueueMediaForTime(const MediaTime& time)
 {
-    ensureOnDispatcher([weakThis = ThreadSafeWeakPtr { *this }, seekTime] {
-        RefPtr protectedThis = weakThis.get();
-        if (!protectedThis)
-            return;
+    assertIsMainThread();
+
+    auto process = [protectedThis = Ref { *this }, time] {
         assertIsCurrent(protectedThis->m_dispatcher.get());
+        protectedThis->m_reenqueuePending = false;
         for (RefPtr sourceBuffer : protectedThis->m_activeSourceBuffers)
-            sourceBuffer->seekToTime(seekTime);
-    });
+            sourceBuffer->reenqueueMediaForTime(time);
+        return GenericPromise::createAndResolve();
+    };
+    if (m_dispatcher->isCurrent())
+        return process();
+
+    return invokeAsync(m_dispatcher, WTF::move(process));
 }
 
 void MediaSourcePrivate::removeSourceBuffer(SourceBufferPrivate& sourceBuffer)

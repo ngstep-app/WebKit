@@ -110,7 +110,7 @@ Resolver& Scope::resolver()
         else
             createDocumentResolver();
         
-        if (m_resolver->ruleSets().features().usesHasPseudoClass())
+        if (m_resolver->ruleSets().features().usesHasPseudoClass)
             m_usesHasPseudoClass = true;
     }
     return *m_resolver;
@@ -156,7 +156,7 @@ void Scope::createOrFindSharedShadowTreeResolver()
         m_resolver->ruleSets().setUsesSharedUserStyle(!isForUserAgentShadowTree());
         m_resolver->appendAuthorStyleSheets(m_activeStyleSheets);
 
-        return Ref { *m_resolver };
+        return protect(*m_resolver);
     });
 
     if (!result.isNewEntry) {
@@ -241,7 +241,7 @@ const Scope& Scope::forNode(const Node& node)
 
 Scope* Scope::forOrdinal(Element& element, ScopeOrdinal ordinal)
 {
-    if (CheckedPtr pseudoElement = dynamicDowncast<PseudoElement>(element))
+    if (auto* pseudoElement = dynamicDowncast<PseudoElement>(element))
         return forOrdinal(*pseudoElement->hostElement(), ordinal);
 
     if (ordinal == ScopeOrdinal::Element)
@@ -263,7 +263,7 @@ const Scope* Scope::forOrdinal(const Element& element, ScopeOrdinal ordinal)
     return forOrdinal(const_cast<Element&>(element), ordinal);
 }
 
-void Scope::setPreferredStylesheetSetName(const String& name)
+void Scope::setPreferredStylesheetSetName(const WTF::String& name)
 {
     if (m_preferredStylesheetSetName == name)
         return;
@@ -391,6 +391,31 @@ void Scope::addStyleSheetCandidateNode(Node& node, bool createdByParser)
     m_styleSheetCandidateNodes.insertBefore(*followingNode, node);
 }
 
+void Scope::establishPreferredStylesheetSetName(const Element& element, const CSSStyleSheet& sheet)
+{
+    // Per CSSOM spec "add a CSS style sheet", the preferred CSS style sheet set
+    // name is established when a sheet is added, based on insertion order — not
+    // tree order. This is called at sheet-creation time so that a later-inserted
+    // stylesheet placed earlier in tree order does not override the name.
+    // https://drafts.csswg.org/cssom/#add-a-css-style-sheet
+    if (!m_preferredStylesheetSetName.isEmpty())
+        return;
+
+    if (element.isInShadowTree())
+        return;
+
+    auto title = sheet.title();
+    if (title.isNull() || title.isEmpty())
+        return;
+
+    if (is<HTMLStyleElement>(element))
+        m_preferredStylesheetSetName = title;
+    else if (auto* linkElement = dynamicDowncast<HTMLLinkElement>(element)) {
+        if (!linkElement->isEnabledViaScript() && !linkElement->attributeWithoutSynchronization(HTMLNames::relAttr).contains("alternate"_s))
+            m_preferredStylesheetSetName = title;
+    }
+}
+
 void Scope::removeStyleSheetCandidateNode(Node& node)
 {
     if (m_styleSheetCandidateNodes.remove(node))
@@ -499,7 +524,6 @@ auto Scope::collectActiveStyleSheets() -> ActiveStyleSheetCollection
     for (auto& adoptedStyleSheet : treeScope().adoptedStyleSheets()) {
         if (!canActivateAdoptedStyleSheet(adoptedStyleSheet.get()))
             continue;
-        styleSheetsForStyleSheetsList.append(adoptedStyleSheet.get());
         sheets.append(adoptedStyleSheet.get());
     }
 
@@ -609,7 +633,7 @@ void Scope::updateActiveStyleSheets(UpdateType updateType)
             m_usesStyleBasedEditability = true;
     }
 
-    if (m_resolver && m_resolver->ruleSets().features().usesHasPseudoClass())
+    if (m_resolver && m_resolver->ruleSets().features().usesHasPseudoClass)
         m_usesHasPseudoClass = true;
 
     invalidateStyleAfterStyleSheetChange(styleSheetChange);
@@ -929,15 +953,20 @@ void Scope::invalidateMatchedDeclarationsCache()
 
 void Scope::pendingUpdateTimerFired()
 {
-    RefPtr protectedShadowRoot { m_shadowRoot };
-    Ref protectedDocument { m_document.get() };
     flushPendingUpdate();
 }
 
 const Vector<Ref<StyleSheet>>& Scope::styleSheetsForStyleSheetList()
 {
     // FIXME: StyleSheetList content should be updated separately from style resolver updates.
-    flushPendingUpdate();
+    if (m_document->hasLivingRenderTree())
+        flushPendingUpdate();
+    else if (m_pendingUpdate) {
+        // Documents without a living render tree (e.g. created by DOMParser) can't do full
+        // style updates but should still have an accessible styleSheets collection per spec.
+        m_pendingUpdate = { };
+        m_styleSheetsForStyleSheetList = collectActiveStyleSheets().styleSheetsForStyleSheetList;
+    }
     return m_styleSheetsForStyleSheetList;
 }
 
@@ -1029,7 +1058,7 @@ bool Scope::invalidateForAnchorDependencies(LayoutDependencyUpdateContext& conte
 
     auto makeAnchorPosition = [&](const RenderBoxModelObject& anchorRenderer) {
         AnchorPosition result;
-        result.absoluteRect = anchorRenderer.absoluteBoundingBoxRectIgnoringTransforms();
+        result.absoluteRect = anchorRenderer.absoluteBoundingBoxRect();
         // Include containing block sizes as anchor function insets may be computed against any side and if they change
         // we need to invalidate.
         for (auto* containingBlock = anchorRenderer.containingBlock(); containingBlock; containingBlock = containingBlock->containingBlock()) {
@@ -1109,7 +1138,7 @@ MatchResultCache& Scope::matchResultCache()
 RefPtr<HTMLSlotElement> assignedSlotForScopeOrdinal(const Element& element, ScopeOrdinal scopeOrdinal)
 {
     ASSERT(scopeOrdinal >= ScopeOrdinal::FirstSlot);
-    RefPtr slot = element.assignedSlot();
+    auto* slot = element.assignedSlot();
     for (auto scopeDepth = ScopeOrdinal::FirstSlot; slot && scopeDepth != scopeOrdinal; ++scopeDepth)
         slot = slot->assignedSlot();
     return slot;
@@ -1118,7 +1147,7 @@ RefPtr<HTMLSlotElement> assignedSlotForScopeOrdinal(const Element& element, Scop
 RefPtr<Element> hostForScopeOrdinal(const Element& element, ScopeOrdinal scopeOrdinal)
 {
     ASSERT(scopeOrdinal <= ScopeOrdinal::ContainingHost);
-    RefPtr host = element.shadowHost();
+    auto* host = element.shadowHost();
     for (auto scopeDepth = ScopeOrdinal::ContainingHost; host && scopeDepth != scopeOrdinal; --scopeDepth)
         host = host->shadowHost();
     return host;
@@ -1143,19 +1172,17 @@ void Scope::updateAnchorPositioningStateAfterStyleResolution()
 
 std::optional<size_t> Scope::lastSuccessfulPositionOptionIndexFor(const Styleable& styleable)
 {
-    AnchorPositionedKey key { styleable.element, styleable.pseudoElementIdentifier };
-    return m_lastSuccessfulPositionOptionIndexes.getOptional(key);
+    return m_lastSuccessfulPositionOptionIndexes.getOptional(styleable);
 }
 
-void Scope::setLastSuccessfulPositionOptionIndexMap(HashMap<AnchorPositionedKey, size_t>&& map)
+void Scope::setLastSuccessfulPositionOptionIndexMap(HashMap<WeakStyleable, size_t>&& map)
 {
     m_lastSuccessfulPositionOptionIndexes = WTF::move(map);
 }
 
 void Scope::forgetLastSuccessfulPositionOptionIndex(const Styleable& styleable)
 {
-    AnchorPositionedKey key { styleable.element, styleable.pseudoElementIdentifier };
-    m_lastSuccessfulPositionOptionIndexes.remove(key);
+    m_lastSuccessfulPositionOptionIndexes.remove(styleable);
 }
 
 }
